@@ -1,23 +1,41 @@
 // tests/engine/spawn.test.ts
+import { describe, it, expect } from "vitest";
 import { spawnAgent } from "../../src/main/engine/spawn";
 import type { ExecFn, ExecResult } from "../../src/main/engine/exec";
 
-it("invokes claude with -p, auto permission mode, in the worktree, and reports success", async () => {
-    let seen: { command: string; args: string[]; cwd?: string } | null = null;
-    const fakeExec: ExecFn = async (command, args = [], opts = {}) => {
-        seen = { command, args, cwd: opts.cwd };
-        return { code: 0, stdout: "done", stderr: "", timedOut: false } as ExecResult;
-    };
-    const r = await spawnAgent("/wt", "build the thing", { model: "claude-opus-4-8" }, fakeExec);
-    expect(r.ok).toBe(true);
-    expect(seen!.command).toBe("claude");
-    expect(seen!.cwd).toBe("/wt");
-    expect(seen!.args).toEqual(["-p", "build the thing", "--permission-mode", "auto", "--model", "claude-opus-4-8"]);
-});
+const INIT = JSON.stringify({ type: "system", subtype: "init", session_id: "sess-xyz" });
+const MSG = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "did the work" }] } });
 
-it("reports failure on non-zero exit", async () => {
-    const fakeExec: ExecFn = async () => ({ code: 1, stdout: "", stderr: "boom", timedOut: false });
-    const r = await spawnAgent("/wt", "x", {}, fakeExec);
-    expect(r.ok).toBe(false);
-    expect(r.output).toContain("boom");
+describe("spawnAgent stream-json", () => {
+    it("parses the init session id, collects assistant text, and reports ok", async () => {
+        const exec: ExecFn = async (_cmd, _args, opts) => {
+            opts?.onLine?.(INIT);
+            opts?.onLine?.(MSG);
+            return { code: 0, stdout: "", stderr: "", timedOut: false, idleTimedOut: false };
+        };
+        const res = await spawnAgent("/wt", "/goal do it", {}, exec);
+        expect(res.ok).toBe(true);
+        expect(res.sessionId).toBe("sess-xyz");
+        expect(res.output).toContain("did the work");
+        expect(res.stalled).toBe(false);
+    });
+
+    it("passes the stream-json + auto-mode flags and an idle timeout", async () => {
+        let seenArgs: string[] = [];
+        let seenIdle: number | undefined;
+        const exec: ExecFn = async (_cmd, args, opts) => { seenArgs = args ?? []; seenIdle = opts?.idleTimeoutMs; return { code: 0, stdout: "", stderr: "", timedOut: false }; };
+        await spawnAgent("/wt", "/goal do it", { idleTimeoutMs: 1234 }, exec);
+        expect(seenArgs).toContain("--output-format");
+        expect(seenArgs).toContain("stream-json");
+        expect(seenArgs).toContain("--verbose");
+        expect(seenArgs).toContain("auto");
+        expect(seenIdle).toBe(1234);
+    });
+
+    it("reports stalled (and not-ok) when the stream went idle", async () => {
+        const exec: ExecFn = async () => ({ code: -1, stdout: "", stderr: "", timedOut: false, idleTimedOut: true });
+        const res = await spawnAgent("/wt", "/goal do it", {}, exec);
+        expect(res.ok).toBe(false);
+        expect(res.stalled).toBe(true);
+    });
 });
