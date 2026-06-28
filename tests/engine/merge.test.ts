@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../../src/main/engine/exec";
-import { commitAll, squashMergeInto, diffStat } from "../../src/main/engine/merge";
+import { commitAll, squashMergeInto, diffStat, headSha } from "../../src/main/engine/merge";
+import type { ExecFn } from "../../src/main/engine/exec";
 
 async function tempRepo(): Promise<string> {
     const dir = mkdtempSync(join(tmpdir(), "helm-merge-"));
@@ -40,4 +41,14 @@ it("commits all changes, then squash-merges a branch into integration as one com
 it("commitAll is a no-op when the tree is clean", async () => {
     const repo = await tempRepo();
     try { await commitAll(repo, "nothing"); } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+describe("headSha", () => {
+    it("returns the trimmed HEAD sha of the given repo/worktree", async () => {
+        const exec: ExecFn = async (_cmd, args) => {
+            expect(args).toEqual(["-C", "/wt", "rev-parse", "HEAD"]);
+            return { code: 0, stdout: "abc123\n", stderr: "", timedOut: false };
+        };
+        expect(await headSha("/wt", exec)).toBe("abc123");
+    });
 });

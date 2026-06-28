@@ -40,3 +40,10 @@ export async function diffStat(repoRoot: string, base: string, branch: string, e
     const del = res.stdout.match(/(\d+) deletion/);
     return `+${ins?.[1] ?? 0} -${del?.[1] ?? 0}`;
 }
+
+// Read the HEAD commit sha of a repo/worktree. The no-progress breaker compares this across
+// iterations: an unchanged sha means commitAll no-op'd (clean tree) → the agent did nothing.
+export async function headSha(repoRoot: string, exec: ExecFn = run): Promise<string> {
+    const res = await git(repoRoot, ["rev-parse", "HEAD"], exec);
+    return res.stdout.trim();
+}
