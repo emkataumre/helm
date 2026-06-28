@@ -12,7 +12,8 @@ import { runAcceptance } from "./engine/acceptance";
 import { ensureRalphExcluded, writeRalphFiles } from "./engine/ralph";
 import { runCheck } from "./engine/check";
 import { spawnAgent } from "./engine/spawn";
-import { runTaskSinglePass, type RunTaskDeps } from "./engine/runTask";
+import { runTaskLoop, type RunTaskDeps } from "./engine/runTask";
+import { DEFAULT_LOOP_CONFIG } from "./engine/loopConfig";
 import type { NewProjectInput, NewTaskInput, TaskStatus } from "../shared/types";
 
 export function registerIpc(getWindow: () => BrowserWindow | null): void {
@@ -43,7 +44,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
             finishIteration: (id, patch) => finishIteration(db, id, patch),
             log: (m) => console.log(`[helm] ${m}`),
         };
-        const status = await runTaskSinglePass(project, task, deps);
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps);
         notify();
         return status;
     });
