@@ -80,13 +80,17 @@ export function buildRecordingDeps(config: DepConfig = {}): { deps: RunTaskDeps;
         checkoutBranch: async () => {},
         createWorktree: async () => "/repo/.helm/worktrees/ralph-task-abc",
         removeWorktree: async (_r, _p, _b, keepBranch) => { recording.removeCalls.push({ keepBranch }); },
-        spawnAgent: async () => { recording.agentOk = agentOk; return { ok: agentOk, output: agentOutput, sessionId: null }; },
+        ensureRalphExcluded: () => {},
+        writeRalphFiles: () => {},
+        spawnAgent: async () => { recording.agentOk = agentOk; return { ok: agentOk, output: agentOutput, sessionId: null, stalled: false }; },
         commitAll: async () => {},
+        headSha: async () => "sha",
         runCheck: async () => {
             recording.checkRan = true;
             recording.checkGreen = checkGreen;
             return { green: checkGreen, timedOut: checkTimedOut, output: checkOutput };
         },
+        runAcceptance: async () => ({ ok: true, output: "" }),
         squashMergeInto: async () => { const r = { merged: mergeMerged, conflict: mergeConflict }; recording.mergeResults.push(r); return r; },
         diffStat: async () => "+1 -0",
         setStatus: (_id, status, extra) => { recording.statusCalls.push({ status, extra }); },

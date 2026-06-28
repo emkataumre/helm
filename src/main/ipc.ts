@@ -7,7 +7,9 @@ import { insertProject, listProjects, getProject } from "./db/projects";
 import { insertTask, listTasks, getTask, updateTask } from "./db/tasks";
 import { addIteration, finishIteration } from "./db/iterations";
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree } from "./engine/worktree";
-import { commitAll, squashMergeInto, diffStat } from "./engine/merge";
+import { commitAll, squashMergeInto, diffStat, headSha } from "./engine/merge";
+import { runAcceptance } from "./engine/acceptance";
+import { ensureRalphExcluded, writeRalphFiles } from "./engine/ralph";
 import { runCheck } from "./engine/check";
 import { spawnAgent } from "./engine/spawn";
 import { runTaskSinglePass, type RunTaskDeps } from "./engine/runTask";
@@ -30,9 +32,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
         const deps: RunTaskDeps = {
             ensureBranch, checkoutBranch, createWorktree, removeWorktree,
+            ensureRalphExcluded, writeRalphFiles,
             spawnAgent: (wt, prompt, opts) => spawnAgent(wt, prompt, opts),
-            commitAll,
+            commitAll, headSha,
             runCheck: (wt, cmd, t) => runCheck(wt, cmd, t),
+            runAcceptance: (wt, cmds, t) => runAcceptance(wt, cmds, t),
             squashMergeInto, diffStat,
             setStatus: (id, status, extra) => { updateTask(db, id, { status, ...extra }); notify(); },
             addIteration: (tid, idx) => addIteration(db, tid, idx),
