@@ -8,7 +8,7 @@ function createWindow(): void {
     mainWindow = new BrowserWindow({
         width: 1100,
         height: 760,
-        webPreferences: { preload: join(import.meta.dirname, "../preload/index.js") },
+        webPreferences: { preload: join(import.meta.dirname, "../preload/index.cjs") },
     });
     if (process.env.ELECTRON_RENDERER_URL) mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
     else mainWindow.loadFile(join(import.meta.dirname, "../renderer/index.html"));
