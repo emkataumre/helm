@@ -133,3 +133,68 @@ describe("runTaskLoop — happy path", () => {
         expect(spawned).toBe(false);
     });
 });
+
+// A scripted set of deps: each iteration consumes the next IterStep; headSha advances unless newCommit:false.
+interface IterStep { agentOk?: boolean; stalled?: boolean; checkGreen?: boolean; acceptanceOk?: boolean; newCommit?: boolean; }
+function scriptedDeps(steps: IterStep[], over: Partial<RunTaskDeps> = {}) {
+    let i = -1;
+    let lastSha = "sha-base";
+    let headCalls = 0;
+    const step = () => steps[Math.min(i, steps.length - 1)] ?? {};
+    return deps({
+        spawnAgent: async () => { i += 1; const s = step(); const stalled = s.stalled ?? false; const ok = (s.agentOk ?? true) && !stalled; return { ok, output: "o", sessionId: `s${i}`, stalled }; },
+        headSha: async () => { if (headCalls++ === 0) return "sha-base"; const s = step(); if ((s.newCommit ?? true)) lastSha = `sha-${i}`; return lastSha; },
+        runCheck: async () => { const s = step(); return { green: s.checkGreen ?? true, timedOut: false, output: "c" }; },
+        runAcceptance: async () => { const s = step(); return { ok: s.acceptanceOk ?? true, output: "a" }; },
+        ...over,
+    });
+}
+
+describe("runTaskLoop — bounds & retry", () => {
+    it("retries a red check and merges once it goes green", async () => {
+        let iterations = 0;
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, scriptedDeps(
+            [{ checkGreen: false }, {}],
+            { addIteration: (tid, idx) => { iterations += 1; return { id: `it${idx}` }; } },
+        ));
+        expect(status).toBe("merged");
+        expect(iterations).toBe(2);
+    });
+
+    it("stops at the iteration cap and flags needs-human", async () => {
+        const cfg = { ...DEFAULT_LOOP_CONFIG, iterationCap: 2, noProgressK: 99 };
+        let reason = "";
+        const status = await runTaskLoop(project, task, cfg, scriptedDeps(
+            [{ checkGreen: false }, { checkGreen: false }],
+            { setStatus: (_i, _s, extra) => { if (extra?.failureReason) reason = extra.failureReason; } },
+        ));
+        expect(status).toBe("needs-human");
+        expect(reason).toContain("iteration cap");
+    });
+
+    it("bails via the no-progress breaker when the commit-sha stops moving", async () => {
+        const cfg = { ...DEFAULT_LOOP_CONFIG, noProgressK: 2 };
+        let reason = "";
+        const status = await runTaskLoop(project, task, cfg, scriptedDeps(
+            [{ checkGreen: false, newCommit: false }, { checkGreen: false, newCommit: false }],
+            { setStatus: (_i, _s, extra) => { if (extra?.failureReason) reason = extra.failureReason; } },
+        ));
+        expect(status).toBe("needs-human");
+        expect(reason).toContain("no progress");
+    });
+
+    it("recycles a stall (hang) and still merges on a later green", async () => {
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, scriptedDeps([{ stalled: true }, {}]));
+        expect(status).toBe("merged");
+    });
+
+    it("flags needs-human (branch kept) on a merge conflict", async () => {
+        let keep: boolean | null = null;
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, scriptedDeps([{}], {
+            squashMergeInto: async () => ({ merged: false, conflict: true }),
+            removeWorktree: async (_r, _p, _b, keepBranch) => { keep = keepBranch; },
+        }));
+        expect(status).toBe("needs-human");
+        expect(keep).toBe(true);
+    });
+});
