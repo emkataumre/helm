@@ -1,0 +1,16 @@
+// tests/db/tasks.test.ts
+import { openDb } from "../../src/main/db/db";
+import { insertTask, getTask, listTasks, updateTask } from "../../src/main/db/tasks";
+
+it("inserts a queued task, round-trips acceptance, updates status", () => {
+    const db = openDb(":memory:");
+    const t = insertTask(db, { projectId: "p1", title: "T", intent: "do it", acceptance: ["npm test -- x"] });
+    expect(t.status).toBe("queued");
+    expect(getTask(db, t.id)?.acceptance).toEqual(["npm test -- x"]);
+    updateTask(db, t.id, { status: "merged", diffstat: "+3 -1" });
+    const got = getTask(db, t.id)!;
+    expect(got.status).toBe("merged");
+    expect(got.diffstat).toBe("+3 -1");
+    expect(listTasks(db)).toHaveLength(1);
+    db.close();
+});
