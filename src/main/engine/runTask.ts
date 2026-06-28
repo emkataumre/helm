@@ -60,6 +60,60 @@ export async function runIteration(
     return { verdict: "green", gateOutput: "", commitSha, sessionId: agent.sessionId };
 }
 
+// The orchestrator: create the worktree once, seed .ralph, loop runIteration under the bounds,
+// squash-merge on the first green, clean up on any terminal outcome.
+export async function runTaskLoop(project: Project, task: Task, config: LoopConfig, d: RunTaskDeps): Promise<TaskStatus> {
+    await d.ensureBranch(project.repoPath, project.integrationBranch, project.targetBranch);
+    await d.checkoutBranch(project.repoPath, project.integrationBranch);
+
+    const branch = `${project.branchPrefix}/task-${task.id}`;
+    const worktreePath = await d.createWorktree(project.repoPath, project.integrationBranch, branch, project.worktreeDir);
+    d.setStatus(task.id, "running", { branchName: branch, worktreePath });
+
+    const terminate = async (status: TaskStatus, reason: string | undefined, keepBranch: boolean, diffstat?: string): Promise<TaskStatus> => {
+        const extra: { diffstat?: string; failureReason?: string } = {};
+        if (diffstat !== undefined) extra.diffstat = diffstat;
+        if (reason !== undefined) extra.failureReason = reason;
+        d.setStatus(task.id, status, extra);
+        await d.removeWorktree(project.repoPath, worktreePath, branch, keepBranch);
+        d.log(`task ${task.id} ${status}${reason ? `: ${reason}` : ""}`);
+        return status;
+    };
+
+    // Layer B is mandatory; an empty acceptance list can never prove "done".
+    if (task.acceptance.length === 0) {
+        return terminate("needs-human", "no acceptance commands (Layer B is mandatory)", true);
+    }
+
+    d.ensureRalphExcluded(project.repoPath);
+    d.writeRalphFiles(worktreePath, { instructions: buildInstructions(), progress: seedProgress(task) });
+
+    let priorFailure: string | undefined;
+    let prevSha = await d.headSha(worktreePath); // baseSha — the worktree tip before any iteration
+    let noProgress = 0;
+
+    for (let index = 0; index < config.iterationCap; index++) {
+        const iter = d.addIteration(task.id, index);
+        const o = await runIteration(project, task, { index, worktreePath, branch, priorFailure }, config, d);
+        d.finishIteration(iter.id, { gateVerdict: o.verdict, outputTail: o.gateOutput, commitSha: o.commitSha, sessionId: o.sessionId });
+
+        if (o.verdict === "green") {
+            const diffstat = await d.diffStat(project.repoPath, project.integrationBranch, branch);
+            const merge = await d.squashMergeInto(project.repoPath, branch, project.integrationBranch);
+            if (merge.conflict) return terminate("needs-human", "merge conflict", true);
+            return terminate("merged", undefined, false, diffstat);
+        }
+
+        priorFailure = o.gateOutput;
+        noProgress = o.commitSha === prevSha ? noProgress + 1 : 0;
+        prevSha = o.commitSha;
+        if (noProgress >= config.noProgressK) {
+            return terminate("needs-human", `no progress for ${config.noProgressK} iterations`, true);
+        }
+    }
+    return terminate("needs-human", `iteration cap reached (${config.iterationCap})`, true);
+}
+
 const CHECK_TIMEOUT_MS = 30 * 60 * 1000; // generous; the loop's real bounds arrive in M2
 
 export async function runTaskSinglePass(project: Project, task: Task, d: RunTaskDeps): Promise<TaskStatus> {

@@ -1,5 +1,5 @@
 // tests/engine/runTask.test.ts
-import { runTaskSinglePass, runIteration, type RunTaskDeps } from "../../src/main/engine/runTask";
+import { runTaskSinglePass, runIteration, runTaskLoop, type RunTaskDeps } from "../../src/main/engine/runTask";
 import { DEFAULT_LOOP_CONFIG } from "../../src/main/engine/loopConfig";
 import type { Project, Task } from "../../src/shared/types";
 
@@ -107,5 +107,29 @@ describe("runIteration", () => {
         }));
         expect(o.verdict).toBe("failed");
         expect(o.gateOutput).toContain("x");
+    });
+});
+
+describe("runTaskLoop — happy path", () => {
+    it("merges on a first-pass green and cleans up (worktree gone, branch deleted, diffstat set)", async () => {
+        const calls: string[] = [];
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            removeWorktree: async (_r, _p, _b, keepBranch) => { calls.push(`remove:${keepBranch}`); },
+            squashMergeInto: async () => { calls.push("merge"); return { merged: true, conflict: false }; },
+            setStatus: (_id, s) => { calls.push(`status:${s}`); },
+        }));
+        expect(status).toBe("merged");
+        expect(calls).toContain("merge");
+        expect(calls).toContain("remove:false"); // branch deleted on a clean merge
+        expect(calls).toContain("status:merged");
+    });
+
+    it("flags needs-human immediately when acceptance is empty, without spawning", async () => {
+        let spawned = false;
+        const status = await runTaskLoop(project, { ...task, acceptance: [] }, DEFAULT_LOOP_CONFIG, deps({
+            spawnAgent: async () => { spawned = true; return { ok: true, output: "", sessionId: "s", stalled: false }; },
+        }));
+        expect(status).toBe("needs-human");
+        expect(spawned).toBe(false);
     });
 });
