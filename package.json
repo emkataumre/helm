@@ -5,12 +5,18 @@
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {
+    "predev": "npm run abi:electron",
     "dev": "electron-vite dev",
+    "prebuild": "npm run abi:electron",
     "build": "electron-vite build",
+    "prestart": "npm run abi:electron",
     "start": "electron-vite preview",
+    "pretest": "npm run abi:node",
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "check": "npm run typecheck && npm run test"
+    "check": "npm run typecheck && npm run test",
+    "abi:electron": "cd node_modules/better-sqlite3 && prebuild-install -r electron -t 31.7.7",
+    "abi:node": "cd node_modules/better-sqlite3 && prebuild-install -r node -t 24.15.0"
   },
   "dependencies": {
     "better-sqlite3": "^12.0.0"
