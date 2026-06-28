@@ -72,7 +72,7 @@ I:\Personal\helm\
 **Files:**
 - Create: `package.json`, `tsconfig.json`, `tsconfig.node.json`, `electron.vite.config.ts`, `vitest.config.ts`, `.gitignore`, `index.html`, `src/main/index.ts`, `src/preload/index.ts`, `src/renderer/main.tsx`, `src/renderer/App.tsx`
 
-- [ ] **Step 1: Create `package.json`**
+- [x] **Step 1: Create `package.json`** (better-sqlite3 bumped ^11→^12 for Node 24 ABI; see commit body)
 
 ```json
 {
@@ -109,7 +109,7 @@ I:\Personal\helm\
 }
 ```
 
-- [ ] **Step 2: Create `tsconfig.json`**
+- [x] **Step 2: Create `tsconfig.json`**
 
 ```json
 {
@@ -131,13 +131,13 @@ I:\Personal\helm\
 }
 ```
 
-- [ ] **Step 3: Create `tsconfig.node.json`** (electron-vite expects it)
+- [x] **Step 3: Create `tsconfig.node.json`** (electron-vite expects it)
 
 ```json
 { "extends": "./tsconfig.json", "include": ["electron.vite.config.ts"] }
 ```
 
-- [ ] **Step 4: Create `electron.vite.config.ts`**
+- [x] **Step 4: Create `electron.vite.config.ts`**
 
 ```ts
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
@@ -150,7 +150,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 5: Create `vitest.config.ts`**
+- [x] **Step 5: Create `vitest.config.ts`**
 
 ```ts
 import { defineConfig } from "vitest/config";
@@ -164,7 +164,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 6: Create `.gitignore`**
+- [x] **Step 6: Create `.gitignore`**
 
 ```
 node_modules/
@@ -175,7 +175,7 @@ dist/
 helm.db
 ```
 
-- [ ] **Step 7: Create `index.html`**
+- [x] **Step 7: Create `index.html`**
 
 ```html
 <!doctype html>
@@ -188,7 +188,7 @@ helm.db
 </html>
 ```
 
-- [ ] **Step 8: Create placeholder `src/main/index.ts`**
+- [x] **Step 8: Create placeholder `src/main/index.ts`**
 
 ```ts
 import { app, BrowserWindow } from "electron";
@@ -208,14 +208,14 @@ app.whenReady().then(createWindow);
 app.on("window-all-closed", () => app.quit());
 ```
 
-- [ ] **Step 9: Create placeholder `src/preload/index.ts`**
+- [x] **Step 9: Create placeholder `src/preload/index.ts`**
 
 ```ts
 import { contextBridge } from "electron";
 contextBridge.exposeInMainWorld("helm", {});
 ```
 
-- [ ] **Step 10: Create `src/renderer/main.tsx` and `src/renderer/App.tsx`**
+- [x] **Step 10: Create `src/renderer/main.tsx` and `src/renderer/App.tsx`**
 
 ```tsx
 // src/renderer/main.tsx
@@ -231,13 +231,13 @@ export function App() {
 }
 ```
 
-- [ ] **Step 11: Install and verify it boots**
+- [x] **Step 11: Install and verify it boots** — `npm install` done (better-sqlite3 12.11.1 loads under Node ABI 137); `npm run dev` window-open visual check deferred to human
 
 Run: `npm install`
 Run: `npm run dev`
 Expected: an Electron window opens showing "Helm". Close it.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git init
@@ -252,7 +252,7 @@ git commit -m "chore: scaffold electron + ts + vitest app"
 **Files:**
 - Create: `src/shared/types.ts`
 
-- [ ] **Step 1: Write the types**
+- [x] **Step 1: Write the types**
 
 ```ts
 // src/shared/types.ts
@@ -319,7 +319,7 @@ export interface HelmApi {
 }
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add src/shared/types.ts
@@ -333,7 +333,7 @@ git commit -m "feat: shared domain + IPC types"
 **Files:**
 - Create: `src/main/engine/exec.ts`, `tests/engine/exec.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/engine/exec.test.ts
@@ -357,12 +357,12 @@ it("times out and flags timedOut", async () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/engine/exec.test.ts`
 Expected: FAIL — cannot find module `exec`.
 
-- [ ] **Step 3: Write the implementation** (ported from Pail `src/exec.ts`; `ExecResult` inlined)
+- [x] **Step 3: Write the implementation** (ported from Pail `src/exec.ts`; `ExecResult` inlined)
 
 ```ts
 // src/main/engine/exec.ts
@@ -398,12 +398,12 @@ function killTree(pid?: number): void {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/engine/exec.test.ts`
 Expected: PASS (3 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/engine/exec.ts tests/engine/exec.test.ts
@@ -417,7 +417,7 @@ git commit -m "feat(engine): port exec wrapper from Pail"
 **Files:**
 - Create: `src/main/engine/check.ts`, `tests/engine/check.test.ts`
 
-- [ ] **Step 1: Write the failing test** (inject a fake exec)
+- [x] **Step 1: Write the failing test** (inject a fake exec)
 
 ```ts
 // tests/engine/check.test.ts
@@ -445,12 +445,12 @@ it("flags a timeout as not green", async () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/engine/check.test.ts`
 Expected: FAIL — cannot find module `check`.
 
-- [ ] **Step 3: Write the implementation** (ported from Pail `src/check.ts`; `checkCommand`/`timeoutMs` passed directly instead of via a Config object)
+- [x] **Step 3: Write the implementation** (ported from Pail `src/check.ts`; `checkCommand`/`timeoutMs` passed directly instead of via a Config object)
 
 ```ts
 // src/main/engine/check.ts
@@ -471,12 +471,12 @@ export async function runCheck(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/engine/check.test.ts`
 Expected: PASS (3 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/engine/check.ts tests/engine/check.test.ts
@@ -492,7 +492,7 @@ git commit -m "feat(engine): port check runner from Pail"
 
 Note: M1 needs `ensureBranch`, `checkoutBranch`, `createWorktree`, `removeWorktree`. `pruneOrphans`/`runSetup` are deferred to M6/M2.
 
-- [ ] **Step 1: Write the failing test** (real git in a temp repo)
+- [x] **Step 1: Write the failing test** (real git in a temp repo)
 
 ```ts
 // tests/engine/worktree.test.ts
@@ -528,12 +528,12 @@ it("creates a branch, a worktree on it, then removes both", async () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/engine/worktree.test.ts`
 Expected: FAIL — cannot find module `worktree`.
 
-- [ ] **Step 3: Write the implementation** (ported from Pail `src/worktree.ts`; `worktreeDir` is now a parameter instead of the hardcoded `.pail`)
+- [x] **Step 3: Write the implementation** (ported from Pail `src/worktree.ts`; `worktreeDir` is now a parameter instead of the hardcoded `.pail`)
 
 ```ts
 // src/main/engine/worktree.ts
@@ -572,12 +572,12 @@ export async function removeWorktree(repoRoot: string, worktreePath: string, bra
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/engine/worktree.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/engine/worktree.ts tests/engine/worktree.test.ts
@@ -593,7 +593,7 @@ git commit -m "feat(engine): port worktree management from Pail (M1 subset)"
 
 Note: Helm **squash-merges** task branches (clean one-commit-per-task), where Pail uses `--no-ff`. `commitAll` and `diffStat` port directly.
 
-- [ ] **Step 1: Write the failing test** (real git temp repo)
+- [x] **Step 1: Write the failing test** (real git temp repo)
 
 ```ts
 // tests/engine/merge.test.ts
@@ -641,12 +641,12 @@ it("commitAll is a no-op when the tree is clean", async () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/engine/merge.test.ts`
 Expected: FAIL — cannot find module `merge`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```ts
 // src/main/engine/merge.ts
@@ -693,12 +693,12 @@ export async function diffStat(repoRoot: string, base: string, branch: string, e
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/engine/merge.test.ts`
 Expected: PASS (2 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/engine/merge.ts tests/engine/merge.test.ts
@@ -714,7 +714,7 @@ git commit -m "feat(engine): commitAll, squash-merge, diffStat"
 
 This is the **one** place Claude is launched (so M6's Docker jail is a one-line change here). M1 runs `claude -p <intent> --permission-mode auto`, captures output on completion. `/goal`, `stream-json`, and session-id capture are added here in M2/M3.
 
-- [ ] **Step 1: Write the failing test** (assert command shape via injected exec)
+- [x] **Step 1: Write the failing test** (assert command shape via injected exec)
 
 ```ts
 // tests/engine/spawn.test.ts
@@ -742,12 +742,12 @@ it("reports failure on non-zero exit", async () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/engine/spawn.test.ts`
 Expected: FAIL — cannot find module `spawn`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```ts
 // src/main/engine/spawn.ts
@@ -775,12 +775,12 @@ export async function spawnAgent(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/engine/spawn.test.ts`
 Expected: PASS (2 tests).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/engine/spawn.ts tests/engine/spawn.test.ts
@@ -794,7 +794,7 @@ git commit -m "feat(engine): single claude-spawn chokepoint (auto mode)"
 **Files:**
 - Create: `src/main/db/db.ts`, `tests/db/db.test.ts`
 
-- [ ] **Step 1: Write the failing test** (in-memory DB)
+- [x] **Step 1: Write the failing test** (in-memory DB)
 
 ```ts
 // tests/db/db.test.ts
@@ -808,12 +808,12 @@ it("creates projects, tasks, iterations tables", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/db/db.test.ts`
 Expected: FAIL — cannot find module `db`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```ts
 // src/main/db/db.ts
@@ -846,14 +846,14 @@ export function openDb(path: string): Db {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/db/db.test.ts`
 Expected: PASS.
 
 Note: if `better-sqlite3` fails to load under Vitest with an ABI error, run `npm rebuild better-sqlite3` (it is a native module). For the Electron runtime, electron-vite externalizes it via `externalizeDepsPlugin`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/db/db.ts tests/db/db.test.ts
@@ -867,7 +867,7 @@ git commit -m "feat(db): sqlite schema for projects/tasks/iterations"
 **Files:**
 - Create: `src/main/db/projects.ts`, `tests/db/projects.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/db/projects.test.ts
@@ -887,12 +887,12 @@ it("inserts a project with defaults and lists it back", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/db/projects.test.ts`
 Expected: FAIL — cannot find module `projects`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```ts
 // src/main/db/projects.ts
@@ -927,12 +927,12 @@ export function getProject(db: Db, id: string): Project | undefined {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/db/projects.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/db/projects.ts tests/db/projects.test.ts
@@ -948,7 +948,7 @@ git commit -m "feat(db): project CRUD with sensible defaults"
 
 `acceptance` is a `string[]` in the domain but stored as JSON text; serialize on write, parse on read.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/db/tasks.test.ts
@@ -969,12 +969,12 @@ it("inserts a queued task, round-trips acceptance, updates status", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/db/tasks.test.ts`
 Expected: FAIL — cannot find module `tasks`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```ts
 // src/main/db/tasks.ts
@@ -1024,12 +1024,12 @@ export function updateTask(db: Db, id: string, patch: Partial<Pick<Task, "status
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/db/tasks.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/db/tasks.ts tests/db/tasks.test.ts
@@ -1043,7 +1043,7 @@ git commit -m "feat(db): task CRUD + status updates"
 **Files:**
 - Create: `src/main/db/iterations.ts`, `tests/db/iterations.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 // tests/db/iterations.test.ts
@@ -1062,12 +1062,12 @@ it("adds an iteration and finalizes its verdict", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/db/iterations.test.ts`
 Expected: FAIL — cannot find module `iterations`.
 
-- [ ] **Step 3: Write the implementation** (note the DB column is `idx`, mapped to `index` in the domain type)
+- [x] **Step 3: Write the implementation** (note the DB column is `idx`, mapped to `index` in the domain type)
 
 ```ts
 // src/main/db/iterations.ts
@@ -1097,12 +1097,12 @@ export function listIterations(db: Db, taskId: string): Iteration[] {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/db/iterations.test.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/main/db/iterations.ts tests/db/iterations.test.ts
@@ -1118,7 +1118,7 @@ git commit -m "feat(db): iteration CRUD"
 
 This mirrors Pail's `runLoop` body for one task, fully dependency-injected so the whole flow tests without real git/Claude. In M2 this file grows the iteration loop; in M1 it does one pass.
 
-- [ ] **Step 1: Write the failing test** (all deps faked; assert the happy path and the check-fail path)
+- [x] **Step 1: Write the failing test** (all deps faked; assert the happy path and the check-fail path)
 
 ```ts
 // tests/engine/runTask.test.ts
@@ -1182,12 +1182,12 @@ it("agent failure → needs-human before the check runs", async () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run tests/engine/runTask.test.ts`
 Expected: FAIL — cannot find module `runTask`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 ```ts
 // src/main/engine/runTask.ts
@@ -1485,7 +1485,7 @@ git commit -m "feat(renderer): minimal project + task + run UI"
 
 **Files:** none (manual verification)
 
-- [ ] **Step 1: Create a throwaway target repo to drive**
+- [ ] **Step 1: Create a throwaway target repo to drive** — _HUMAN smoke test (deferred per GUI boundary)_
 
 ```bash
 mkdir C:\Temp\helm-target && cd C:\Temp\helm-target
@@ -1495,12 +1495,12 @@ npm init -y
 ```
 Edit its `package.json` to add a trivially-passing check: `"scripts": { "check": "node -e \"process.exit(0)\"" }`, then `git add -A && git commit -m init`.
 
-- [ ] **Step 2: Run Helm**
+- [ ] **Step 2: Run Helm** — _HUMAN smoke test (deferred per GUI boundary)_
 
 Run: `npm run dev`
 In the window: register a project (name `target`, repoPath `C:\Temp\helm-target`, targetBranch `main`, checkCommand `npm run check`). Create a task (title `smoke`, intent `Create a file hello.txt containing the word hello`, acceptance `node -e "require('fs').readFileSync('hello.txt')"`). Click **Run**.
 
-- [ ] **Step 3: Verify the end-to-end result**
+- [ ] **Step 3: Verify the end-to-end result** — _HUMAN smoke test (deferred per GUI boundary)_
 
 Expected: the task card flips `queued → running → merged` with a diffstat. Then in the target repo:
 ```bash
@@ -1509,11 +1509,11 @@ git log --oneline integration/ralph
 ```
 Expected: an `integration/ralph` branch exists with a `ralph: merge ralph/task-<id>` commit containing `hello.txt`; the `.helm/worktrees/` directory is empty (worktree cleaned up).
 
-- [ ] **Step 4: Verify a failing task goes to needs-human**
+- [ ] **Step 4: Verify a failing task goes to needs-human** — _HUMAN smoke test (deferred per GUI boundary)_
 
 Create a second task whose intent is satisfiable but give it an impossible check by temporarily setting the project's check to `node -e "process.exit(1)"` (re-register as a new project, or hand-edit). Run it. Expected: card shows `needs-human` with reason "check failed", and the task branch is **retained** (`git branch --list "ralph/*"` shows it).
 
-- [ ] **Step 5: Run the full check and commit**
+- [x] **Step 5: Run the full check and commit** — `npm run check` (typecheck clean, 18/18 Vitest pass) + `npm run build` green, run by Claude. Final commit message adapted to be honest (smoke test pending human), see commit body.
 
 Run: `npm run check`
 Expected: typecheck clean, all Vitest suites PASS.
