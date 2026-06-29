@@ -8,7 +8,8 @@ import { insertProject, listProjects, getProject, updateProject } from "./db/pro
 import { insertTask, listTasks, getTask, updateTask } from "./db/tasks";
 import { addIteration, finishIteration, listIterations } from "./db/iterations";
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree } from "./engine/worktree";
-import { commitAll, squashMergeInto, diffStat, headSha } from "./engine/merge";
+import { commitAll, squashMergeInto, diffStat, headSha, advanceBranch } from "./engine/merge";
+import { runMergeStage, type MergeStageDeps } from "./engine/mergeStage";
 import { runAcceptance } from "./engine/acceptance";
 import { ensureRalphExcluded, writeRalphFiles } from "./engine/ralph";
 import { runCheck } from "./engine/check";
@@ -75,6 +76,23 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
             runCheck: (wt, cmd, t) => runCheck(wt, cmd, t),
             runAcceptance: (wt, cmds, t) => runAcceptance(wt, cmds, t),
             squashMergeInto, diffStat,
+            // M4: landing goes through the isolated merge stage. Task 6 wraps this in the project's
+            // merge mutex; until then a direct (unwrapped) wiring keeps the build green.
+            mergeStage: (p, t, taskBranch) => {
+                const mergeDeps: MergeStageDeps = {
+                    createWorktree, squashMergeInto,
+                    runSetup: async (wt, cmd, to) => {
+                        const res = await run(cmd, [], { cwd: wt, timeoutMs: to, shell: true });
+                        return { ok: res.code === 0 && !res.timedOut, output: `${res.stdout}\n${res.stderr}`.trim() };
+                    },
+                    runCheck: (wt, cmd, to) => runCheck(wt, cmd, to),
+                    runAcceptance: (wt, cmds, to) => runAcceptance(wt, cmds, to),
+                    removeWorktree, diffStat, advanceBranch, headSha,
+                    checkTimeoutMs: config.checkTimeoutMs,
+                    emit: (e) => snapshots.dispatch(t.id, e),
+                };
+                return runMergeStage(p, t, taskBranch, mergeDeps);
+            },
             setStatus: (id, status, extra) => { updateTask(db, id, { status, ...extra }); notify(); },
             addIteration: (tid, idx) => addIteration(db, tid, idx),
             finishIteration: (id, patch) => finishIteration(db, id, patch),

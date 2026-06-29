@@ -27,6 +27,7 @@ function deps(over: Partial<RunTaskDeps> = {}): RunTaskDeps {
         runCheck: async () => ({ green: true, timedOut: false, output: "" }),
         runAcceptance: async () => ({ ok: true, output: "" }),
         squashMergeInto: async () => ({ merged: true, conflict: false }), diffStat: async () => "+1 -0",
+        mergeStage: async () => ({ outcome: "merged", diffstat: "+1 -0" }),
         setStatus: () => {}, addIteration: () => ({ id: "it" }), finishIteration: () => {}, log: () => {},
         ...over,
     };
@@ -63,17 +64,27 @@ describe("runIteration", () => {
 });
 
 describe("runTaskLoop — happy path", () => {
-    it("merges on a first-pass green and cleans up (worktree gone, branch deleted, diffstat set)", async () => {
+    it("delegates landing to mergeStage on a first-pass green and cleans up (worktree gone, branch deleted, diffstat set)", async () => {
         const calls: string[] = [];
+        let diffstatSet: string | undefined;
         const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
             removeWorktree: async (_r, _p, _b, keepBranch) => { calls.push(`remove:${keepBranch}`); },
-            squashMergeInto: async () => { calls.push("merge"); return { merged: true, conflict: false }; },
-            setStatus: (_id, s) => { calls.push(`status:${s}`); },
+            mergeStage: async (_p, _t, branch) => { calls.push(`mergeStage:${branch}`); return { outcome: "merged", diffstat: "+9 -2" }; },
+            setStatus: (_id, s, extra) => { calls.push(`status:${s}`); if (extra?.diffstat) diffstatSet = extra.diffstat; },
         }));
         expect(status).toBe("merged");
-        expect(calls).toContain("merge");
-        expect(calls).toContain("remove:false"); // branch deleted on a clean merge
+        expect(calls).toContain("mergeStage:ralph/task-abc"); // the loop passes the task branch
+        expect(calls).toContain("remove:false");              // branch deleted on a clean merge
         expect(calls).toContain("status:merged");
+        expect(diffstatSet).toBe("+9 -2");                    // the mergeStage diffstat is recorded
+    });
+
+    it("does NOT check out the integration branch in the main working tree (engine never touches it)", async () => {
+        let checkedOut = false;
+        await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            checkoutBranch: async () => { checkedOut = true; },
+        }));
+        expect(checkedOut).toBe(false);
     });
 
     it("flags needs-human immediately when acceptance is empty, without spawning", async () => {
@@ -140,14 +151,17 @@ describe("runTaskLoop — bounds & retry", () => {
         expect(status).toBe("merged");
     });
 
-    it("flags needs-human (branch kept) on a merge conflict", async () => {
+    it("PROBE: a mergeStage needs-human result terminates needs-human (branch kept) with its reason", async () => {
         let keep: boolean | null = null;
+        let reason = "";
         const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, scriptedDeps([{}], {
-            squashMergeInto: async () => ({ merged: false, conflict: true }),
+            mergeStage: async () => ({ outcome: "needs-human", reason: "re-check failed after rebase on integration tip" }),
             removeWorktree: async (_r, _p, _b, keepBranch) => { keep = keepBranch; },
+            setStatus: (_i, _s, extra) => { if (extra?.failureReason) reason = extra.failureReason; },
         }));
         expect(status).toBe("needs-human");
-        expect(keep).toBe(true);
+        expect(keep).toBe(true); // worktree retained for drop-in
+        expect(reason).toContain("re-check failed after rebase on integration tip");
     });
 });
 

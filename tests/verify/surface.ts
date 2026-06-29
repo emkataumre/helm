@@ -89,8 +89,19 @@ export function buildRecordingDeps(config: DepConfig = {}): { deps: RunTaskDeps;
         },
         runCheck: async () => { const s = step(); const green = s.checkGreen ?? true; return { green, timedOut: s.checkTimedOut ?? false, output: green ? "" : "check failed" }; },
         runAcceptance: async () => { const s = step(); const ok = s.acceptanceOk ?? true; return { ok, failedCommand: ok ? undefined : "acc-cmd", output: ok ? "" : "acceptance failed" }; },
-        squashMergeInto: async () => { rec.greenGateAtMerge = lastGateAllGreen; rec.acceptanceGreenAtMerge = lastGateAllGreen; const r = { merged: !config.mergeConflict, conflict: Boolean(config.mergeConflict) }; rec.mergeResults.push(r); return r; },
+        squashMergeInto: async () => ({ merged: !config.mergeConflict, conflict: Boolean(config.mergeConflict) }),
         diffStat: async () => "+1 -0",
+        // M4: the loop delegates landing to mergeStage (the real wiring wraps it in the merge mutex).
+        // The M2 loop-safety slice keeps its green-merge recording here — it records the merge and
+        // returns merged (or needs-human on the merge-conflict fixture), so the slice's behaviour is
+        // unchanged. greenGateAtMerge captures whether the gate was green when landing was attempted.
+        mergeStage: async () => {
+            rec.greenGateAtMerge = lastGateAllGreen;
+            rec.acceptanceGreenAtMerge = lastGateAllGreen;
+            if (config.mergeConflict) return { outcome: "needs-human", reason: "merge conflict" };
+            rec.mergeResults.push({ merged: true, conflict: false });
+            return { outcome: "merged", diffstat: "+1 -0" };
+        },
         setStatus: (_id, status, extra) => { rec.statusCalls.push({ status, extra }); },
         addIteration: () => { rec.iterationsAdded += 1; return { id: `it-${rec.iterationsAdded}` }; },
         finishIteration: (_id, patch) => { rec.finishCalls.push({ gateVerdict: patch.gateVerdict }); },

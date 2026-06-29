@@ -1,6 +1,7 @@
 // src/main/engine/runTask.ts
 import type { Project, Task, TaskStatus, IterationVerdict, SnapshotEvent, TokenTotals } from "../../shared/types";
 import type { LoopConfig } from "./loopConfig";
+import type { MergeStageResult } from "./mergeStage";
 import { buildGoalPrompt, buildInstructions, seedProgress } from "./prompt";
 
 // Re-export so the reducer, the loop, and the M2 verify slice (which imports it from here) share
@@ -22,6 +23,10 @@ export interface RunTaskDeps {
     runAcceptance: (worktreePath: string, commands: string[], timeoutMs: number) => Promise<{ ok: boolean; failedCommand?: string; output: string }>;
     squashMergeInto: (repo: string, taskBranch: string, target: string) => Promise<{ merged: boolean; conflict: boolean }>;
     diffStat: (repo: string, base: string, branch: string) => Promise<string>;
+    // M4: landing is delegated to the isolated, serialized merge stage (throwaway worktree + rebase-on-
+    // tip re-check). The real wiring (ipc.ts) wraps this in the project's merge mutex; the loop is
+    // mutex-agnostic. squashMergeInto/diffStat stay available as merge-stage building blocks.
+    mergeStage: (project: Project, task: Task, taskBranch: string) => Promise<MergeStageResult>;
     setStatus: (taskId: string, status: TaskStatus, extra?: { branchName?: string; worktreePath?: string; diffstat?: string; failureReason?: string }) => void;
     addIteration: (taskId: string, index: number) => { id: string };
     finishIteration: (id: string, patch: { gateVerdict: "green" | "failed" | "hang"; outputTail: string; commitSha?: string | null; sessionId?: string | null; inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; costUsd?: number | null; durationMs?: number | null }) => void;
@@ -81,8 +86,10 @@ export async function runIteration(
 // The orchestrator: create the worktree once, seed .ralph, loop runIteration under the bounds,
 // squash-merge on the first green, clean up on any terminal outcome.
 export async function runTaskLoop(project: Project, task: Task, config: LoopConfig, d: RunTaskDeps): Promise<TaskStatus> {
+    // Integration must exist, but the engine NEVER checks it out in the main working tree anymore
+    // (M4): the merge moved into an isolated throwaway worktree, so two parallel loops can't collide
+    // on a shared checkout. Integration is checked out nowhere; mergeStage advances it as a ref.
     await d.ensureBranch(project.repoPath, project.integrationBranch, project.targetBranch);
-    await d.checkoutBranch(project.repoPath, project.integrationBranch);
 
     const branch = `${project.branchPrefix}/task-${task.id}`;
     const worktreePath = await d.createWorktree(project.repoPath, project.integrationBranch, branch, project.worktreeDir);
@@ -132,10 +139,12 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         d.emit?.({ type: "iteration-end", index, verdict: o.verdict, commitSha: o.commitSha });
 
         if (o.verdict === "green") {
-            const diffstat = await d.diffStat(project.repoPath, project.integrationBranch, branch);
-            const merge = await d.squashMergeInto(project.repoPath, branch, project.integrationBranch);
-            if (merge.conflict) return terminate("needs-human", "merge conflict", true);
-            return terminate("merged", undefined, false, diffstat);
+            // Hand landing to the isolated merge stage: it rebases on the fresh integration tip and
+            // re-checks in a throwaway worktree, advancing integration only on a green re-check. A
+            // failed re-check (or conflict) loses the race → needs-human (worktree kept for drop-in).
+            const r = await d.mergeStage(project, task, branch);
+            if (r.outcome === "merged") return terminate("merged", undefined, false, r.diffstat);
+            return terminate("needs-human", r.reason, true);
         }
 
         priorFailure = o.gateOutput;
