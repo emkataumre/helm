@@ -22,6 +22,17 @@ describe("buildGoalPrompt", () => {
         expect(p).toContain("previous iteration's gate failed");
         expect(p).toContain("1 failing test");
     });
+
+    it("adds the no-out-of-scope clause to the /goal condition when scopeHint is set", () => {
+        const p = buildGoalPrompt(project, { ...task, scopeHint: "src/widgets/**" }, undefined);
+        expect(p).toContain("src/widgets/**");
+        expect(p.toLowerCase()).toContain("no files outside");
+    });
+
+    it("omits the scope clause when scopeHint is null (M2's behaviour)", () => {
+        const p = buildGoalPrompt(project, { ...task, scopeHint: null }, undefined);
+        expect(p.toLowerCase()).not.toContain("no files outside");
+    });
 });
 
 describe("seedProgress", () => {
@@ -39,5 +50,12 @@ describe("buildInstructions", () => {
         expect(i.toLowerCase()).toContain("read");
         expect(i).toContain(".ralph/progress.md");
         expect(i.toLowerCase()).toContain("acceptance");
+    });
+
+    it("pins the exact four progress.md headings so the cockpit can render them", () => {
+        const i = buildInstructions();
+        for (const h of ["## Current focus", "## Done", "## Remaining", "## Tried & ruled out"]) {
+            expect(i).toContain(h);
+        }
     });
 });

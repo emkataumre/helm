@@ -20,6 +20,8 @@ history and the notes in .ralph/progress.md.
    merely claims success is caught and fed back to the next iteration as a failure.
 4. Update .ralph/progress.md LAST, before you finish: refresh Current focus / Done /
    Remaining / Tried & ruled out so the next iteration starts where you left off.
+   Keep these four headings verbatim — \`## Current focus\`, \`## Done\`, \`## Remaining\`,
+   \`## Tried & ruled out\` — the cockpit parses them to render your progress.
 `;
 }
 
@@ -47,7 +49,9 @@ export function seedProgress(task: Task): string {
 export function buildGoalPrompt(project: Project, task: Task, priorFailure?: string): string {
     const accLines = task.acceptance.map((c) => `- ${c}`).join("\n");
     const accInline = task.acceptance.join("; ");
-    const condition = `The project check \`${project.checkCommand}\` exits 0 AND every one of these acceptance commands exits 0, all demonstrated in this transcript: ${accInline}`;
+    // Re-enable the spec §5.5 no-out-of-scope clause from the per-task scopeHint (M2 deferred it).
+    const scopeClause = task.scopeHint ? `. No files outside \`${task.scopeHint}\` are changed` : "";
+    const condition = `The project check \`${project.checkCommand}\` exits 0 AND every one of these acceptance commands exits 0, all demonstrated in this transcript: ${accInline}${scopeClause}`;
     const priorBlock = priorFailure
         ? `\n\nThe previous iteration's gate failed. The engine re-ran it independently and got:\n\`\`\`\n${priorFailure}\n\`\`\`\nFix this before anything else.`
         : "";
