@@ -87,10 +87,14 @@ export async function runIteration(
     return { verdict: "green", gateOutput: "", commitSha, ...base };
 }
 
-// The orchestrator: create the worktree once, seed .ralph, loop runIteration under the bounds,
-// squash-merge on the first green, clean up on any terminal outcome.
-export async function runTaskLoop(project: Project, task: Task, config: LoopConfig, d: RunTaskDeps): Promise<TaskStatus> {
-    const branch = `${project.branchPrefix}/task-${task.id}`;
+// Resume re-enters an existing handed-off worktree (Task 4). worktreePath != null is the discriminator
+// the ipc layer uses to route a re-enqueued handed-off task back into the loop without re-cloning.
+export interface ResumeContext { worktreePath: string; branch: string; startIndex: number }
+
+// The orchestrator: create the worktree once (or reuse it on resume), seed .ralph, loop runIteration
+// under the bounds, squash-merge on the first green, clean up on any terminal outcome.
+export async function runTaskLoop(project: Project, task: Task, config: LoopConfig, d: RunTaskDeps, resume?: ResumeContext): Promise<TaskStatus> {
+    const branch = resume ? resume.branch : `${project.branchPrefix}/task-${task.id}`;
 
     // Integration must exist, but the engine NEVER checks it out in the main working tree anymore
     // (M4): the merge moved into an isolated throwaway worktree, so two parallel loops can't collide
@@ -100,16 +104,23 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     // repoPath → `git -C " C:\…"` → "cannot change to …: Invalid argument") can't be fixed by the
     // agent and MUST NOT throw: an unhandled rejection would leave the task "queued" and the
     // scheduler would re-select the doomed task forever. Land it in needs-human (visible) instead.
+    //
+    // Resume (M5) SKIPS the clone: the handed-off worktree already has the branch, the .ralph files,
+    // the human's commits, and installed deps — re-cloning would throw away the human's steering.
     let worktreePath: string;
-    try {
-        await d.ensureBranch(project.repoPath, project.integrationBranch, project.targetBranch);
-        worktreePath = await d.createWorktree(project.repoPath, project.integrationBranch, branch, project.worktreeDir);
-    } catch (e) {
-        const reason = `worktree setup failed: ${e instanceof Error ? e.message : String(e)}`;
-        d.setStatus(task.id, "needs-human", { failureReason: reason });
-        d.emit?.({ type: "status", status: "needs-human", terminalReason: reason });
-        d.log(`task ${task.id} needs-human: ${reason}`);
-        return "needs-human";
+    if (resume) {
+        worktreePath = resume.worktreePath;
+    } else {
+        try {
+            await d.ensureBranch(project.repoPath, project.integrationBranch, project.targetBranch);
+            worktreePath = await d.createWorktree(project.repoPath, project.integrationBranch, branch, project.worktreeDir);
+        } catch (e) {
+            const reason = `worktree setup failed: ${e instanceof Error ? e.message : String(e)}`;
+            d.setStatus(task.id, "needs-human", { failureReason: reason });
+            d.emit?.({ type: "status", status: "needs-human", terminalReason: reason });
+            d.log(`task ${task.id} needs-human: ${reason}`);
+            return "needs-human";
+        }
     }
     d.setStatus(task.id, "running", { branchName: branch, worktreePath });
 
@@ -135,15 +146,20 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         return terminate("needs-human", "no acceptance commands (Layer B is mandatory)", true);
     }
 
-    d.ensureRalphExcluded(project.repoPath);
-    d.writeRalphFiles(worktreePath, { instructions: buildInstructions(), progress: seedProgress(task) });
+    // Fresh start only: seed .ralph and install deps. On resume the worktree already has the .ralph
+    // files, installed deps, and the human's commits — re-seeding would clobber the progress file and
+    // re-running setup is wasted work (and could fail on a half-edited tree).
+    if (!resume) {
+        d.ensureRalphExcluded(project.repoPath);
+        d.writeRalphFiles(worktreePath, { instructions: buildInstructions(), progress: seedProgress(task) });
 
-    // Install deps into the fresh worktree once, before any iteration. A broken setup is a config
-    // error the agent can't fix, so fail fast (no spawn) — the same early-terminal shape as the
-    // empty-acceptance guard. NULL setupCommand → skip.
-    if (project.setupCommand) {
-        const setup = await d.runSetup(worktreePath, project.setupCommand, config.checkTimeoutMs);
-        if (!setup.ok) return terminate("needs-human", `setup command failed:\n${tail(setup.output)}`, true);
+        // Install deps into the fresh worktree once, before any iteration. A broken setup is a config
+        // error the agent can't fix, so fail fast (no spawn) — the same early-terminal shape as the
+        // empty-acceptance guard. NULL setupCommand → skip.
+        if (project.setupCommand) {
+            const setup = await d.runSetup(worktreePath, project.setupCommand, config.checkTimeoutMs);
+            if (!setup.ok) return terminate("needs-human", `setup command failed:\n${tail(setup.output)}`, true);
+        }
     }
 
     let priorFailure: string | undefined;
@@ -157,10 +173,12 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         return terminate("handed-off", undefined, true);
     };
 
-    // Split counter (M5): a LOCAL bounds counter i (0..cap) drives the budget; the DB index continues
-    // from startIndex. On a fresh start startIndex = 0 → dbIndex === i → byte-identical to pre-M5. Resume
-    // mode (Task 4) passes a non-zero startIndex so the iteration history keeps climbing.
-    const startIndex = 0;
+    // Split counter (M5): a LOCAL bounds counter i (0..cap) drives a FRESH budget every run; the DB index
+    // continues from startIndex. On a fresh start startIndex = 0 → dbIndex === i → byte-identical to pre-M5.
+    // Resume gets startIndex = the prior iteration count (history keeps climbing) AND a fresh cap of i
+    // (the human resumed *because* the budget was exhausted; a cap-reached task would otherwise re-terminate
+    // at zero iterations). prevSha above is the worktree's current HEAD — the human's committed state.
+    const startIndex = resume ? resume.startIndex : 0;
 
     for (let i = 0; i < config.iterationCap; i++) {
         // Top-of-loop guard: a drop-in that lands between iterations bails before spawning the next one.

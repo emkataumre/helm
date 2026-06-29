@@ -312,6 +312,56 @@ describe("runTaskLoop — setupCommand (M3)", () => {
     });
 });
 
+// M5: Resume loop re-enters an existing handed-off worktree without re-cloning — reuse the worktree,
+// branch, .ralph files and installed deps; fresh iteration budget; the DB iteration index continues.
+describe("runTaskLoop — resume mode (M5)", () => {
+    const resume = { worktreePath: "/existing/wt", branch: "ralph/task-abc", startIndex: 3 };
+
+    it("reuses the worktree: skips ensureBranch/createWorktree/writeRalphFiles/runSetup and runs in the retained worktree", async () => {
+        const calls: string[] = [];
+        let usedWorktree = "";
+        await runTaskLoop({ ...project, setupCommand: "npm ci" }, task, DEFAULT_LOOP_CONFIG, deps({
+            ensureBranch: async () => { calls.push("ensureBranch"); },
+            createWorktree: async () => { calls.push("createWorktree"); return "/new/wt"; },
+            writeRalphFiles: () => { calls.push("writeRalphFiles"); },
+            runSetup: async () => { calls.push("runSetup"); return { ok: true, output: "" }; },
+            spawnAgent: async (wt) => { usedWorktree = wt; return { ok: true, output: "ok", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+        }), resume);
+        expect(calls).toEqual([]);                    // no clone/setup steps ran on resume
+        expect(usedWorktree).toBe("/existing/wt");    // the iteration ran in the retained worktree
+    });
+
+    it("flips queued → running with the retained branch + worktree", async () => {
+        const statusCalls: Array<{ status: string; extra?: { branchName?: string; worktreePath?: string } }> = [];
+        await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            setStatus: (_id, status, extra) => statusCalls.push({ status, extra }),
+        }), resume);
+        const running = statusCalls.find((c) => c.status === "running");
+        expect(running?.extra).toMatchObject({ branchName: "ralph/task-abc", worktreePath: "/existing/wt" });
+    });
+
+    it("numbers iterations from startIndex (the DB index continues across the handback)", async () => {
+        const indices: number[] = [];
+        const cfg = { ...DEFAULT_LOOP_CONFIG, iterationCap: 3, noProgressK: 99 };
+        await runTaskLoop(project, task, cfg, scriptedDeps(
+            [{ checkGreen: false }, { checkGreen: false }, { checkGreen: false }],
+            { addIteration: (_t, idx) => { indices.push(idx); return { id: `it${idx}` }; } },
+        ), { worktreePath: "/wt", branch: "ralph/task-abc", startIndex: 3 });
+        expect(indices).toEqual([3, 4, 5]); // continues from the 3 prior iterations
+    });
+
+    it("gets a FRESH budget: runs up to iterationCap MORE iterations regardless of prior count", async () => {
+        let iterations = 0;
+        const cfg = { ...DEFAULT_LOOP_CONFIG, iterationCap: 2, noProgressK: 99 };
+        const status = await runTaskLoop(project, task, cfg, scriptedDeps(
+            [{ checkGreen: false }, { checkGreen: false }],
+            { addIteration: (_t, idx) => { iterations += 1; return { id: `it${idx}` }; } },
+        ), { worktreePath: "/wt", branch: "ralph/task-abc", startIndex: 10 });
+        expect(iterations).toBe(2);          // a fresh cap of 2, even though it resumed at index 10
+        expect(status).toBe("needs-human");  // cap reached again, budget exhausted
+    });
+});
+
 // M4 hardening: the worktree-setup git calls run BEFORE the task flips to "running". A failure here
 // (e.g. a malformed repoPath → "git ... cannot change to ' C:\\...'") must NOT throw an unhandled
 // rejection and leave the task "queued" — the scheduler would re-select the doomed task forever.
