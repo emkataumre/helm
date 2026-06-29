@@ -130,11 +130,19 @@ export interface NewTaskInput {
     acceptance: string[];
     scopeHint?: string | null;
 }
+// The editable per-project config columns (the project-config form patches these).
+export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model">>;
 export interface HelmApi {
     registerProject: (input: NewProjectInput) => Promise<Project>;
     listProjects: () => Promise<Project[]>;
+    updateProject: (id: string, patch: ProjectConfigPatch) => Promise<Project | null>;
     createTask: (input: NewTaskInput) => Promise<Task>;
     listTasks: () => Promise<Task[]>;
     runTask: (taskId: string) => Promise<TaskStatus>;
+    // M3 observability reads: the live EngineSnapshot (or one rebuilt from DB rows), and the
+    // worktree's progress.md (null once the worktree is gone).
+    getVerifyState: (taskId: string) => Promise<EngineSnapshot | null>;
+    getProgress: (taskId: string) => Promise<string | null>;
     onTasksChanged: (cb: () => void) => void;
+    onSnapshotChanged: (cb: (taskId: string) => void) => void;
 }
