@@ -12,6 +12,7 @@ import { IterationHistory } from "../../src/renderer/components/IterationHistory
 import { ProgressPanel } from "../../src/renderer/components/ProgressPanel";
 import { BoardCard } from "../../src/renderer/components/BoardCard";
 import { SchedulerBar } from "../../src/renderer/components/SchedulerBar";
+import { HandbackActions } from "../../src/renderer/components/HandbackActions";
 import { parseProgress } from "../../src/renderer/progress";
 import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState } from "../../src/shared/types";
 
@@ -82,6 +83,51 @@ describe("ActivityFeed / IterationHistory / BoardCard contracts", () => {
         expect(queuedAuto).not.toContain(">Run<"); // auto-fleet → scheduler starts it, no manual button
         const runningPaused = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} paused onRun={() => {}} />);
         expect(runningPaused).not.toContain(">Run<"); // only queued cards get a Run button
+    });
+
+    // M5: Drop in / Start fresh on a running OR needs-human card; Abandon also on needs-human.
+    it("BoardCard surfaces Drop in + Start fresh on running and needs-human cards (Abandon on needs-human)", () => {
+        const running = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} onDropIn={() => {}} onStartFresh={() => {}} onAbandon={() => {}} />);
+        expect(running).toContain(">Drop in<");
+        expect(running).toContain(">Start fresh<");
+        expect(running).not.toContain(">Abandon<");           // Abandon is offered from needs-human, not running
+        expect(running).toContain('data-verify-dropin="true"');
+
+        const nh = renderToStaticMarkup(<BoardCard task={task({ status: "needs-human" })} onDropIn={() => {}} onStartFresh={() => {}} onAbandon={() => {}} />);
+        expect(nh).toContain(">Drop in<");
+        expect(nh).toContain(">Abandon<");
+        expect(nh).toContain('data-verify-dropin="true"');
+    });
+
+    it("PROBE: a queued or merged card does NOT surface Drop in (data-verify-dropin=\"false\")", () => {
+        const queued = renderToStaticMarkup(<BoardCard task={task({ status: "queued" })} onDropIn={() => {}} onStartFresh={() => {}} />);
+        expect(queued).not.toContain(">Drop in<");
+        expect(queued).toContain('data-verify-dropin="false"');
+        const merged = renderToStaticMarkup(<BoardCard task={task({ status: "merged" })} onDropIn={() => {}} />);
+        expect(merged).not.toContain(">Drop in<");
+        expect(merged).toContain('data-verify-dropin="false"');
+    });
+});
+
+describe("HandbackActions contract (the handed-off trio)", () => {
+    it("renders Resume loop / Verify & merge / Abandon ONLY when handed-off", () => {
+        const ho = renderToStaticMarkup(<HandbackActions status="handed-off" onResume={() => {}} onVerifyAndMerge={() => {}} onAbandon={() => {}} />);
+        expect(ho).toContain(">Resume loop<");
+        expect(ho).toContain("Verify"); // "Verify & merge" (& renders escaped)
+        expect(ho).toContain(">Abandon<");
+        expect(ho).toContain('data-verify-unit="HandbackActions"');
+        expect(ho).toContain('data-verify-handback="true"');
+    });
+
+    it("PROBE: a running task does NOT surface the trio (the renderer-side negative control)", () => {
+        const run = renderToStaticMarkup(<HandbackActions status="running" onResume={() => {}} onVerifyAndMerge={() => {}} onAbandon={() => {}} />);
+        expect(run).not.toContain(">Resume loop<");
+        expect(run).toContain('data-verify-handback="false"');
+    });
+
+    it("shows the terminal-launch error when one was surfaced", () => {
+        const html = renderToStaticMarkup(<HandbackActions status="handed-off" launchError="terminal launch failed: wt.exe not found" />);
+        expect(html).toContain("terminal launch failed");
     });
 });
 

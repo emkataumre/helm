@@ -6,9 +6,11 @@ import { ActivityFeed } from "./components/ActivityFeed";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { BoardCard } from "./components/BoardCard";
 import { SchedulerBar } from "./components/SchedulerBar";
+import { HandbackActions } from "./components/HandbackActions";
 import { parseProgress, type ParsedProgress } from "./progress";
 
-const LANES: TaskStatus[] = ["queued", "running", "needs-human", "merged"];
+// M5: a 5th lane for handed-off (drop-in) tasks.
+const LANES: TaskStatus[] = ["queued", "running", "handed-off", "needs-human", "merged"];
 const numOrNull = (s: string): number | null => (s.trim() === "" ? null : Number(s));
 
 // Thin data container: the board (lanes + project filter) and a task-detail view, both driven by
@@ -41,6 +43,7 @@ export function App() {
     const togglePaused = async (paused: boolean) => { await window.helm.setSchedulerPaused(paused); refreshSched(); };
     const paused = sched?.paused ?? false;
 
+    const selectedTask = selected ? tasks.find((t) => t.id === selected) : undefined;
     const shown = tasks.filter((t) => !filter || t.projectId === filter);
     const abandoned = shown.filter((t) => t.status === "abandoned");
     const queuedByProject = tasks.reduce<Record<string, number>>((m, t) => { if (t.status === "queued") m[t.projectId] = (m[t.projectId] ?? 0) + 1; return m; }, {});
@@ -50,8 +53,8 @@ export function App() {
         <div style={{ fontFamily: "system-ui", padding: 20, display: "grid", gap: 20, maxWidth: 1120, margin: "0 auto" }}>
             <h1 style={{ fontFamily: "ui-serif, Georgia, serif" }}>Helm</h1>
 
-            {selected ? (
-                <TaskDetail taskId={selected} onClose={() => setSelected(null)} />
+            {selectedTask ? (
+                <TaskDetail task={selectedTask} onClose={() => setSelected(null)} onAction={refresh} />
             ) : (
                 <>
                     <RegisterProjectForm onDone={refresh} />
@@ -69,12 +72,19 @@ export function App() {
                         </label>
                     </div>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
                         {LANES.map((lane) => (
                             <div key={lane}>
                                 <h3 style={{ fontFamily: "ui-monospace, monospace", fontSize: 13, textTransform: "uppercase", color: "#788C5D" }}>{lane}</h3>
                                 {shown.filter((t) => t.status === lane).map((t) => (
-                                    <BoardCard key={t.id} task={t} liveActivity={live[t.id]} paused={paused} onClick={() => setSelected(t.id)} onRun={() => { window.helm.startNow(t.id); }} />
+                                    <BoardCard
+                                        key={t.id} task={t} liveActivity={live[t.id]} paused={paused}
+                                        onClick={() => setSelected(t.id)}
+                                        onRun={() => { window.helm.startNow(t.id); }}
+                                        onDropIn={() => { window.helm.dropIn(t.id).then(refresh); }}
+                                        onStartFresh={() => { window.helm.dropIn(t.id, true).then(refresh); }}
+                                        onAbandon={() => { window.helm.abandon(t.id).then(refresh); }}
+                                    />
                                 ))}
                             </div>
                         ))}
@@ -92,7 +102,8 @@ export function App() {
     );
 }
 
-function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }) {
+function TaskDetail({ task, onClose, onAction }: { task: Task; onClose: () => void; onAction: () => void }) {
+    const taskId = task.id;
     const [snap, setSnap] = useState<EngineSnapshot | null>(null);
     const [progress, setProgress] = useState<ParsedProgress | null>(null);
     const [showProgress, setShowProgress] = useState(false);
@@ -113,13 +124,36 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
         setShowProgress((v) => !v);
     };
 
-    if (!snap) return <div><button onClick={onClose}>← board</button><p>Loading…</p></div>;
+    // M5 hand-back trio (handed-off only). Driven off task.status (always present) so it renders even
+    // before the snapshot loads; each action calls the engine then refreshes the board.
+    const act = (fn: (id: string) => Promise<void>) => async () => { await fn(taskId); onAction(); };
+    const handback = (
+        <HandbackActions
+            status={task.status}
+            launchError={task.failureReason}
+            onResume={act((id) => window.helm.resumeTask(id))}
+            onVerifyAndMerge={act((id) => window.helm.verifyAndMerge(id))}
+            onAbandon={act((id) => window.helm.abandon(id))}
+        />
+    );
+
+    if (!snap) {
+        return (
+            <div style={{ display: "grid", gap: 14 }}>
+                <div><button onClick={onClose}>← board</button></div>
+                <h2 style={{ fontFamily: "ui-serif, Georgia, serif", margin: 0 }}>{task.id} — <code>{task.status}</code></h2>
+                {handback}
+                <p>Loading…</p>
+            </div>
+        );
+    }
 
     const lastFailing = [...snap.iterations].reverse().find((i) => i.verdict === "failed" || i.verdict === "hang");
     return (
         <div style={{ display: "grid", gap: 14 }}>
             <div><button onClick={onClose}>← board</button></div>
-            <h2 style={{ fontFamily: "ui-serif, Georgia, serif", margin: 0 }}>{snap.taskId} — <code>{snap.status}</code></h2>
+            <h2 style={{ fontFamily: "ui-serif, Georgia, serif", margin: 0 }}>{task.id} — <code>{task.status}</code></h2>
+            {handback}
             {snap.terminalReason ? <div style={{ color: "#b00" }}>{snap.terminalReason}</div> : null}
             {snap.currentIteration ? (
                 <div style={{ color: "#788C5D", fontFamily: "ui-monospace, monospace", fontSize: 13 }}>
@@ -148,7 +182,7 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
 }
 
 function RegisterProjectForm({ onDone }: { onDone: () => void }) {
-    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "" });
+    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "" });
     const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
     const detect = async () => {
@@ -161,7 +195,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
             name: f.name, repoPath: f.repoPath, targetBranch: f.targetBranch, checkCommand: f.checkCommand,
             setupCommand: f.setupCommand || null, model: f.model || null,
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
-            concurrencyCap: numOrNull(f.concurrencyCap),
+            concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
         };
         await window.helm.registerProject(input);
         onDone();
@@ -183,6 +217,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
                 {input("stallTimeoutMin", "stallTimeoutMin (blank = default 40)")}
                 {input("concurrencyCap", "concurrencyCap (blank = default 3)")}
                 {input("model", "model (blank = CLI default)")}
+                {input("terminalCommand", 'terminalCommand (blank = wt.exe -d "{worktree}" claude {resume})')}
                 <button disabled={!f.name || !f.repoPath || !f.checkCommand} onClick={submit}>Register</button>
             </div>
         </details>
@@ -192,7 +227,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
 function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: () => void }) {
     const [id, setId] = useState("");
     const selected = projects.find((p) => p.id === id);
-    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "" });
+    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "" });
 
     useEffect(() => {
         if (!selected) return;
@@ -203,6 +238,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
             stallTimeoutMin: selected.stallTimeoutMin?.toString() ?? "",
             model: selected.model ?? "",
             concurrencyCap: selected.concurrencyCap?.toString() ?? "",
+            terminalCommand: selected.terminalCommand ?? "",
         });
     }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -211,7 +247,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
         await window.helm.updateProject(id, {
             setupCommand: f.setupCommand || null, model: f.model || null,
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
-            concurrencyCap: numOrNull(f.concurrencyCap),
+            concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
         });
         onDone();
     };
@@ -232,6 +268,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
                         {input("stallTimeoutMin", "stallTimeoutMin")}
                         {input("concurrencyCap", "concurrencyCap")}
                         {input("model", "model")}
+                        {input("terminalCommand", "terminalCommand")}
                         <button onClick={save}>Save config</button>
                     </>
                 ) : null}
