@@ -159,6 +159,13 @@ export interface HelmApi {
     startNow: (taskId: string) => Promise<void>;
     getSchedulerState: () => Promise<SchedulerState>;
     setSchedulerPaused: (paused: boolean) => Promise<void>;
+    // M5 drop-in handoff. dropIn (fresh = Start fresh, no --resume) hard-interrupts a running/needs-human
+    // task → handed-off + launches a terminal; the handback trio acts out of handed-off (resumeTask =
+    // continue the loop; verifyAndMerge = gate + land; abandon = reap the worktree).
+    dropIn: (taskId: string, fresh?: boolean) => Promise<void>;
+    resumeTask: (taskId: string) => Promise<void>;
+    verifyAndMerge: (taskId: string) => Promise<void>;
+    abandon: (taskId: string) => Promise<void>;
     // M3 observability reads: the live EngineSnapshot (or one rebuilt from DB rows), and the
     // worktree's progress.md (null once the worktree is gone).
     getVerifyState: (taskId: string) => Promise<EngineSnapshot | null>;
