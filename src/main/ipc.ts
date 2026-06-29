@@ -128,6 +128,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         catch { return null; }
     });
 
+    // Boot: auto-start any tasks already queued (created in a prior session). The scheduler is
+    // event-driven and otherwise only kicks on create/settle/resume/cap-change, so without this a
+    // relaunch would leave queued tasks idle until the next event.
+    scheduler.kick();
+
     // The soft hourly check-in (spec §5.3): an OS Notification each interval with the live iteration
     // count + latest activity. Never kills; cleared when the loop terminates. Pure cadence math lives
     // in checkIn.ts — this is the untested Electron edge.

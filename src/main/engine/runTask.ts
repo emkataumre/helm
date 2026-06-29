@@ -86,13 +86,27 @@ export async function runIteration(
 // The orchestrator: create the worktree once, seed .ralph, loop runIteration under the bounds,
 // squash-merge on the first green, clean up on any terminal outcome.
 export async function runTaskLoop(project: Project, task: Task, config: LoopConfig, d: RunTaskDeps): Promise<TaskStatus> {
+    const branch = `${project.branchPrefix}/task-${task.id}`;
+
     // Integration must exist, but the engine NEVER checks it out in the main working tree anymore
     // (M4): the merge moved into an isolated throwaway worktree, so two parallel loops can't collide
     // on a shared checkout. Integration is checked out nowhere; mergeStage advances it as a ref.
-    await d.ensureBranch(project.repoPath, project.integrationBranch, project.targetBranch);
-
-    const branch = `${project.branchPrefix}/task-${task.id}`;
-    const worktreePath = await d.createWorktree(project.repoPath, project.integrationBranch, branch, project.worktreeDir);
+    //
+    // These git calls run BEFORE the task flips to "running". A failure here (e.g. a malformed
+    // repoPath → `git -C " C:\…"` → "cannot change to …: Invalid argument") can't be fixed by the
+    // agent and MUST NOT throw: an unhandled rejection would leave the task "queued" and the
+    // scheduler would re-select the doomed task forever. Land it in needs-human (visible) instead.
+    let worktreePath: string;
+    try {
+        await d.ensureBranch(project.repoPath, project.integrationBranch, project.targetBranch);
+        worktreePath = await d.createWorktree(project.repoPath, project.integrationBranch, branch, project.worktreeDir);
+    } catch (e) {
+        const reason = `worktree setup failed: ${e instanceof Error ? e.message : String(e)}`;
+        d.setStatus(task.id, "needs-human", { failureReason: reason });
+        d.emit?.({ type: "status", status: "needs-human", terminalReason: reason });
+        d.log(`task ${task.id} needs-human: ${reason}`);
+        return "needs-human";
+    }
     d.setStatus(task.id, "running", { branchName: branch, worktreePath });
 
     const terminate = async (status: TaskStatus, reason: string | undefined, keepBranch: boolean, diffstat?: string): Promise<TaskStatus> => {

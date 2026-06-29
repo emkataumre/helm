@@ -9,20 +9,24 @@ type ConfigField = "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeo
 const CONFIG_FIELDS: ConfigField[] = ["setupCommand", "iterationCap", "noProgressK", "stallTimeoutMin", "model", "concurrencyCap"];
 
 export function insertProject(db: Db, input: NewProjectInput): Project {
+    // Trim every string input. A stray leading/trailing space (a paste artifact) in repoPath/
+    // targetBranch silently bricks the project — `git -C " C:\\…"` fails with "cannot change to
+    // ' C:\\…': Invalid argument" — and an optional field that's blank-after-trim means "unset".
+    const opt = (s: string | null | undefined): string | null => { const t = s?.trim(); return t ? t : null; };
     const p: Project = {
         id: randomUUID(),
-        name: input.name,
-        repoPath: input.repoPath,
+        name: input.name.trim(),
+        repoPath: input.repoPath.trim(),
         integrationBranch: "integration/ralph",
-        targetBranch: input.targetBranch,
+        targetBranch: input.targetBranch.trim(),
         branchPrefix: "ralph",
-        checkCommand: input.checkCommand,
+        checkCommand: input.checkCommand.trim(),
         worktreeDir: ".helm/worktrees",
-        setupCommand: input.setupCommand ?? null,
+        setupCommand: opt(input.setupCommand),
         iterationCap: input.iterationCap ?? null,
         noProgressK: input.noProgressK ?? null,
         stallTimeoutMin: input.stallTimeoutMin ?? null,
-        model: input.model ?? null,
+        model: opt(input.model),
         concurrencyCap: input.concurrencyCap ?? null,
     };
     db.prepare(

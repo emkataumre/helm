@@ -29,3 +29,20 @@ it("creates a branch, a worktree on it, then removes both", async () => {
         rmSync(repo, { recursive: true, force: true });
     }
 });
+
+// M4 PROBE: parallel first-run. Three tasks boot at once and all call ensureBranch on the
+// not-yet-existing integration branch, then each `git worktree add` — repo-level git mutations that
+// race (fatal: branch 'integration/ralph' already exists; index.lock contention). They must be
+// serialized per repo so every task gets its worktree, not just the one that won the race.
+it("M4: concurrent ensureBranch + createWorktree on a fresh repo don't race", async () => {
+    const repo = await tempRepo();
+    try {
+        await Promise.all([0, 1, 2].map(() => ensureBranch(repo, "integration/ralph", "main")));
+        const wts = await Promise.all([1, 2, 3].map((n) =>
+            createWorktree(repo, "integration/ralph", `ralph/task-${n}`, ".helm/worktrees")));
+        for (const wt of wts) expect(existsSync(wt)).toBe(true);
+        await Promise.all(wts.map((wt, i) => removeWorktree(repo, wt, `ralph/task-${i + 1}`, false)));
+    } finally {
+        rmSync(repo, { recursive: true, force: true });
+    }
+});

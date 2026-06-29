@@ -253,3 +253,31 @@ describe("runTaskLoop — setupCommand (M3)", () => {
         expect(status).toBe("merged");
     });
 });
+
+// M4 hardening: the worktree-setup git calls run BEFORE the task flips to "running". A failure here
+// (e.g. a malformed repoPath → "git ... cannot change to ' C:\\...'") must NOT throw an unhandled
+// rejection and leave the task "queued" — the scheduler would re-select the doomed task forever.
+// It must land needs-human (visible, leaves the queue) with the git error as the reason.
+describe("runTaskLoop — pre-run git failure (M4 hardening)", () => {
+    it("PROBE: a failing createWorktree → needs-human (resolves, never throws), agent never spawned, git error in reason", async () => {
+        let spawned = false;
+        let statusSet = "";
+        let reason = "";
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            createWorktree: async () => { throw new Error("Helm: git worktree add failed: cannot change to ' /repo': Invalid argument"); },
+            spawnAgent: async () => { spawned = true; return { ok: true, output: "", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+            setStatus: (_id, s, extra) => { statusSet = s; if (extra?.failureReason) reason = extra.failureReason; },
+        }));
+        expect(status).toBe("needs-human");           // resolves — does NOT reject/throw (no spin, no unhandled rejection)
+        expect(spawned).toBe(false);                   // never reached an iteration
+        expect(statusSet).toBe("needs-human");         // task left the "queued"/"running" churn
+        expect(reason).toContain("cannot change to");  // the git error is surfaced
+    });
+
+    it("a failing ensureBranch also lands needs-human without throwing", async () => {
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            ensureBranch: async () => { throw new Error("Helm: git branch failed"); },
+        }));
+        expect(status).toBe("needs-human");
+    });
+});

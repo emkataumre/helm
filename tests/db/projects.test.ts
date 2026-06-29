@@ -68,3 +68,22 @@ it("updateProject patches config fields, coalescing absent values", () => {
     expect(getProject(db, p.id)?.setupCommand).toBeNull();
     db.close();
 });
+
+// M4 hardening: a stray leading/trailing space in repoPath silently poisons every `git -C <repo>`
+// call (git fails with "cannot change to ' C:\\...'"). Registration must trim string inputs so a
+// paste artifact can't brick a project.
+it("trims surrounding whitespace on string inputs (a stray space must not poison git -C)", () => {
+    const db = openDb(":memory:");
+    const p = insertProject(db, {
+        name: " Helm ", repoPath: " C:/Temp/helm-target ", targetBranch: " main ",
+        checkCommand: " npm run check ", setupCommand: "  node -v  ", model: "  opus  ",
+    });
+    const got = getProject(db, p.id)!;
+    expect(got.repoPath).toBe("C:/Temp/helm-target");
+    expect(got.name).toBe("Helm");
+    expect(got.targetBranch).toBe("main");
+    expect(got.checkCommand).toBe("npm run check");
+    expect(got.setupCommand).toBe("node -v");
+    expect(got.model).toBe("opus");
+    db.close();
+});

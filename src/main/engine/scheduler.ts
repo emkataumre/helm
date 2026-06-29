@@ -45,6 +45,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         running.set(task.id, task.projectId);
         void Promise.resolve()
             .then(() => deps.startTask(task))
+            // startTask should resolve a terminal status even on failure (runTaskLoop catches its own
+            // setup errors → needs-human). This .catch is belt-and-suspenders: an unexpected throw must
+            // never become an unhandled rejection — log it and free the slot rather than crash the loop.
+            .catch((err) => { console.error(`[helm] scheduler: task ${task.id} crashed before settling:`, err); })
             .finally(() => { running.delete(task.id); kick(); });
     };
 
