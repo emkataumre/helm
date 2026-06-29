@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../../src/main/engine/exec";
-import { commitAll, squashMergeInto, diffStat, headSha } from "../../src/main/engine/merge";
+import { commitAll, squashMergeInto, diffStat, headSha, advanceBranch } from "../../src/main/engine/merge";
 import type { ExecFn } from "../../src/main/engine/exec";
 
 async function tempRepo(): Promise<string> {
@@ -41,6 +41,38 @@ it("commits all changes, then squash-merges a branch into integration as one com
 it("commitAll is a no-op when the tree is clean", async () => {
     const repo = await tempRepo();
     try { await commitAll(repo, "nothing"); } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
+describe("advanceBranch (real git)", () => {
+    it("force-moves a branch ref to a target commit (integration ends at the validated tip)", async () => {
+        const repo = await tempRepo(); // on branch "integration" with one empty commit
+        try {
+            // A temp branch off integration with one extra commit — the validated merge tip.
+            await run("git", ["-C", repo, "checkout", "-b", "helm/merge-x", "integration"]);
+            writeFileSync(join(repo, "x.txt"), "x\n");
+            await commitAll(repo, "merged work");
+            const tip = await headSha(repo);
+            // Move back so "integration" is not the checked-out branch (it's advanced as a ref).
+            await run("git", ["-C", repo, "checkout", "helm/merge-x"]);
+
+            await advanceBranch(repo, "integration", tip);
+
+            const moved = await run("git", ["-C", repo, "rev-parse", "integration"]);
+            expect(moved.stdout.trim()).toBe(tip);
+        } finally {
+            rmSync(repo, { recursive: true, force: true });
+        }
+    });
+
+    it("throws when the target commitish is invalid", async () => {
+        const repo = await tempRepo();
+        try {
+            await run("git", ["-C", repo, "branch", "feature", "integration"]);
+            await expect(advanceBranch(repo, "feature", "no-such-commit")).rejects.toThrow();
+        } finally {
+            rmSync(repo, { recursive: true, force: true });
+        }
+    });
 });
 
 describe("headSha", () => {

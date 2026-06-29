@@ -47,3 +47,12 @@ export async function headSha(repoRoot: string, exec: ExecFn = run): Promise<str
     const res = await git(repoRoot, ["rev-parse", "HEAD"], exec);
     return res.stdout.trim();
 }
+
+// Atomically force a branch ref to a commit (`git branch -f`). The M4 merge stage uses this to
+// advance the integration branch to a validated merge tip. Safe ONLY because integration is checked
+// out NOWHERE during normal operation (the merge happens in a throwaway worktree on a temp branch),
+// so this is a pure ref update — integration never holds an unvalidated commit (we re-check first).
+export async function advanceBranch(repoRoot: string, branch: string, toCommitish: string, exec: ExecFn = run): Promise<void> {
+    const res = await git(repoRoot, ["branch", "-f", branch, toCommitish], exec);
+    if (res.code !== 0) throw new Error(`Helm: git branch -f ${branch} ${toCommitish} failed: ${res.stderr.trim()}`);
+}
