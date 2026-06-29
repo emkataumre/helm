@@ -20,6 +20,7 @@ export interface Project {
     noProgressK: number | null;      // overrides DEFAULT_LOOP_CONFIG.noProgressK
     stallTimeoutMin: number | null;  // MINUTES — converted to ms in resolveLoopConfig (the units seam)
     model: string | null;            // claude --model for each spawn
+    concurrencyCap: number | null;   // M4 scheduler cap (NOT a LoopConfig field); NULL = engine default 3
 }
 
 export interface Task {
@@ -122,6 +123,7 @@ export interface NewProjectInput {
     noProgressK?: number | null;
     stallTimeoutMin?: number | null;
     model?: string | null;
+    concurrencyCap?: number | null;
 }
 export interface NewTaskInput {
     projectId: string;
@@ -131,7 +133,7 @@ export interface NewTaskInput {
     scopeHint?: string | null;
 }
 // The editable per-project config columns (the project-config form patches these).
-export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model">>;
+export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap">>;
 // Best-effort registration pre-fill (current git branch → target, package.json → check, lockfile → setup).
 export interface DetectedConfig { targetBranch: string | null; checkCommand: string | null; setupCommand: string | null }
 export interface HelmApi {

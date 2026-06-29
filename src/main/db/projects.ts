@@ -5,8 +5,8 @@ import type { Project, NewProjectInput } from "../../shared/types";
 
 // The M3 config columns, in one place. Every absent value binds NULL — better-sqlite3 throws on
 // `undefined`, and NULL is the meaningful "use the engine default / feature off" sentinel.
-type ConfigField = "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model";
-const CONFIG_FIELDS: ConfigField[] = ["setupCommand", "iterationCap", "noProgressK", "stallTimeoutMin", "model"];
+type ConfigField = "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap";
+const CONFIG_FIELDS: ConfigField[] = ["setupCommand", "iterationCap", "noProgressK", "stallTimeoutMin", "model", "concurrencyCap"];
 
 export function insertProject(db: Db, input: NewProjectInput): Project {
     const p: Project = {
@@ -23,12 +23,13 @@ export function insertProject(db: Db, input: NewProjectInput): Project {
         noProgressK: input.noProgressK ?? null,
         stallTimeoutMin: input.stallTimeoutMin ?? null,
         model: input.model ?? null,
+        concurrencyCap: input.concurrencyCap ?? null,
     };
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir,
-                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,model)
+                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,model,concurrencyCap)
          VALUES (@id,@name,@repoPath,@integrationBranch,@targetBranch,@branchPrefix,@checkCommand,@worktreeDir,
-                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@model)`,
+                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@model,@concurrencyCap)`,
     ).run(p);
     return p;
 }

@@ -37,6 +37,20 @@ it("round-trips an all-NULL-config project (null, never undefined)", () => {
     expect(got.noProgressK).toBeNull();
     expect(got.stallTimeoutMin).toBeNull();
     expect(got.model).toBeNull();
+    expect(got.concurrencyCap).toBeNull();
+    db.close();
+});
+
+// M4: the scheduler cap is a per-project nullable column, set on insert and patchable like the
+// other config fields (NULL = engine default 3).
+it("round-trips a set concurrencyCap, and updateProject patches it", () => {
+    const db = openDb(":memory:");
+    const p = insertProject(db, { name: "Capped", repoPath: "/r", targetBranch: "main", checkCommand: "c", concurrencyCap: 4 });
+    expect(getProject(db, p.id)?.concurrencyCap).toBe(4);
+    updateProject(db, p.id, { concurrencyCap: 5 });
+    expect(getProject(db, p.id)?.concurrencyCap).toBe(5);
+    updateProject(db, p.id, { concurrencyCap: null }); // explicit null clears it back to the default
+    expect(getProject(db, p.id)?.concurrencyCap).toBeNull();
     db.close();
 });
 

@@ -47,6 +47,11 @@ const STEPS: Array<(db: Db) => void> = [
         db.exec(`ALTER TABLE iterations ADD COLUMN costUsd REAL`);
         db.exec(`ALTER TABLE iterations ADD COLUMN durationMs INTEGER`);
     },
+    // Step 3 — M4 per-project scheduler cap (nullable; NULL = engine default 3). A *scheduler* bound,
+    // not a LoopConfig field, so it's read straight off the project (project.concurrencyCap ?? 3).
+    (db) => {
+        db.exec(`ALTER TABLE projects ADD COLUMN concurrencyCap INTEGER`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.
