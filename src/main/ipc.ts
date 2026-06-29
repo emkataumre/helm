@@ -11,6 +11,7 @@ import { commitAll, squashMergeInto, diffStat, headSha } from "./engine/merge";
 import { runAcceptance } from "./engine/acceptance";
 import { ensureRalphExcluded, writeRalphFiles } from "./engine/ralph";
 import { runCheck } from "./engine/check";
+import { run } from "./engine/exec";
 import { spawnAgent } from "./engine/spawn";
 import { runTaskLoop, type RunTaskDeps } from "./engine/runTask";
 import { DEFAULT_LOOP_CONFIG } from "./engine/loopConfig";
@@ -34,6 +35,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         const deps: RunTaskDeps = {
             ensureBranch, checkoutBranch, createWorktree, removeWorktree,
             ensureRalphExcluded, writeRalphFiles,
+            // Real setup runner: a shell command in the fresh worktree (mirror of runCheck). Thin
+            // exec glue at the Electron edge; the loop's use of it is covered by runTask.test.ts.
+            runSetup: async (wt, cmd, t) => {
+                const res = await run(cmd, [], { cwd: wt, timeoutMs: t, shell: true });
+                return { ok: res.code === 0 && !res.timedOut, output: `${res.stdout}\n${res.stderr}`.trim() };
+            },
             spawnAgent: (wt, prompt, opts) => spawnAgent(wt, prompt, opts),
             commitAll, headSha,
             runCheck: (wt, cmd, t) => runCheck(wt, cmd, t),

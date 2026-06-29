@@ -67,6 +67,7 @@ export function buildRecordingDeps(config: DepConfig = {}): { deps: RunTaskDeps;
         removeWorktree: async (_r, _p, _b, keepBranch) => { rec.removeCalls.push({ keepBranch }); },
         ensureRalphExcluded: () => {},
         writeRalphFiles: () => {},
+        runSetup: async () => ({ ok: true, output: "" }), // M2 PROJECT has no setupCommand → never called; stub keeps the slice compiling
         spawnAgent: async () => {
             iterIdx += 1;
             const s = step();

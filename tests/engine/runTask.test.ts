@@ -21,6 +21,7 @@ function deps(over: Partial<RunTaskDeps> = {}): RunTaskDeps {
         ensureBranch: async () => {}, checkoutBranch: async () => {},
         createWorktree: async () => "/wt", removeWorktree: async () => {},
         ensureRalphExcluded: () => {}, writeRalphFiles: () => {},
+        runSetup: async () => ({ ok: true, output: "" }),
         spawnAgent: async () => ({ ok: true, output: "ok", sessionId: "s0", stalled: false, usage: ZERO_USAGE, durationMs: null }),
         commitAll: async () => {}, headSha: async () => "sha1",
         runCheck: async () => ({ green: true, timedOut: false, output: "" }),
@@ -191,5 +192,50 @@ describe("runTaskLoop — tokens + snapshot events (M3)", () => {
         expect(statusEvents).toHaveLength(1);
         expect(statusEvents[0].status).toBe("needs-human");
         expect(statusEvents[0].terminalReason).toContain("acceptance");
+    });
+});
+
+describe("runTaskLoop — setupCommand (M3)", () => {
+    const withSetup: Project = { ...project, setupCommand: "npm ci" };
+
+    it("runs setup before the first agent spawn when setupCommand is set", async () => {
+        const calls: string[] = [];
+        await runTaskLoop(withSetup, task, DEFAULT_LOOP_CONFIG, deps({
+            runSetup: async () => { calls.push("setup"); return { ok: true, output: "" }; },
+            spawnAgent: async () => { calls.push("spawn"); return { ok: true, output: "ok", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+        }));
+        expect(calls[0]).toBe("setup");
+        expect(calls).toContain("spawn");
+    });
+
+    it("PROBE: a setup failure → needs-human and the agent is never spawned", async () => {
+        let spawned = false;
+        const status = await runTaskLoop(withSetup, task, DEFAULT_LOOP_CONFIG, deps({
+            runSetup: async () => ({ ok: false, output: "npm ci exploded" }),
+            spawnAgent: async () => { spawned = true; return { ok: true, output: "", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+        }));
+        expect(status).toBe("needs-human");
+        expect(spawned).toBe(false);
+    });
+
+    it("surfaces the setup-failure reason (branch kept for drop-in)", async () => {
+        let reason = "";
+        let keep: boolean | null = null;
+        await runTaskLoop(withSetup, task, DEFAULT_LOOP_CONFIG, deps({
+            runSetup: async () => ({ ok: false, output: "boom" }),
+            setStatus: (_i, _s, extra) => { if (extra?.failureReason) reason = extra.failureReason; },
+            removeWorktree: async (_r, _p, _b, keepBranch) => { keep = keepBranch; },
+        }));
+        expect(reason).toContain("setup command failed");
+        expect(keep).toBe(true);
+    });
+
+    it("NULL setupCommand → setup is skipped and the loop proceeds to merge", async () => {
+        let setupCalled = false;
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            runSetup: async () => { setupCalled = true; return { ok: true, output: "" }; },
+        }));
+        expect(setupCalled).toBe(false);
+        expect(status).toBe("merged");
     });
 });

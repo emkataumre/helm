@@ -14,6 +14,7 @@ export interface RunTaskDeps {
     removeWorktree: (repo: string, path: string, branch: string, keepBranch: boolean) => Promise<void>;
     ensureRalphExcluded: (repo: string) => void;
     writeRalphFiles: (worktreePath: string, files: { instructions: string; progress: string }) => void;
+    runSetup: (worktreePath: string, command: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }>;
     spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number; iterationIndex?: number; onEvent?: (e: SnapshotEvent) => void }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean; usage: TokenTotals; durationMs: number | null }>;
     commitAll: (repo: string, message: string) => Promise<void>;
     headSha: (repo: string) => Promise<string>;
@@ -105,6 +106,14 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
 
     d.ensureRalphExcluded(project.repoPath);
     d.writeRalphFiles(worktreePath, { instructions: buildInstructions(), progress: seedProgress(task) });
+
+    // Install deps into the fresh worktree once, before any iteration. A broken setup is a config
+    // error the agent can't fix, so fail fast (no spawn) — the same early-terminal shape as the
+    // empty-acceptance guard. NULL setupCommand → skip.
+    if (project.setupCommand) {
+        const setup = await d.runSetup(worktreePath, project.setupCommand, config.checkTimeoutMs);
+        if (!setup.ok) return terminate("needs-human", `setup command failed:\n${tail(setup.output)}`, true);
+    }
 
     let priorFailure: string | undefined;
     let prevSha = await d.headSha(worktreePath); // baseSha — the worktree tip before any iteration
