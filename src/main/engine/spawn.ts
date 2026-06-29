@@ -11,6 +11,7 @@ export interface SpawnOptions {
     iterationIndex?: number;            // stamped into the SnapshotEvents this spawn emits (default 0)
     onEvent?: (e: SnapshotEvent) => void; // translate stream events → snapshot events
     logSink?: (line: string) => void;   // called for EVERY raw line (the durable per-iteration log)
+    signal?: AbortSignal;               // M5 drop-in: hard-kill this in-flight session on demand
 }
 export interface SpawnResult {
     ok: boolean;
@@ -19,6 +20,7 @@ export interface SpawnResult {
     stalled: boolean;
     usage: TokenTotals;                 // cumulative session totals from the result event (Task 1 spike)
     durationMs: number | null;
+    aborted?: boolean;                  // M5: the run was killed by a drop-in (informational; loop reads signal.aborted)
 }
 
 // The shape of the stream-json events we read (confirmed by the build-time spike, Task 1).
@@ -100,7 +102,7 @@ export async function spawnAgent(
         ...(opts.model ? ["--model", opts.model] : []),
         ...(opts.extraArgs ?? []),
     ];
-    const res = await exec("claude", args, { cwd: worktreePath, idleTimeoutMs: opts.idleTimeoutMs, onLine });
+    const res = await exec("claude", args, { cwd: worktreePath, idleTimeoutMs: opts.idleTimeoutMs, onLine, signal: opts.signal });
 
     return {
         ok: res.code === 0 && !res.timedOut && res.idleTimedOut !== true,
@@ -109,5 +111,6 @@ export async function spawnAgent(
         stalled: res.idleTimedOut === true,
         usage,
         durationMs,
+        aborted: res.aborted === true,
     };
 }

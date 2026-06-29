@@ -18,6 +18,34 @@ it("times out and flags timedOut", async () => {
     expect(r.timedOut).toBe(true);
 });
 
+// M5: the AbortSignal interrupt primitive — drop-in hard-kills the in-flight child on demand,
+// reusing the existing killTree. A correct abort resolves promptly (well under the 30s backstop).
+describe("run + AbortSignal (the drop-in interrupt primitive)", () => {
+    it("kills a running child when the signal fires and flags aborted with a non-zero code", async () => {
+        const controller = new AbortController();
+        const p = run(process.execPath, ["-e", "setInterval(()=>{}, 1000)"], { signal: controller.signal });
+        controller.abort(); // the listener is registered synchronously by run(), so this fires immediately
+        const r = await p;
+        expect(r.aborted).toBe(true);
+        expect(r.code).not.toBe(0);
+    });
+
+    it("kills immediately when the signal is already aborted before run()", async () => {
+        const controller = new AbortController();
+        controller.abort();
+        const r = await run(process.execPath, ["-e", "setInterval(()=>{}, 1000)"], { signal: controller.signal });
+        expect(r.aborted).toBe(true);
+    });
+
+    it("is unaffected by a signal that never fires (same as no signal)", async () => {
+        const controller = new AbortController();
+        const r = await run(process.execPath, ["-e", "process.stdout.write('hi')"], { signal: controller.signal });
+        expect(r.code).toBe(0);
+        expect(r.stdout).toBe("hi");
+        expect(r.aborted).toBeFalsy();
+    });
+});
+
 describe("run streaming + idle-timeout", () => {
     it("delivers complete stdout lines to onLine", async () => {
         const lines: string[] = [];

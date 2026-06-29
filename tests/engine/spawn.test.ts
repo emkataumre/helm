@@ -73,4 +73,20 @@ describe("spawnAgent stream-json", () => {
         await spawnAgent("/wt", "/goal x", { logSink: (l) => lines.push(l) }, linesExec([INIT, MSG, RESULT, "not json"]));
         expect(lines).toEqual([INIT, MSG, RESULT, "not json"]);
     });
+
+    // ── M5: the drop-in interrupt is threaded through the spawn chokepoint ────────────────────
+    it("forwards the AbortSignal straight to exec", async () => {
+        const controller = new AbortController();
+        let seenSignal: AbortSignal | undefined;
+        const exec: ExecFn = async (_cmd, _args, opts) => { seenSignal = opts?.signal; return { code: 0, stdout: "", stderr: "", timedOut: false }; };
+        await spawnAgent("/wt", "/goal x", { signal: controller.signal }, exec);
+        expect(seenSignal).toBe(controller.signal);
+    });
+
+    it("surfaces aborted on the result when exec reports it (informational)", async () => {
+        const exec: ExecFn = async () => ({ code: -1, stdout: "", stderr: "", timedOut: false, aborted: true });
+        const res = await spawnAgent("/wt", "/goal x", {}, exec);
+        expect(res.aborted).toBe(true);
+        expect(res.ok).toBe(false);
+    });
 });
