@@ -76,7 +76,8 @@ export function buildRecordingDeps(config: DepConfig = {}): { deps: RunTaskDeps;
             lastGateAllGreen = ok && (s.checkGreen ?? true) && (s.acceptanceOk ?? true);
             const sessionId = `sess-${iterIdx}`;
             rec.sessionIds.push(sessionId);
-            return { ok, output: ok ? "did work" : "agent failed", sessionId, stalled };
+            // M3 widened SpawnResult with usage/durationMs; the M2 slice doesn't observe tokens, so a zeroed stub keeps its behaviour identical.
+            return { ok, output: ok ? "did work" : "agent failed", sessionId, stalled, usage: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0 }, durationMs: null };
         },
         commitAll: async () => {},
         headSha: async () => {

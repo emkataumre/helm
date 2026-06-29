@@ -1,7 +1,9 @@
 // tests/engine/runTask.test.ts
 import { runIteration, runTaskLoop, type RunTaskDeps } from "../../src/main/engine/runTask";
 import { DEFAULT_LOOP_CONFIG } from "../../src/main/engine/loopConfig";
-import type { Project, Task } from "../../src/shared/types";
+import type { Project, Task, TokenTotals } from "../../src/shared/types";
+
+const ZERO_USAGE: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0 };
 
 const project: Project = {
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph",
@@ -19,7 +21,7 @@ function deps(over: Partial<RunTaskDeps> = {}): RunTaskDeps {
         ensureBranch: async () => {}, checkoutBranch: async () => {},
         createWorktree: async () => "/wt", removeWorktree: async () => {},
         ensureRalphExcluded: () => {}, writeRalphFiles: () => {},
-        spawnAgent: async () => ({ ok: true, output: "ok", sessionId: "s0", stalled: false }),
+        spawnAgent: async () => ({ ok: true, output: "ok", sessionId: "s0", stalled: false, usage: ZERO_USAGE, durationMs: null }),
         commitAll: async () => {}, headSha: async () => "sha1",
         runCheck: async () => ({ green: true, timedOut: false, output: "" }),
         runAcceptance: async () => ({ ok: true, output: "" }),
@@ -38,7 +40,7 @@ describe("runIteration", () => {
         expect(o.sessionId).toBe("s0");
     });
     it("is hang when the agent stalled", async () => {
-        const o = await runIteration(project, task, ctx, DEFAULT_LOOP_CONFIG, deps({ spawnAgent: async () => ({ ok: false, output: "x", sessionId: "s0", stalled: true }) }));
+        const o = await runIteration(project, task, ctx, DEFAULT_LOOP_CONFIG, deps({ spawnAgent: async () => ({ ok: false, output: "x", sessionId: "s0", stalled: true, usage: ZERO_USAGE, durationMs: null }) }));
         expect(o.verdict).toBe("hang");
     });
     it("is failed when the check is red, and never runs acceptance", async () => {
@@ -76,7 +78,7 @@ describe("runTaskLoop — happy path", () => {
     it("flags needs-human immediately when acceptance is empty, without spawning", async () => {
         let spawned = false;
         const status = await runTaskLoop(project, { ...task, acceptance: [] }, DEFAULT_LOOP_CONFIG, deps({
-            spawnAgent: async () => { spawned = true; return { ok: true, output: "", sessionId: "s", stalled: false }; },
+            spawnAgent: async () => { spawned = true; return { ok: true, output: "", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
         }));
         expect(status).toBe("needs-human");
         expect(spawned).toBe(false);
@@ -91,7 +93,7 @@ function scriptedDeps(steps: IterStep[], over: Partial<RunTaskDeps> = {}) {
     let headCalls = 0;
     const step = () => steps[Math.min(i, steps.length - 1)] ?? {};
     return deps({
-        spawnAgent: async () => { i += 1; const s = step(); const stalled = s.stalled ?? false; const ok = (s.agentOk ?? true) && !stalled; return { ok, output: "o", sessionId: `s${i}`, stalled }; },
+        spawnAgent: async () => { i += 1; const s = step(); const stalled = s.stalled ?? false; const ok = (s.agentOk ?? true) && !stalled; return { ok, output: "o", sessionId: `s${i}`, stalled, usage: ZERO_USAGE, durationMs: null }; },
         headSha: async () => { if (headCalls++ === 0) return "sha-base"; const s = step(); if ((s.newCommit ?? true)) lastSha = `sha-${i}`; return lastSha; },
         runCheck: async () => { const s = step(); return { green: s.checkGreen ?? true, timedOut: false, output: "c" }; },
         runAcceptance: async () => { const s = step(); return { ok: s.acceptanceOk ?? true, output: "a" }; },
@@ -145,5 +147,49 @@ describe("runTaskLoop — bounds & retry", () => {
         }));
         expect(status).toBe("needs-human");
         expect(keep).toBe(true);
+    });
+});
+
+describe("runTaskLoop — tokens + snapshot events (M3)", () => {
+    const withUsage = (usage: TokenTotals, durationMs: number | null) =>
+        deps({ spawnAgent: async () => ({ ok: true, output: "ok", sessionId: "s0", stalled: false, usage, durationMs }) });
+
+    it("surfaces the agent's usage + duration on the iteration outcome", async () => {
+        const usage: TokenTotals = { input: 10, output: 5, cacheRead: 1, cacheCreation: 2, costUsd: 0.1 };
+        const o = await runIteration(project, task, ctx, DEFAULT_LOOP_CONFIG, withUsage(usage, 1234));
+        expect(o.usage).toEqual(usage);
+        expect(o.durationMs).toBe(1234);
+    });
+
+    it("passes the iteration's tokens + duration to finishIteration", async () => {
+        const usage: TokenTotals = { input: 10, output: 5, cacheRead: 1, cacheCreation: 2, costUsd: 0.1 };
+        let patch: Record<string, unknown> | undefined;
+        await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            spawnAgent: async () => ({ ok: true, output: "ok", sessionId: "s0", stalled: false, usage, durationMs: 1234 }),
+            finishIteration: (_id, p) => { patch = p as unknown as Record<string, unknown>; },
+        }));
+        expect(patch).toMatchObject({ inputTokens: 10, outputTokens: 5, cacheReadTokens: 1, cacheCreationTokens: 2, costUsd: 0.1, durationMs: 1234 });
+    });
+
+    it("emits the snapshot event sequence for a green first pass", async () => {
+        const types: string[] = [];
+        await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({ emit: (e) => types.push(e.type) }));
+        expect(types).toEqual(["iteration-start", "gate", "gate", "iteration-end", "status"]);
+    });
+
+    it("emits the event sequence across a red-then-green retry", async () => {
+        const types: string[] = [];
+        await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, scriptedDeps([{ checkGreen: false }, {}], { emit: (e) => types.push(e.type) }));
+        expect(types).toEqual(["iteration-start", "gate", "iteration-end", "iteration-start", "gate", "gate", "iteration-end", "status"]);
+    });
+
+    it("the terminal status event carries the failure reason", async () => {
+        const statusEvents: Array<{ status: string; terminalReason?: string }> = [];
+        await runTaskLoop(project, { ...task, acceptance: [] }, DEFAULT_LOOP_CONFIG, deps({
+            emit: (e) => { if (e.type === "status") statusEvents.push({ status: e.status, terminalReason: e.terminalReason }); },
+        }));
+        expect(statusEvents).toHaveLength(1);
+        expect(statusEvents[0].status).toBe("needs-human");
+        expect(statusEvents[0].terminalReason).toContain("acceptance");
     });
 });

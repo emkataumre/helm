@@ -1,5 +1,5 @@
 // src/main/engine/runTask.ts
-import type { Project, Task, TaskStatus, IterationVerdict } from "../../shared/types";
+import type { Project, Task, TaskStatus, IterationVerdict, SnapshotEvent, TokenTotals } from "../../shared/types";
 import type { LoopConfig } from "./loopConfig";
 import { buildGoalPrompt, buildInstructions, seedProgress } from "./prompt";
 
@@ -14,7 +14,7 @@ export interface RunTaskDeps {
     removeWorktree: (repo: string, path: string, branch: string, keepBranch: boolean) => Promise<void>;
     ensureRalphExcluded: (repo: string) => void;
     writeRalphFiles: (worktreePath: string, files: { instructions: string; progress: string }) => void;
-    spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean }>;
+    spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number; iterationIndex?: number; onEvent?: (e: SnapshotEvent) => void }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean; usage: TokenTotals; durationMs: number | null }>;
     commitAll: (repo: string, message: string) => Promise<void>;
     headSha: (repo: string) => Promise<string>;
     runCheck: (worktreePath: string, checkCommand: string, timeoutMs: number) => Promise<{ green: boolean; timedOut: boolean; output: string }>;
@@ -23,7 +23,8 @@ export interface RunTaskDeps {
     diffStat: (repo: string, base: string, branch: string) => Promise<string>;
     setStatus: (taskId: string, status: TaskStatus, extra?: { branchName?: string; worktreePath?: string; diffstat?: string; failureReason?: string }) => void;
     addIteration: (taskId: string, index: number) => { id: string };
-    finishIteration: (id: string, patch: { gateVerdict: "green" | "failed" | "hang"; outputTail: string; commitSha?: string | null; sessionId?: string | null }) => void;
+    finishIteration: (id: string, patch: { gateVerdict: "green" | "failed" | "hang"; outputTail: string; commitSha?: string | null; sessionId?: string | null; inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; costUsd?: number | null; durationMs?: number | null }) => void;
+    emit?: (e: SnapshotEvent) => void; // feeds the live EngineSnapshot; absent → no-op (e.g. the M2 slice)
     log: (msg: string) => void;
 }
 
@@ -32,6 +33,8 @@ export interface IterationOutcome {
     gateOutput: string;   // failing layer's output tail (empty on green)
     commitSha: string;    // worktree HEAD after this iteration's commit
     sessionId: string | null;
+    usage: TokenTotals;   // this iteration's token totals (from spawn's result event)
+    durationMs: number | null;
 }
 
 const TAIL = 1500;
@@ -45,22 +48,33 @@ export async function runIteration(
     config: LoopConfig, d: RunTaskDeps,
 ): Promise<IterationOutcome> {
     const prompt = buildGoalPrompt(project, task, ctx.priorFailure);
-    const agent = await d.spawnAgent(ctx.worktreePath, prompt, { idleTimeoutMs: config.stallTimeoutMs });
+    // Forward spawn's translated stream events (assistant/tool-use/usage) into the live snapshot,
+    // stamped with this iteration's index. project.model NULL → undefined (the CLI default).
+    const agent = await d.spawnAgent(ctx.worktreePath, prompt, {
+        model: project.model ?? undefined,
+        idleTimeoutMs: config.stallTimeoutMs,
+        iterationIndex: ctx.index,
+        onEvent: (e) => d.emit?.(e),
+    });
+    const base = { usage: agent.usage, durationMs: agent.durationMs, sessionId: agent.sessionId };
     await d.commitAll(ctx.worktreePath, `ralph: iter ${ctx.index} — ${task.title}`);
     const commitSha = await d.headSha(ctx.worktreePath);
 
     if (!agent.ok) {
-        return { verdict: agent.stalled ? "hang" : "failed", gateOutput: tail(agent.output), commitSha, sessionId: agent.sessionId };
+        return { verdict: agent.stalled ? "hang" : "failed", gateOutput: tail(agent.output), commitSha, ...base };
     }
+    // The engine's authoritative gates — emit a gate event around each so the cockpit shows the phase.
     const check = await d.runCheck(ctx.worktreePath, project.checkCommand, config.checkTimeoutMs);
+    d.emit?.({ type: "gate", index: ctx.index, label: check.green ? "check: passed" : `check: ${check.timedOut ? "hang" : "failed"}` });
     if (!check.green) {
-        return { verdict: check.timedOut ? "hang" : "failed", gateOutput: tail(check.output), commitSha, sessionId: agent.sessionId };
+        return { verdict: check.timedOut ? "hang" : "failed", gateOutput: tail(check.output), commitSha, ...base };
     }
     const acc = await d.runAcceptance(ctx.worktreePath, task.acceptance, config.checkTimeoutMs);
+    d.emit?.({ type: "gate", index: ctx.index, label: acc.ok ? "acceptance: passed" : "acceptance: failed" });
     if (!acc.ok) {
-        return { verdict: "failed", gateOutput: tail(`acceptance command failed: ${acc.failedCommand}\n${acc.output}`), commitSha, sessionId: agent.sessionId };
+        return { verdict: "failed", gateOutput: tail(`acceptance command failed: ${acc.failedCommand}\n${acc.output}`), commitSha, ...base };
     }
-    return { verdict: "green", gateOutput: "", commitSha, sessionId: agent.sessionId };
+    return { verdict: "green", gateOutput: "", commitSha, ...base };
 }
 
 // The orchestrator: create the worktree once, seed .ralph, loop runIteration under the bounds,
@@ -78,6 +92,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         if (diffstat !== undefined) extra.diffstat = diffstat;
         if (reason !== undefined) extra.failureReason = reason;
         d.setStatus(task.id, status, extra);
+        d.emit?.({ type: "status", status, terminalReason: reason });
         await d.removeWorktree(project.repoPath, worktreePath, branch, keepBranch);
         d.log(`task ${task.id} ${status}${reason ? `: ${reason}` : ""}`);
         return status;
@@ -96,9 +111,16 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     let noProgress = 0;
 
     for (let index = 0; index < config.iterationCap; index++) {
+        d.emit?.({ type: "iteration-start", index });
         const iter = d.addIteration(task.id, index);
         const o = await runIteration(project, task, { index, worktreePath, branch, priorFailure }, config, d);
-        d.finishIteration(iter.id, { gateVerdict: o.verdict, outputTail: o.gateOutput, commitSha: o.commitSha, sessionId: o.sessionId });
+        d.finishIteration(iter.id, {
+            gateVerdict: o.verdict, outputTail: o.gateOutput, commitSha: o.commitSha, sessionId: o.sessionId,
+            inputTokens: o.usage.input, outputTokens: o.usage.output,
+            cacheReadTokens: o.usage.cacheRead, cacheCreationTokens: o.usage.cacheCreation,
+            costUsd: o.usage.costUsd, durationMs: o.durationMs,
+        });
+        d.emit?.({ type: "iteration-end", index, verdict: o.verdict, commitSha: o.commitSha });
 
         if (o.verdict === "green") {
             const diffstat = await d.diffStat(project.repoPath, project.integrationBranch, branch);
