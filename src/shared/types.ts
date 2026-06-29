@@ -1,5 +1,7 @@
 // src/shared/types.ts
-export type TaskStatus = "queued" | "running" | "merged" | "needs-human" | "abandoned";
+// "handed-off" (M5) is the explicit drop-in pause state: the loop stops, the slot frees, the worktree
+// is retained, and the human steers in a terminal until they hand back (resume / verify-&-merge / abandon).
+export type TaskStatus = "queued" | "running" | "merged" | "needs-human" | "abandoned" | "handed-off";
 
 // The verdict the engine assigns each iteration. Lives here (a leaf) so the reducer, the loop,
 // and the M2 verify slice share one definition; runTask.ts re-exports it for back-compat.
@@ -21,6 +23,7 @@ export interface Project {
     stallTimeoutMin: number | null;  // MINUTES — converted to ms in resolveLoopConfig (the units seam)
     model: string | null;            // claude --model for each spawn
     concurrencyCap: number | null;   // M4 scheduler cap (NOT a LoopConfig field); NULL = engine default 3
+    terminalCommand: string | null;  // M5 drop-in launch template ({worktree}/{resume}); NULL = engine default
 }
 
 export interface Task {
@@ -131,6 +134,7 @@ export interface NewProjectInput {
     stallTimeoutMin?: number | null;
     model?: string | null;
     concurrencyCap?: number | null;
+    terminalCommand?: string | null;
 }
 export interface NewTaskInput {
     projectId: string;
@@ -140,7 +144,7 @@ export interface NewTaskInput {
     scopeHint?: string | null;
 }
 // The editable per-project config columns (the project-config form patches these).
-export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap">>;
+export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand">>;
 // Best-effort registration pre-fill (current git branch → target, package.json → check, lockfile → setup).
 export interface DetectedConfig { targetBranch: string | null; checkCommand: string | null; setupCommand: string | null }
 export interface HelmApi {

@@ -14,3 +14,13 @@ it("inserts a queued task, round-trips acceptance, updates status", () => {
     expect(listTasks(db)).toHaveLength(1);
     db.close();
 });
+
+// M5: "handed-off" is the new drop-in pause status. The tasks.status column is plain TEXT (no CHECK),
+// so the value needs no migration — but it must round-trip through updateTask/getTask like any other.
+it("round-trips the handed-off status (the M5 drop-in pause state)", () => {
+    const db = openDb(":memory:");
+    const t = insertTask(db, { projectId: "p1", title: "T", intent: "do it", acceptance: ["x"] });
+    updateTask(db, t.id, { status: "handed-off" });
+    expect(getTask(db, t.id)?.status).toBe("handed-off");
+    db.close();
+});

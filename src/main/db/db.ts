@@ -52,6 +52,11 @@ const STEPS: Array<(db: Db) => void> = [
     (db) => {
         db.exec(`ALTER TABLE projects ADD COLUMN concurrencyCap INTEGER`);
     },
+    // Step 4 — M5 per-project drop-in terminal-launch template (nullable; NULL = the engine default
+    // constant `wt.exe -d "{worktree}" claude {resume}`). Read straight off the project at launch time.
+    (db) => {
+        db.exec(`ALTER TABLE projects ADD COLUMN terminalCommand TEXT`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.

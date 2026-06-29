@@ -38,6 +38,21 @@ it("round-trips an all-NULL-config project (null, never undefined)", () => {
     expect(got.stallTimeoutMin).toBeNull();
     expect(got.model).toBeNull();
     expect(got.concurrencyCap).toBeNull();
+    expect(got.terminalCommand).toBeNull();
+    db.close();
+});
+
+// M5: the drop-in terminal launch command is a per-project nullable column (NULL = engine default
+// template), set on insert and patchable like the other config fields.
+it("round-trips a set terminalCommand, and updateProject patches it", () => {
+    const db = openDb(":memory:");
+    const tmpl = 'wt.exe -d "{worktree}" claude {resume}';
+    const p = insertProject(db, { name: "Term", repoPath: "/r", targetBranch: "main", checkCommand: "c", terminalCommand: tmpl });
+    expect(getProject(db, p.id)?.terminalCommand).toBe(tmpl);
+    updateProject(db, p.id, { terminalCommand: "pwsh -NoExit -Command \"cd '{worktree}'\"" });
+    expect(getProject(db, p.id)?.terminalCommand).toBe("pwsh -NoExit -Command \"cd '{worktree}'\"");
+    updateProject(db, p.id, { terminalCommand: null }); // explicit null clears it back to the default
+    expect(getProject(db, p.id)?.terminalCommand).toBeNull();
     db.close();
 });
 
