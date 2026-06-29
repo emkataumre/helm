@@ -132,10 +132,13 @@ export interface NewTaskInput {
 }
 // The editable per-project config columns (the project-config form patches these).
 export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model">>;
+// Best-effort registration pre-fill (current git branch → target, package.json → check, lockfile → setup).
+export interface DetectedConfig { targetBranch: string | null; checkCommand: string | null; setupCommand: string | null }
 export interface HelmApi {
     registerProject: (input: NewProjectInput) => Promise<Project>;
     listProjects: () => Promise<Project[]>;
     updateProject: (id: string, patch: ProjectConfigPatch) => Promise<Project | null>;
+    detectProject: (repoPath: string) => Promise<DetectedConfig>;
     createTask: (input: NewTaskInput) => Promise<Task>;
     listTasks: () => Promise<Task[]>;
     runTask: (taskId: string) => Promise<TaskStatus>;

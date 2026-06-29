@@ -18,6 +18,7 @@ import { createLogSink } from "./engine/logSink";
 import { createSnapshotStore } from "./engine/snapshotStore";
 import { snapshotFromRows } from "./engine/verifyState";
 import { resolveLoopConfig } from "./engine/loopConfig";
+import { detectProjectConfig } from "./engine/detect";
 import { checkInsDue } from "./engine/checkIn";
 import { runTaskLoop, type RunTaskDeps } from "./engine/runTask";
 import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, TaskStatus } from "../shared/types";
@@ -34,6 +35,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     ipcMain.handle("projects:register", (_e, input: NewProjectInput) => insertProject(db, input));
     ipcMain.handle("projects:list", () => listProjects(db));
     ipcMain.handle("projects:update", (_e, id: string, patch: ProjectConfigPatch) => { updateProject(db, id, patch); notify(); return getProject(db, id) ?? null; });
+    ipcMain.handle("projects:detect", (_e, repoPath: string) => detectProjectConfig(repoPath));
     ipcMain.handle("tasks:create", (_e, input: NewTaskInput) => { const t = insertTask(db, input); notify(); return t; });
     ipcMain.handle("tasks:list", () => listTasks(db));
 
