@@ -16,7 +16,7 @@ export interface RunTaskDeps {
     ensureRalphExcluded: (repo: string) => void;
     writeRalphFiles: (worktreePath: string, files: { instructions: string; progress: string }) => void;
     runSetup: (worktreePath: string, command: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }>;
-    spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number; iterationIndex?: number; onEvent?: (e: SnapshotEvent) => void }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean; usage: TokenTotals; durationMs: number | null }>;
+    spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number; iterationIndex?: number; onEvent?: (e: SnapshotEvent) => void; signal?: AbortSignal }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean; usage: TokenTotals; durationMs: number | null }>;
     commitAll: (repo: string, message: string) => Promise<void>;
     headSha: (repo: string) => Promise<string>;
     runCheck: (worktreePath: string, checkCommand: string, timeoutMs: number) => Promise<{ green: boolean; timedOut: boolean; output: string }>;
@@ -31,6 +31,9 @@ export interface RunTaskDeps {
     addIteration: (taskId: string, index: number) => { id: string };
     finishIteration: (id: string, patch: { gateVerdict: "green" | "failed" | "hang"; outputTail: string; commitSha?: string | null; sessionId?: string | null; inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; costUsd?: number | null; durationMs?: number | null }) => void;
     emit?: (e: SnapshotEvent) => void; // feeds the live EngineSnapshot; absent → no-op (e.g. the M2 slice)
+    // M5 drop-in: an AbortSignal owned by the per-task AbortController registry (ipc.ts). On abort, the
+    // in-flight claude is hard-killed (threaded into spawnAgent) and the loop bails to handed-off.
+    signal?: AbortSignal;
     log: (msg: string) => void;
 }
 
@@ -61,6 +64,7 @@ export async function runIteration(
         idleTimeoutMs: config.stallTimeoutMs,
         iterationIndex: ctx.index,
         onEvent: (e) => d.emit?.(e),
+        signal: d.signal, // M5: a drop-in hard-kills this session via the existing killTree
     });
     const base = { usage: agent.usage, durationMs: agent.durationMs, sessionId: agent.sessionId };
     await d.commitAll(ctx.worktreePath, `ralph: iter ${ctx.index} — ${task.title}`);
@@ -109,13 +113,19 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     }
     d.setStatus(task.id, "running", { branchName: branch, worktreePath });
 
+    // The loop's single exit. M5 worktree lifecycle (spec §12): RETAIN the worktree for needs-human and
+    // handed-off (it's in use for drop-in — reaped later by Abandon or a green Verify-&-merge); REMOVE it
+    // (and delete its branch) for merged/abandoned. Deriving removal from the status keeps the retention
+    // rule in one place; keepBranch only matters on the removal path.
     const terminate = async (status: TaskStatus, reason: string | undefined, keepBranch: boolean, diffstat?: string): Promise<TaskStatus> => {
         const extra: { diffstat?: string; failureReason?: string } = {};
         if (diffstat !== undefined) extra.diffstat = diffstat;
         if (reason !== undefined) extra.failureReason = reason;
         d.setStatus(task.id, status, extra);
         d.emit?.({ type: "status", status, terminalReason: reason });
-        await d.removeWorktree(project.repoPath, worktreePath, branch, keepBranch);
+        if (status === "merged" || status === "abandoned") {
+            await d.removeWorktree(project.repoPath, worktreePath, branch, keepBranch);
+        }
         d.log(`task ${task.id} ${status}${reason ? `: ${reason}` : ""}`);
         return status;
     };
@@ -140,17 +150,36 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     let prevSha = await d.headSha(worktreePath); // baseSha — the worktree tip before any iteration
     let noProgress = 0;
 
-    for (let index = 0; index < config.iterationCap; index++) {
-        d.emit?.({ type: "iteration-start", index });
-        const iter = d.addIteration(task.id, index);
-        const o = await runIteration(project, task, { index, worktreePath, branch, priorFailure }, config, d);
+    // The drop-in checkpoint: commit the (already-committed) partial work and hand off. commitAll
+    // no-ops on a clean tree, so this is free when runIteration already committed the killed session.
+    const handOff = async (): Promise<TaskStatus> => {
+        await d.commitAll(worktreePath, "ralph: drop-in checkpoint");
+        return terminate("handed-off", undefined, true);
+    };
+
+    // Split counter (M5): a LOCAL bounds counter i (0..cap) drives the budget; the DB index continues
+    // from startIndex. On a fresh start startIndex = 0 → dbIndex === i → byte-identical to pre-M5. Resume
+    // mode (Task 4) passes a non-zero startIndex so the iteration history keeps climbing.
+    const startIndex = 0;
+
+    for (let i = 0; i < config.iterationCap; i++) {
+        // Top-of-loop guard: a drop-in that lands between iterations bails before spawning the next one.
+        if (d.signal?.aborted) return handOff();
+        const dbIndex = startIndex + i;
+        d.emit?.({ type: "iteration-start", index: dbIndex });
+        const iter = d.addIteration(task.id, dbIndex);
+        const o = await runIteration(project, task, { index: dbIndex, worktreePath, branch, priorFailure }, config, d);
         d.finishIteration(iter.id, {
             gateVerdict: o.verdict, outputTail: o.gateOutput, commitSha: o.commitSha, sessionId: o.sessionId,
             inputTokens: o.usage.input, outputTokens: o.usage.output,
             cacheReadTokens: o.usage.cacheRead, cacheCreationTokens: o.usage.cacheCreation,
             costUsd: o.usage.costUsd, durationMs: o.durationMs,
         });
-        d.emit?.({ type: "iteration-end", index, verdict: o.verdict, commitSha: o.commitSha });
+        d.emit?.({ type: "iteration-end", index: dbIndex, verdict: o.verdict, commitSha: o.commitSha });
+
+        // Post-iteration guard: a drop-in killed the in-flight session DURING this iteration. finishIteration
+        // above already stamped the killed iteration's sessionId (durable), so resume picks the freshest.
+        if (d.signal?.aborted) return handOff();
 
         if (o.verdict === "green") {
             // Hand landing to the isolated merge stage: it rebases on the fresh integration tip and

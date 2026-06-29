@@ -15,7 +15,11 @@ export const INVARIANTS: Invariant[] = [
     { name: "iteration-cap-respected", holds: (s) => s.capRespected ? true : `iterationsRun=${s.iterationsRun} exceeds cap=${s.config.iterationCap}` },
     { name: "at-most-one-merge", holds: (s) => s.mergeApplications <= 1 ? true : `${s.mergeApplications} merges applied (loop must stop at the first green)` },
     { name: "merged-cleanup", holds: (s) => s.finalStatus !== "merged" || (s.squashMergeApplied && s.worktreeRemoved && !s.branchKept && s.diffstatRecorded) ? true : `merged but cleanup incomplete (merge=${s.squashMergeApplied}, wtRemoved=${s.worktreeRemoved}, branchKept=${s.branchKept}, diffstat=${s.diffstatRecorded})` },
-    { name: "needs-human-evidence", holds: (s) => s.finalStatus !== "needs-human" || (s.failureReasonSet && s.worktreeRemoved && s.branchKept && !s.squashMergeApplied) ? true : `needs-human but evidence incomplete (reason=${s.failureReasonSet}, wtRemoved=${s.worktreeRemoved}, branchKept=${s.branchKept}, merge=${s.squashMergeApplied})` },
+    // M5 worktree lifecycle (spec §12): a needs-human task RETAINS its worktree (it's in use for drop-in),
+    // so the durable truth is now "reason set, worktree NOT removed, no merge" — the pre-M5 "removed,
+    // branch kept" was an interim deviation the M5 retention change corrects. (See the M5 dropin slice's
+    // worktree-retained-while-handed-off/needs-human invariant for the same truth, cross-task.)
+    { name: "needs-human-evidence", holds: (s) => s.finalStatus !== "needs-human" || (s.failureReasonSet && !s.worktreeRemoved && !s.squashMergeApplied) ? true : `needs-human but evidence incomplete (reason=${s.failureReasonSet}, wtRetained=${!s.worktreeRemoved}, merge=${s.squashMergeApplied})` },
     { name: "iteration-accounting", holds: (s) => s.iterationsRun === s.iterationsFinished ? true : `iterationsRun=${s.iterationsRun} != iterationsFinished=${s.iterationsFinished}` },
     { name: "session-id-per-iteration", holds: (s) => s.sessionIdsCaptured ? true : "an iteration ran without capturing a session id" },
 ];

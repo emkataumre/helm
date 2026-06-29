@@ -151,17 +151,75 @@ describe("runTaskLoop — bounds & retry", () => {
         expect(status).toBe("merged");
     });
 
-    it("PROBE: a mergeStage needs-human result terminates needs-human (branch kept) with its reason", async () => {
-        let keep: boolean | null = null;
+    it("PROBE: a mergeStage needs-human result terminates needs-human (worktree retained) with its reason", async () => {
+        let removeCalled = false;
         let reason = "";
         const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, scriptedDeps([{}], {
             mergeStage: async () => ({ outcome: "needs-human", reason: "re-check failed after rebase on integration tip" }),
-            removeWorktree: async (_r, _p, _b, keepBranch) => { keep = keepBranch; },
+            removeWorktree: async () => { removeCalled = true; },
             setStatus: (_i, _s, extra) => { if (extra?.failureReason) reason = extra.failureReason; },
         }));
         expect(status).toBe("needs-human");
-        expect(keep).toBe(true); // worktree retained for drop-in
+        expect(removeCalled).toBe(false); // M5: needs-human RETAINS the worktree for drop-in (not removed)
         expect(reason).toContain("re-check failed after rebase on integration tip");
+    });
+});
+
+// M5: drop-in hard-interrupts the live claude and makes runTaskLoop RETURN so the scheduler frees the
+// slot. The loop checks d.signal.aborted at two points (top of the for, and right after the iteration),
+// and on abort checkpoint-commits, flips to handed-off, and RETAINS the worktree.
+describe("runTaskLoop — drop-in bail → handed-off (M5)", () => {
+    it("PROBE: a drop-in mid-iteration bails to handed-off, retains the worktree, checkpoints, emits status", async () => {
+        const controller = new AbortController();
+        const commits: string[] = [];
+        let removeCalled = false;
+        const statusEvents: string[] = [];
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            signal: controller.signal,
+            // The drop-in killed the live session: spawnAgent aborts the controller, then resolves not-ok.
+            spawnAgent: async () => { controller.abort(); return { ok: false, output: "killed", sessionId: "s-killed", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+            commitAll: async (_r, msg) => { commits.push(msg); },
+            removeWorktree: async () => { removeCalled = true; },
+            setStatus: () => {},
+            emit: (e) => { if (e.type === "status") statusEvents.push(e.status); },
+        }));
+        expect(status).toBe("handed-off");
+        expect(removeCalled).toBe(false);                       // worktree retained for drop-in
+        expect(commits).toContain("ralph: drop-in checkpoint"); // checkpoint at the entry boundary
+        expect(statusEvents).toContain("handed-off");
+    });
+
+    it("captures the killed iteration's sessionId (durable) before bailing, so resume picks the freshest", async () => {
+        const controller = new AbortController();
+        let finishedSession: string | null | undefined;
+        await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            signal: controller.signal,
+            spawnAgent: async () => { controller.abort(); return { ok: false, output: "killed", sessionId: "s-killed", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+            finishIteration: (_id, patch) => { finishedSession = patch.sessionId; },
+        }));
+        expect(finishedSession).toBe("s-killed"); // the in-flight session is recorded even though it was killed
+    });
+
+    it("PROBE: a signal already aborted at loop entry hands off at the top of the for, without spawning", async () => {
+        const controller = new AbortController();
+        controller.abort();
+        let spawned = false;
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            signal: controller.signal,
+            spawnAgent: async () => { spawned = true; return { ok: true, output: "ok", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+        }));
+        expect(status).toBe("handed-off");
+        expect(spawned).toBe(false); // the top-of-loop guard bailed before any spawn
+    });
+
+    it("a fresh (non-resumed) run numbers iterations 0,1,2… (the split counter is byte-identical at startIndex=0)", async () => {
+        const indices: number[] = [];
+        const cfg = { ...DEFAULT_LOOP_CONFIG, iterationCap: 3, noProgressK: 99 };
+        await runTaskLoop(project, task, cfg, scriptedDeps(
+            [{ checkGreen: false }, { checkGreen: false }, { checkGreen: false }],
+            { addIteration: (_tid, idx) => { indices.push(idx); return { id: `it${idx}` }; } },
+        ));
+        expect(indices).toEqual([0, 1, 2]);
     });
 });
 
@@ -232,16 +290,16 @@ describe("runTaskLoop — setupCommand (M3)", () => {
         expect(spawned).toBe(false);
     });
 
-    it("surfaces the setup-failure reason (branch kept for drop-in)", async () => {
+    it("surfaces the setup-failure reason (worktree retained for drop-in)", async () => {
         let reason = "";
-        let keep: boolean | null = null;
+        let removeCalled = false;
         await runTaskLoop(withSetup, task, DEFAULT_LOOP_CONFIG, deps({
             runSetup: async () => ({ ok: false, output: "boom" }),
             setStatus: (_i, _s, extra) => { if (extra?.failureReason) reason = extra.failureReason; },
-            removeWorktree: async (_r, _p, _b, keepBranch) => { keep = keepBranch; },
+            removeWorktree: async () => { removeCalled = true; },
         }));
         expect(reason).toContain("setup command failed");
-        expect(keep).toBe(true);
+        expect(removeCalled).toBe(false); // M5: needs-human retains its worktree
     });
 
     it("NULL setupCommand → setup is skipped and the loop proceeds to merge", async () => {
