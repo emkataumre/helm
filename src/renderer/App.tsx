@@ -62,7 +62,7 @@ export function App() {
                             <div key={lane}>
                                 <h3 style={{ fontFamily: "ui-monospace, monospace", fontSize: 13, textTransform: "uppercase", color: "#788C5D" }}>{lane}</h3>
                                 {shown.filter((t) => t.status === lane).map((t) => (
-                                    <BoardCard key={t.id} task={t} liveActivity={live[t.id]} onClick={() => setSelected(t.id)} onRun={() => { window.helm.runTask(t.id); }} />
+                                    <BoardCard key={t.id} task={t} liveActivity={live[t.id]} onClick={() => setSelected(t.id)} onRun={() => { window.helm.startNow(t.id); }} />
                                 ))}
                             </div>
                         ))}

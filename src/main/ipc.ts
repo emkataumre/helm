@@ -21,8 +21,9 @@ import { snapshotFromRows } from "./engine/verifyState";
 import { resolveLoopConfig } from "./engine/loopConfig";
 import { detectProjectConfig } from "./engine/detect";
 import { checkInsDue } from "./engine/checkIn";
+import { createScheduler, type Scheduler } from "./engine/scheduler";
 import { runTaskLoop, type RunTaskDeps } from "./engine/runTask";
-import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, TaskStatus } from "../shared/types";
+import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Task, TaskStatus } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
@@ -33,65 +34,47 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     // One live EngineSnapshot per active task; each dispatch nudges the renderer's detail view.
     const snapshots = createSnapshotStore((taskId) => getWindow()?.webContents.send("snapshot:changed", taskId));
 
-    ipcMain.handle("projects:register", (_e, input: NewProjectInput) => insertProject(db, input));
-    ipcMain.handle("projects:list", () => listProjects(db));
-    ipcMain.handle("projects:update", (_e, id: string, patch: ProjectConfigPatch) => { updateProject(db, id, patch); notify(); return getProject(db, id) ?? null; });
-    ipcMain.handle("projects:detect", (_e, repoPath: string) => detectProjectConfig(repoPath));
-    ipcMain.handle("tasks:create", (_e, input: NewTaskInput) => { const t = insertTask(db, input); notify(); return t; });
-    ipcMain.handle("tasks:list", () => listTasks(db));
+    // Forward-declared so startTask can close over the scheduler it itself is driven by (the merge
+    // mutex lives on the scheduler, shared across a project's task loops).
+    let scheduler: Scheduler;
 
-    // Observability reads. getVerifyState prefers the live snapshot (with its in-memory feed) and
-    // falls back to one rebuilt from durable DB rows (empty feed) for inactive/restarted tasks.
-    ipcMain.handle("tasks:verifyState", (_e, taskId: string) => {
-        const live = snapshots.get(taskId);
-        if (live) return live;
-        const task = getTask(db, taskId);
-        return task ? snapshotFromRows(task, listIterations(db, taskId)) : null;
-    });
-    ipcMain.handle("tasks:progress", (_e, taskId: string): string | null => {
-        const task = getTask(db, taskId);
-        if (!task?.worktreePath) return null; // worktree gone (terminal cleanup) → no progress file
-        try { return readFileSync(join(task.worktreePath, ".ralph", "progress.md"), "utf8"); }
-        catch { return null; }
-    });
-
-    ipcMain.handle("tasks:run", async (_e, taskId: string): Promise<TaskStatus> => {
-        const task = getTask(db, taskId);
-        if (!task) throw new Error(`unknown task ${taskId}`);
+    // Run one task's Ralph loop to completion. The scheduler calls this fire-and-forget when a slot
+    // is free; landing is delegated to the isolated merge stage, wrapped here in the project's merge
+    // mutex (at most one merge in flight per project). The per-task check-in timer (M3) wraps each run.
+    const startTask = async (task: Task): Promise<TaskStatus> => {
         const project = getProject(db, task.projectId);
         if (!project) throw new Error(`unknown project ${task.projectId}`);
-
         const config = resolveLoopConfig(project); // nullable project columns → concrete bounds
+
+        const runSetup = async (wt: string, cmd: string, t: number) => {
+            const res = await run(cmd, [], { cwd: wt, timeoutMs: t, shell: true });
+            return { ok: res.code === 0 && !res.timedOut, output: `${res.stdout}\n${res.stderr}`.trim() };
+        };
 
         const deps: RunTaskDeps = {
             ensureBranch, checkoutBranch, createWorktree, removeWorktree,
             ensureRalphExcluded, writeRalphFiles,
-            runSetup: async (wt, cmd, t) => {
-                const res = await run(cmd, [], { cwd: wt, timeoutMs: t, shell: true });
-                return { ok: res.code === 0 && !res.timedOut, output: `${res.stdout}\n${res.stderr}`.trim() };
-            },
+            runSetup,
             // Inject the per-iteration raw-log sink (keyed by taskId + index) at the chokepoint.
             spawnAgent: (wt, prompt, opts) => spawnAgent(wt, prompt, { ...opts, logSink: createLogSink(logsDir, task.id, opts.iterationIndex ?? 0) }),
             commitAll, headSha,
             runCheck: (wt, cmd, t) => runCheck(wt, cmd, t),
             runAcceptance: (wt, cmds, t) => runAcceptance(wt, cmds, t),
             squashMergeInto, diffStat,
-            // M4: landing goes through the isolated merge stage. Task 6 wraps this in the project's
-            // merge mutex; until then a direct (unwrapped) wiring keeps the build green.
+            // Mutex-wrapped landing. Emit `merge: waiting` BEFORE acquiring the lock so a task queued
+            // for the merge is visible in the feed, then serialize the real merge stage behind the
+            // project's mutex (cross-project merges still run concurrently).
             mergeStage: (p, t, taskBranch) => {
+                snapshots.dispatch(t.id, { type: "gate", index: 0, label: "merge: waiting" });
                 const mergeDeps: MergeStageDeps = {
-                    createWorktree, squashMergeInto,
-                    runSetup: async (wt, cmd, to) => {
-                        const res = await run(cmd, [], { cwd: wt, timeoutMs: to, shell: true });
-                        return { ok: res.code === 0 && !res.timedOut, output: `${res.stdout}\n${res.stderr}`.trim() };
-                    },
+                    createWorktree, squashMergeInto, runSetup,
                     runCheck: (wt, cmd, to) => runCheck(wt, cmd, to),
                     runAcceptance: (wt, cmds, to) => runAcceptance(wt, cmds, to),
                     removeWorktree, diffStat, advanceBranch, headSha,
                     checkTimeoutMs: config.checkTimeoutMs,
                     emit: (e) => snapshots.dispatch(t.id, e),
                 };
-                return runMergeStage(p, t, taskBranch, mergeDeps);
+                return scheduler.mutexFor(p.id).withLock(() => runMergeStage(p, t, taskBranch, mergeDeps));
             },
             setStatus: (id, status, extra) => { updateTask(db, id, { status, ...extra }); notify(); },
             addIteration: (tid, idx) => addIteration(db, tid, idx),
@@ -108,6 +91,41 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         } finally {
             stopCheckIns();
         }
+    };
+
+    scheduler = createScheduler({
+        listQueued: () => listTasks(db).filter((t) => t.status === "queued"),
+        getProject: (id) => getProject(db, id),
+        startTask,
+    });
+
+    ipcMain.handle("projects:register", (_e, input: NewProjectInput) => insertProject(db, input));
+    ipcMain.handle("projects:list", () => listProjects(db));
+    // A raised cap may free conceptual slots → kick the scheduler after a config change.
+    ipcMain.handle("projects:update", (_e, id: string, patch: ProjectConfigPatch) => { updateProject(db, id, patch); notify(); scheduler.kick(); return getProject(db, id) ?? null; });
+    ipcMain.handle("projects:detect", (_e, repoPath: string) => detectProjectConfig(repoPath));
+    // Create → enqueue → kick: the scheduler auto-starts it when a slot is free (unless paused).
+    ipcMain.handle("tasks:create", (_e, input: NewTaskInput) => { const t = insertTask(db, input); notify(); scheduler.kick(); return t; });
+    ipcMain.handle("tasks:list", () => listTasks(db));
+
+    // M4 scheduler IPC: paused-mode manual single-start, the live cockpit indicator state, pause toggle.
+    ipcMain.handle("tasks:startNow", (_e, taskId: string) => { scheduler.startNow(taskId); });
+    ipcMain.handle("scheduler:state", () => scheduler.state());
+    ipcMain.handle("scheduler:setPaused", (_e, paused: boolean) => { scheduler.setPaused(paused); notify(); });
+
+    // Observability reads. getVerifyState prefers the live snapshot (with its in-memory feed) and
+    // falls back to one rebuilt from durable DB rows (empty feed) for inactive/restarted tasks.
+    ipcMain.handle("tasks:verifyState", (_e, taskId: string) => {
+        const live = snapshots.get(taskId);
+        if (live) return live;
+        const task = getTask(db, taskId);
+        return task ? snapshotFromRows(task, listIterations(db, taskId)) : null;
+    });
+    ipcMain.handle("tasks:progress", (_e, taskId: string): string | null => {
+        const task = getTask(db, taskId);
+        if (!task?.worktreePath) return null; // worktree gone (terminal cleanup) → no progress file
+        try { return readFileSync(join(task.worktreePath, ".ralph", "progress.md"), "utf8"); }
+        catch { return null; }
     });
 
     // The soft hourly check-in (spec §5.3): an OS Notification each interval with the live iteration

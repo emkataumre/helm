@@ -5,7 +5,7 @@
 //
 // Event-driven, no clock: kick() is called on task-create, task-settle, resume, and cap-change. It is
 // Electron-free and fully DI'd, so the M4 verify slice can drive it headlessly.
-import type { Project, Task, TaskStatus } from "../../shared/types";
+import type { Project, Task, TaskStatus, SchedulerState } from "../../shared/types";
 import { createKeyedMutex } from "./mutex";
 
 const DEFAULT_CAP = 3;
@@ -14,11 +14,6 @@ export interface SchedulerDeps {
     listQueued: () => Task[];                          // tasks currently in status "queued"
     getProject: (id: string) => Project | undefined;
     startTask: (task: Task) => Promise<TaskStatus>;    // run one task's loop to completion (fire-and-forget)
-}
-
-export interface SchedulerState {
-    paused: boolean;
-    perProject: Array<{ projectId: string; running: number; cap: number }>;
 }
 
 export interface Scheduler {

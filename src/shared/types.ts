@@ -111,6 +111,13 @@ export type SnapshotEvent =
     | { type: "iteration-end"; index: number; verdict: IterationVerdict; commitSha: string }
     | { type: "status"; status: TaskStatus; terminalReason?: string };
 
+// M4 scheduler state for the cockpit indicator (one read per poll). Lives here (shared) so the
+// renderer's SchedulerBar and the engine scheduler agree on one shape.
+export interface SchedulerState {
+    paused: boolean;
+    perProject: Array<{ projectId: string; running: number; cap: number }>;
+}
+
 // IPC contract: the renderer calls these; main implements them.
 export interface NewProjectInput {
     name: string;
@@ -143,7 +150,11 @@ export interface HelmApi {
     detectProject: (repoPath: string) => Promise<DetectedConfig>;
     createTask: (input: NewTaskInput) => Promise<Task>;
     listTasks: () => Promise<Task[]>;
-    runTask: (taskId: string) => Promise<TaskStatus>;
+    // M4: the scheduler auto-starts queued tasks; startNow is the paused-mode manual single-start
+    // (replaces M3's run-to-completion runTask). Plus the live scheduler state + the pause toggle.
+    startNow: (taskId: string) => Promise<void>;
+    getSchedulerState: () => Promise<SchedulerState>;
+    setSchedulerPaused: (paused: boolean) => Promise<void>;
     // M3 observability reads: the live EngineSnapshot (or one rebuilt from DB rows), and the
     // worktree's progress.md (null once the worktree is gone).
     getVerifyState: (taskId: string) => Promise<EngineSnapshot | null>;
