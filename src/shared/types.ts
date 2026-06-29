@@ -1,6 +1,10 @@
 // src/shared/types.ts
 export type TaskStatus = "queued" | "running" | "merged" | "needs-human" | "abandoned";
 
+// The verdict the engine assigns each iteration. Lives here (a leaf) so the reducer, the loop,
+// and the M2 verify slice share one definition; runTask.ts re-exports it for back-compat.
+export type IterationVerdict = "green" | "failed" | "hang";
+
 export interface Project {
     id: string;
     name: string;
@@ -53,6 +57,58 @@ export interface Iteration {
     costUsd: number | null;
     durationMs: number | null;
 }
+
+// ── Observability snapshot (M3) ───────────────────────────────────────────────────────────────
+// The live EngineSnapshot IS the M3 verify surface: one type, one reducer (verifyState.applyEvent)
+// fed both by the running engine (real stream events) and the verify slice (scripted events incl.
+// probes). It lives in shared/ so the renderer can import it; SnapshotEvent lives here too so the
+// reducer is a leaf with no engine↔verifyState import cycle. progress.md is NOT in the snapshot —
+// it's a worktree file fetched separately, keeping the snapshot DB-reconstructable.
+
+export interface TokenTotals {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheCreation: number;
+    costUsd: number;
+}
+
+export interface IterationView {
+    index: number;
+    verdict: IterationVerdict | null;
+    tokens: TokenTotals;
+    durationMs: number | null;
+    sessionId: string | null;
+    commitSha: string | null;
+}
+
+export interface ActivityEntry {
+    iterationIndex: number;
+    kind: "assistant" | "tool-use" | "gate";
+    text: string;
+}
+
+export interface EngineSnapshot {
+    taskId: string;
+    status: TaskStatus;
+    currentIteration: { index: number; phase: "spawning" | "checking" | "accepting"; latestActivity: string } | null;
+    iterations: IterationView[];
+    totals: TokenTotals;            // sum of every iteration's tokens
+    feed: ActivityEntry[];          // bounded in-memory ring (cap 200)
+    feedEventsConsumed: number;     // total feed-producing events ever seen (never decremented on trim)
+    terminalReason: string | null;
+}
+
+// What the engine emits into the reducer. `spawn` translates stream events to assistant/tool-use/
+// usage; the loop emits iteration-start/gate/iteration-end/status.
+export type SnapshotEvent =
+    | { type: "iteration-start"; index: number }
+    | { type: "assistant"; index: number; text: string }
+    | { type: "tool-use"; index: number; name: string }
+    | { type: "usage"; index: number; tokens: TokenTotals; durationMs?: number; sessionId?: string }
+    | { type: "gate"; index: number; label: string }
+    | { type: "iteration-end"; index: number; verdict: IterationVerdict; commitSha: string }
+    | { type: "status"; status: TaskStatus; terminalReason?: string };
 
 // IPC contract: the renderer calls these; main implements them.
 export interface NewProjectInput {

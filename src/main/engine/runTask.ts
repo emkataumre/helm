@@ -1,7 +1,11 @@
 // src/main/engine/runTask.ts
-import type { Project, Task, TaskStatus } from "../../shared/types";
+import type { Project, Task, TaskStatus, IterationVerdict } from "../../shared/types";
 import type { LoopConfig } from "./loopConfig";
 import { buildGoalPrompt, buildInstructions, seedProgress } from "./prompt";
+
+// Re-export so the reducer, the loop, and the M2 verify slice (which imports it from here) share
+// the single definition now living in shared/types.ts.
+export type { IterationVerdict };
 
 export interface RunTaskDeps {
     ensureBranch: (repo: string, name: string, from: string) => Promise<void>;
@@ -23,7 +27,6 @@ export interface RunTaskDeps {
     log: (msg: string) => void;
 }
 
-export type IterationVerdict = "green" | "failed" | "hang";
 export interface IterationOutcome {
     verdict: IterationVerdict;
     gateOutput: string;   // failing layer's output tail (empty on green)
