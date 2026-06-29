@@ -50,3 +50,17 @@ export function finishIteration(db: Db, id: string, patch: FinishPatch): void {
 export function listIterations(db: Db, taskId: string): Iteration[] {
     return (db.prepare("SELECT * FROM iterations WHERE taskId = ? ORDER BY idx").all(taskId) as Row[]).map(toIteration);
 }
+
+// M5 drop-in resumes the FRESHEST session: the sessionId of the highest-index iteration that captured
+// one — including a just-killed in-flight iteration (whose sessionId was stamped before the loop bailed).
+// A later iteration whose sessionId is null does NOT shadow an earlier non-null one. Pure (no DB) so the
+// drop-in handler stays glue. null → start fresh (empty {resume}).
+export function latestSessionId(iterations: Iteration[]): string | null {
+    let best: { index: number; sessionId: string } | null = null;
+    for (const it of iterations) {
+        if (it.sessionId != null && (best === null || it.index > best.index)) {
+            best = { index: it.index, sessionId: it.sessionId };
+        }
+    }
+    return best?.sessionId ?? null;
+}

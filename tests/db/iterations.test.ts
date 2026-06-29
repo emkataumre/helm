@@ -1,6 +1,14 @@
 // tests/db/iterations.test.ts
 import { openDb } from "../../src/main/db/db";
-import { addIteration, finishIteration, listIterations } from "../../src/main/db/iterations";
+import { addIteration, finishIteration, listIterations, latestSessionId } from "../../src/main/db/iterations";
+import type { Iteration } from "../../src/shared/types";
+
+// A compact Iteration factory for the pure latestSessionId tests (the fields it ignores stay null).
+const mkIter = (index: number, sessionId: string | null): Iteration => ({
+    id: `i${index}`, taskId: "t", index, sessionId, startedAt: 0, endedAt: null, gateVerdict: null,
+    commitSha: null, outputTail: null, inputTokens: null, outputTokens: null, cacheReadTokens: null,
+    cacheCreationTokens: null, costUsd: null, durationMs: null,
+});
 
 it("adds an iteration and finalizes its verdict", () => {
     const db = openDb(":memory:");
@@ -53,4 +61,24 @@ it("a finish patch that omits tokens leaves those columns NULL", () => {
     expect(got.costUsd).toBeNull();
     expect(got.durationMs).toBeNull();
     db.close();
+});
+
+// M5: drop-in resumes the FRESHEST session — the highest-index iteration that captured one (including
+// the just-killed in-flight one). A pure helper so the ipc drop-in handler stays glue.
+describe("latestSessionId", () => {
+    it("picks the highest-index iteration that has a session id", () => {
+        expect(latestSessionId([mkIter(0, "s0"), mkIter(1, "s1"), mkIter(2, "s2")])).toBe("s2");
+    });
+    it("falls back to an earlier non-null session when the latest index has none", () => {
+        expect(latestSessionId([mkIter(0, "s0"), mkIter(1, null)])).toBe("s0");
+    });
+    it("returns null when no iteration captured a session id", () => {
+        expect(latestSessionId([mkIter(0, null), mkIter(1, null)])).toBeNull();
+    });
+    it("returns null for an empty list", () => {
+        expect(latestSessionId([])).toBeNull();
+    });
+    it("is order-independent (reads by index, not array position)", () => {
+        expect(latestSessionId([mkIter(2, "s2"), mkIter(0, "s0"), mkIter(1, "s1")])).toBe("s2");
+    });
 });
