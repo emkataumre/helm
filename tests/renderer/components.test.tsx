@@ -11,8 +11,12 @@ import { ActivityFeed } from "../../src/renderer/components/ActivityFeed";
 import { IterationHistory } from "../../src/renderer/components/IterationHistory";
 import { ProgressPanel } from "../../src/renderer/components/ProgressPanel";
 import { BoardCard } from "../../src/renderer/components/BoardCard";
+import { SchedulerBar } from "../../src/renderer/components/SchedulerBar";
 import { parseProgress } from "../../src/renderer/progress";
-import type { IterationView, TokenTotals, ActivityEntry, Task } from "../../src/shared/types";
+import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState } from "../../src/shared/types";
+
+const schedState = (over: Partial<SchedulerState> = {}): SchedulerState =>
+    ({ paused: false, perProject: [{ projectId: "p1", running: 2, cap: 3 }], ...over });
 
 const iv = (index: number, output: number, costUsd = 0): IterationView =>
     ({ index, verdict: "green", tokens: { input: 0, output, cacheRead: 0, cacheCreation: 0, costUsd }, durationMs: 100, sessionId: "s", commitSha: "c" });
@@ -69,6 +73,48 @@ describe("ActivityFeed / IterationHistory / BoardCard contracts", () => {
         expect(html).toContain("editing foo.ts");
         const merged = renderToStaticMarkup(<BoardCard task={task({ status: "merged" })} liveActivity="should-not-show" />);
         expect(merged).not.toContain("should-not-show");
+    });
+
+    it("BoardCard shows the Run button on a queued card ONLY when paused (manual mode)", () => {
+        const queuedPaused = renderToStaticMarkup(<BoardCard task={task({ status: "queued" })} paused onRun={() => {}} />);
+        expect(queuedPaused).toContain(">Run<");
+        const queuedAuto = renderToStaticMarkup(<BoardCard task={task({ status: "queued" })} paused={false} onRun={() => {}} />);
+        expect(queuedAuto).not.toContain(">Run<"); // auto-fleet → scheduler starts it, no manual button
+        const runningPaused = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} paused onRun={() => {}} />);
+        expect(runningPaused).not.toContain(">Run<"); // only queued cards get a Run button
+    });
+});
+
+describe("SchedulerBar contract", () => {
+    it("stamps paused + within-cap=true when every project's running ≤ cap", () => {
+        const html = renderToStaticMarkup(
+            <SchedulerBar state={schedState({ perProject: [{ projectId: "p1", running: 2, cap: 3 }, { projectId: "p2", running: 1, cap: 2 }] })} onSetPaused={() => {}} />,
+        );
+        expect(html).toContain('data-verify-unit="SchedulerBar"');
+        expect(html).toContain('data-verify-paused="false"');
+        expect(html).toContain('data-verify-within-cap="true"');
+    });
+
+    it("PROBE: a project with running > cap surfaces data-verify-within-cap=\"false\"", () => {
+        const html = renderToStaticMarkup(<SchedulerBar state={schedState({ perProject: [{ projectId: "p1", running: 4, cap: 3 }] })} onSetPaused={() => {}} />);
+        expect(html).toContain('data-verify-within-cap="false"');
+    });
+
+    it("shows running/cap and a queued count per project", () => {
+        const html = renderToStaticMarkup(
+            <SchedulerBar state={schedState({ perProject: [{ projectId: "p1", running: 2, cap: 3 }] })} queuedByProject={{ p1: 5 }} names={{ p1: "MyProj" }} onSetPaused={() => {}} />,
+        );
+        expect(html).toContain("MyProj");
+        expect(html).toContain("2/3");
+        expect(html).toContain("5 queued");
+    });
+
+    it("reflects paused state in the toggle: Pause when running, Resume when paused", () => {
+        const running = renderToStaticMarkup(<SchedulerBar state={schedState({ paused: false })} onSetPaused={() => {}} />);
+        expect(running).toContain("Pause");
+        const paused = renderToStaticMarkup(<SchedulerBar state={schedState({ paused: true })} onSetPaused={() => {}} />);
+        expect(paused).toContain("Resume");
+        expect(paused).toContain('data-verify-paused="true"');
     });
 });
 

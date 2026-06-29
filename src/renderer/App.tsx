@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
-import type { Project, Task, TaskStatus, EngineSnapshot, NewProjectInput } from "../shared/types";
+import type { Project, Task, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState } from "../shared/types";
 import { TokenReadout } from "./components/TokenReadout";
 import { IterationHistory } from "./components/IterationHistory";
 import { ActivityFeed } from "./components/ActivityFeed";
 import { ProgressPanel } from "./components/ProgressPanel";
 import { BoardCard } from "./components/BoardCard";
+import { SchedulerBar } from "./components/SchedulerBar";
 import { parseProgress, type ParsedProgress } from "./progress";
 
 const LANES: TaskStatus[] = ["queued", "running", "needs-human", "merged"];
@@ -18,23 +19,32 @@ export function App() {
     const [filter, setFilter] = useState<string>("");
     const [selected, setSelected] = useState<string | null>(null);
     const [live, setLive] = useState<Record<string, string>>({});
+    const [sched, setSched] = useState<SchedulerState | null>(null);
 
     const refresh = useCallback(async () => {
         setProjects(await window.helm.listProjects());
         setTasks(await window.helm.listTasks());
     }, []);
+    const refreshSched = useCallback(async () => { setSched(await window.helm.getSchedulerState()); }, []);
 
     useEffect(() => {
-        refresh();
-        window.helm.onTasksChanged(refresh);
+        refresh(); refreshSched();
+        window.helm.onTasksChanged(() => { refresh(); refreshSched(); });
         window.helm.onSnapshotChanged(async (taskId) => {
             const snap = await window.helm.getVerifyState(taskId);
             if (snap?.currentIteration) setLive((m) => ({ ...m, [taskId]: snap.currentIteration!.latestActivity }));
         });
-    }, [refresh]);
+        const id = setInterval(refreshSched, 1000); // keep the per-project running counts live
+        return () => clearInterval(id);
+    }, [refresh, refreshSched]);
+
+    const togglePaused = async (paused: boolean) => { await window.helm.setSchedulerPaused(paused); refreshSched(); };
+    const paused = sched?.paused ?? false;
 
     const shown = tasks.filter((t) => !filter || t.projectId === filter);
     const abandoned = shown.filter((t) => t.status === "abandoned");
+    const queuedByProject = tasks.reduce<Record<string, number>>((m, t) => { if (t.status === "queued") m[t.projectId] = (m[t.projectId] ?? 0) + 1; return m; }, {});
+    const names = Object.fromEntries(projects.map((p) => [p.id, p.name]));
 
     return (
         <div style={{ fontFamily: "system-ui", padding: 20, display: "grid", gap: 20, maxWidth: 1120, margin: "0 auto" }}>
@@ -47,6 +57,8 @@ export function App() {
                     <RegisterProjectForm onDone={refresh} />
                     <ProjectConfigForm projects={projects} onDone={refresh} />
                     <NewTaskForm projects={projects} onDone={refresh} />
+
+                    {sched ? <SchedulerBar state={sched} queuedByProject={queuedByProject} names={names} onSetPaused={togglePaused} /> : null}
 
                     <div>
                         <label>Project filter:{" "}
@@ -62,7 +74,7 @@ export function App() {
                             <div key={lane}>
                                 <h3 style={{ fontFamily: "ui-monospace, monospace", fontSize: 13, textTransform: "uppercase", color: "#788C5D" }}>{lane}</h3>
                                 {shown.filter((t) => t.status === lane).map((t) => (
-                                    <BoardCard key={t.id} task={t} liveActivity={live[t.id]} onClick={() => setSelected(t.id)} onRun={() => { window.helm.startNow(t.id); }} />
+                                    <BoardCard key={t.id} task={t} liveActivity={live[t.id]} paused={paused} onClick={() => setSelected(t.id)} onRun={() => { window.helm.startNow(t.id); }} />
                                 ))}
                             </div>
                         ))}
@@ -136,7 +148,7 @@ function TaskDetail({ taskId, onClose }: { taskId: string; onClose: () => void }
 }
 
 function RegisterProjectForm({ onDone }: { onDone: () => void }) {
-    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "" });
+    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "" });
     const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
     const detect = async () => {
@@ -149,6 +161,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
             name: f.name, repoPath: f.repoPath, targetBranch: f.targetBranch, checkCommand: f.checkCommand,
             setupCommand: f.setupCommand || null, model: f.model || null,
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
+            concurrencyCap: numOrNull(f.concurrencyCap),
         };
         await window.helm.registerProject(input);
         onDone();
@@ -168,6 +181,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
                 {input("iterationCap", "iterationCap (blank = default 8)")}
                 {input("noProgressK", "noProgressK (blank = default 2)")}
                 {input("stallTimeoutMin", "stallTimeoutMin (blank = default 40)")}
+                {input("concurrencyCap", "concurrencyCap (blank = default 3)")}
                 {input("model", "model (blank = CLI default)")}
                 <button disabled={!f.name || !f.repoPath || !f.checkCommand} onClick={submit}>Register</button>
             </div>
@@ -178,7 +192,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
 function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: () => void }) {
     const [id, setId] = useState("");
     const selected = projects.find((p) => p.id === id);
-    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "" });
+    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "" });
 
     useEffect(() => {
         if (!selected) return;
@@ -188,6 +202,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
             noProgressK: selected.noProgressK?.toString() ?? "",
             stallTimeoutMin: selected.stallTimeoutMin?.toString() ?? "",
             model: selected.model ?? "",
+            concurrencyCap: selected.concurrencyCap?.toString() ?? "",
         });
     }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -196,6 +211,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
         await window.helm.updateProject(id, {
             setupCommand: f.setupCommand || null, model: f.model || null,
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
+            concurrencyCap: numOrNull(f.concurrencyCap),
         });
         onDone();
     };
@@ -214,6 +230,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
                         {input("iterationCap", "iterationCap")}
                         {input("noProgressK", "noProgressK")}
                         {input("stallTimeoutMin", "stallTimeoutMin")}
+                        {input("concurrencyCap", "concurrencyCap")}
                         {input("model", "model")}
                         <button onClick={save}>Save config</button>
                     </>
