@@ -18,12 +18,13 @@ export function insertTask(db: Db, input: NewTaskInput): Task {
         intent: input.intent,
         acceptance: input.acceptance,
         status: "queued",
+        scopeHint: input.scopeHint ?? null,
         branchName: null, worktreePath: null, diffstat: null, failureReason: null,
         createdAt: now, updatedAt: now,
     };
     db.prepare(
-        `INSERT INTO tasks (id,projectId,title,intent,acceptance,status,branchName,worktreePath,diffstat,failureReason,createdAt,updatedAt)
-         VALUES (@id,@projectId,@title,@intent,@acceptance,@status,@branchName,@worktreePath,@diffstat,@failureReason,@createdAt,@updatedAt)`,
+        `INSERT INTO tasks (id,projectId,title,intent,acceptance,status,scopeHint,branchName,worktreePath,diffstat,failureReason,createdAt,updatedAt)
+         VALUES (@id,@projectId,@title,@intent,@acceptance,@status,@scopeHint,@branchName,@worktreePath,@diffstat,@failureReason,@createdAt,@updatedAt)`,
     ).run({ ...t, acceptance: JSON.stringify(t.acceptance) });
     return t;
 }

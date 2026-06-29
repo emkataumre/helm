@@ -10,6 +10,12 @@ export interface Project {
     branchPrefix: string;      // default "ralph" -> task branches "ralph/task-<id>"
     checkCommand: string;      // mandatory; the Layer-A gate
     worktreeDir: string;       // relative to repoPath; default ".helm/worktrees"
+    // M3 per-project config (all nullable; NULL = use the engine default / feature off).
+    setupCommand: string | null;     // deps install run once in a fresh worktree
+    iterationCap: number | null;     // overrides DEFAULT_LOOP_CONFIG.iterationCap
+    noProgressK: number | null;      // overrides DEFAULT_LOOP_CONFIG.noProgressK
+    stallTimeoutMin: number | null;  // MINUTES — converted to ms in resolveLoopConfig (the units seam)
+    model: string | null;            // claude --model for each spawn
 }
 
 export interface Task {
@@ -19,6 +25,7 @@ export interface Task {
     intent: string;            // prose directive (what to build)
     acceptance: string[];      // executable proof commands (stored now; run from M2)
     status: TaskStatus;
+    scopeHint: string | null;  // per-task (spec §3/§10) — re-enables the /goal no-out-of-scope clause
     branchName: string | null;
     worktreePath: string | null;
     diffstat: string | null;
@@ -45,12 +52,19 @@ export interface NewProjectInput {
     repoPath: string;
     targetBranch: string;
     checkCommand: string;
+    // M3 optional config (absent → stored NULL).
+    setupCommand?: string | null;
+    iterationCap?: number | null;
+    noProgressK?: number | null;
+    stallTimeoutMin?: number | null;
+    model?: string | null;
 }
 export interface NewTaskInput {
     projectId: string;
     title: string;
     intent: string;
     acceptance: string[];
+    scopeHint?: string | null;
 }
 export interface HelmApi {
     registerProject: (input: NewProjectInput) => Promise<Project>;

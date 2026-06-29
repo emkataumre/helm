@@ -6,9 +6,10 @@ import type { Project, Task } from "../../src/shared/types";
 const project: Project = {
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph",
     targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm test", worktreeDir: ".helm/worktrees",
+    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null,
 };
 const task: Task = {
-    id: "abc", projectId: "p1", title: "T", intent: "do", acceptance: ["x"], status: "queued",
+    id: "abc", projectId: "p1", title: "T", intent: "do", acceptance: ["x"], status: "queued", scopeHint: null,
     branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0,
 };
 
