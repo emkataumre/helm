@@ -3,21 +3,48 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db";
 import type { Iteration } from "../../shared/types";
 
-interface Row { id: string; taskId: string; idx: number; sessionId: string | null; startedAt: number; endedAt: number | null; gateVerdict: Iteration["gateVerdict"]; commitSha: string | null; outputTail: string | null; }
-const toIteration = (r: Row): Iteration => ({ id: r.id, taskId: r.taskId, index: r.idx, sessionId: r.sessionId, startedAt: r.startedAt, endedAt: r.endedAt, gateVerdict: r.gateVerdict, commitSha: r.commitSha, outputTail: r.outputTail });
+interface Row {
+    id: string; taskId: string; idx: number; sessionId: string | null;
+    startedAt: number; endedAt: number | null; gateVerdict: Iteration["gateVerdict"];
+    commitSha: string | null; outputTail: string | null;
+    inputTokens: number | null; outputTokens: number | null;
+    cacheReadTokens: number | null; cacheCreationTokens: number | null;
+    costUsd: number | null; durationMs: number | null;
+}
+const toIteration = (r: Row): Iteration => ({
+    id: r.id, taskId: r.taskId, index: r.idx, sessionId: r.sessionId,
+    startedAt: r.startedAt, endedAt: r.endedAt, gateVerdict: r.gateVerdict,
+    commitSha: r.commitSha, outputTail: r.outputTail,
+    inputTokens: r.inputTokens, outputTokens: r.outputTokens,
+    cacheReadTokens: r.cacheReadTokens, cacheCreationTokens: r.cacheCreationTokens,
+    costUsd: r.costUsd, durationMs: r.durationMs,
+});
+
+// The durable per-iteration accounting fields finishIteration may patch (besides verdict/sha/etc.).
+type TokenPatch = Pick<Iteration, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheCreationTokens" | "costUsd" | "durationMs">;
+export type FinishPatch = Partial<Pick<Iteration, "gateVerdict" | "commitSha" | "outputTail" | "sessionId"> & TokenPatch>;
 
 export function addIteration(db: Db, taskId: string, index: number): Iteration {
-    const it: Iteration = { id: randomUUID(), taskId, index, sessionId: null, startedAt: Date.now(), endedAt: null, gateVerdict: null, commitSha: null, outputTail: null };
+    const it: Iteration = {
+        id: randomUUID(), taskId, index, sessionId: null, startedAt: Date.now(), endedAt: null,
+        gateVerdict: null, commitSha: null, outputTail: null,
+        inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheCreationTokens: null,
+        costUsd: null, durationMs: null,
+    };
     db.prepare(`INSERT INTO iterations (id,taskId,idx,sessionId,startedAt,endedAt,gateVerdict,commitSha,outputTail)
                 VALUES (@id,@taskId,@idx,@sessionId,@startedAt,@endedAt,@gateVerdict,@commitSha,@outputTail)`)
         .run({ ...it, idx: index });
     return it;
 }
 
-export function finishIteration(db: Db, id: string, patch: Partial<Pick<Iteration, "gateVerdict" | "commitSha" | "outputTail" | "sessionId">>): void {
+// Patch the row, always stamping endedAt. Each present field binds its value coalesced to NULL —
+// better-sqlite3 throws on `undefined`, and an omitted token field must simply stay NULL.
+export function finishIteration(db: Db, id: string, patch: FinishPatch): void {
     const fields = Object.keys(patch);
     const set = [...fields.map((f) => `${f} = @${f}`), "endedAt = @endedAt"].join(", ");
-    db.prepare(`UPDATE iterations SET ${set} WHERE id = @id`).run({ ...patch, id, endedAt: Date.now() });
+    const binds: Record<string, unknown> = { id, endedAt: Date.now() };
+    for (const f of fields) binds[f] = (patch as Record<string, unknown>)[f] ?? null;
+    db.prepare(`UPDATE iterations SET ${set} WHERE id = @id`).run(binds);
 }
 
 export function listIterations(db: Db, taskId: string): Iteration[] {

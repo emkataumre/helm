@@ -44,6 +44,14 @@ export interface Iteration {
     gateVerdict: "green" | "failed" | "hang" | null;
     commitSha: string | null;
     outputTail: string | null;
+    // M3 per-iteration accounting (all nullable; absent = not recorded). Read once per iteration
+    // from the terminal stream-json `result.usage` (cumulative session totals — see Task 1 spike).
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cacheReadTokens: number | null;
+    cacheCreationTokens: number | null;
+    costUsd: number | null;
+    durationMs: number | null;
 }
 
 // IPC contract: the renderer calls these; main implements them.
