@@ -18,7 +18,7 @@ export interface IterStep { agentOk?: boolean; stalled?: boolean; checkGreen?: b
 export interface DepConfig { script?: IterStep[]; mergeConflict?: boolean; acceptance?: string[]; config?: Partial<LoopConfig>; }
 
 interface Recording {
-    statusCalls: { status: TaskStatus; extra?: { diffstat?: string; failureReason?: string } }[];
+    statusCalls: { status: TaskStatus; extra?: { diffstat?: string; failureReason?: string | null } }[];
     removeCalls: { keepBranch: boolean }[];
     mergeResults: { merged: boolean; conflict: boolean }[];
     finishCalls: { gateVerdict: IterationVerdict }[];

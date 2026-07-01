@@ -53,6 +53,29 @@ describe("verifyAndMerge", () => {
     });
 });
 
+// M6 ①: a task that was needs-human (red reason) then verify-&-merged or abandoned must not keep the
+// stale reason on its terminal card. Both handback terminal-successes clear failureReason (DB-authoritative).
+describe("stale failureReason cleared on any terminal-success (M6)", () => {
+    function capturing(over: Partial<HandbackDeps> = {}) {
+        const extras: Array<{ status: string; failureReason?: string | null }> = [];
+        const { deps } = fakeDeps({ setStatus: (_id, status, extra) => extras.push({ status, failureReason: extra?.failureReason }), ...over });
+        return { deps, extras };
+    }
+    const withReason: Task = { ...TASK, failureReason: "was: re-check failed after rebase on integration tip" };
+
+    it("verify-&-merge → merged clears the stale failureReason", async () => {
+        const { deps, extras } = capturing({ runMergeStage: async () => ({ outcome: "merged", diffstat: "+1 -0" }) });
+        await verifyAndMerge(PROJECT, withReason, "ralph/task-abc", deps);
+        expect(extras.find((e) => e.status === "merged")?.failureReason).toBeNull();
+    });
+
+    it("abandon clears the stale failureReason", async () => {
+        const { deps, extras } = capturing();
+        await abandon(PROJECT, withReason, "ralph/task-abc", deps);
+        expect(extras.find((e) => e.status === "abandoned")?.failureReason).toBeNull();
+    });
+});
+
 describe("abandon (the worktree reaper)", () => {
     it("removes the worktree + branch and sets abandoned", async () => {
         const { deps, calls } = fakeDeps();

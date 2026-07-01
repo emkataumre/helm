@@ -88,6 +88,18 @@ describe("runTaskLoop — happy path", () => {
         expect(checkedOut).toBe(false);
     });
 
+    it("clears a stale failureReason on a green merge (terminal-success is DB-authoritative)", async () => {
+        // A task that was needs-human (reason set), then resumed and went green, must not keep the red
+        // reason on the merged card. terminate() clears it on every merged/abandoned transition.
+        let mergedExtra: { failureReason?: string | null; diffstat?: string } | undefined;
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            setStatus: (_id, s, extra) => { if (s === "merged") mergedExtra = extra; },
+        }));
+        expect(status).toBe("merged");
+        expect(mergedExtra).toBeDefined();
+        expect(mergedExtra?.failureReason).toBeNull();
+    });
+
     it("flags needs-human immediately when acceptance is empty, without spawning", async () => {
         let spawned = false;
         const status = await runTaskLoop(project, { ...task, acceptance: [] }, DEFAULT_LOOP_CONFIG, deps({

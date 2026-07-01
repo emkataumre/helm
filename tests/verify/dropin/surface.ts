@@ -64,7 +64,7 @@ export async function runFreesSlotScenario(): Promise<DropinRecording> {
     let handbackCommitted = false;
     let handbackCommitBeforeMerge = false;
 
-    const setStatus = (id: string, status: TaskStatus, extra?: { branchName?: string; worktreePath?: string; diffstat?: string; failureReason?: string }) => {
+    const setStatus = (id: string, status: TaskStatus, extra?: { branchName?: string; worktreePath?: string; diffstat?: string; failureReason?: string | null }) => {
         const t = tasks.get(id)!;
         tasks.set(id, { ...t, status, ...(extra?.worktreePath !== undefined ? { worktreePath: extra.worktreePath } : {}) });
         transitions.push({ id, status });

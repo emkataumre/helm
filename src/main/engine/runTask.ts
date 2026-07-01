@@ -27,7 +27,7 @@ export interface RunTaskDeps {
     // tip re-check). The real wiring (ipc.ts) wraps this in the project's merge mutex; the loop is
     // mutex-agnostic. squashMergeInto/diffStat stay available as merge-stage building blocks.
     mergeStage: (project: Project, task: Task, taskBranch: string) => Promise<MergeStageResult>;
-    setStatus: (taskId: string, status: TaskStatus, extra?: { branchName?: string; worktreePath?: string; diffstat?: string; failureReason?: string }) => void;
+    setStatus: (taskId: string, status: TaskStatus, extra?: { branchName?: string; worktreePath?: string; diffstat?: string; failureReason?: string | null }) => void;
     addIteration: (taskId: string, index: number) => { id: string };
     finishIteration: (id: string, patch: { gateVerdict: "green" | "failed" | "hang"; outputTail: string; commitSha?: string | null; sessionId?: string | null; inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; costUsd?: number | null; durationMs?: number | null }) => void;
     emit?: (e: SnapshotEvent) => void; // feeds the live EngineSnapshot; absent → no-op (e.g. the M2 slice)
@@ -134,9 +134,13 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     // (and delete its branch) for merged/abandoned. Deriving removal from the status keeps the retention
     // rule in one place; keepBranch only matters on the removal path.
     const terminate = async (status: TaskStatus, reason: string | undefined, keepBranch: boolean, diffstat?: string): Promise<TaskStatus> => {
-        const extra: { diffstat?: string; failureReason?: string } = {};
+        const extra: { diffstat?: string; failureReason?: string | null } = {};
         if (diffstat !== undefined) extra.diffstat = diffstat;
         if (reason !== undefined) extra.failureReason = reason;
+        // Clear any stale failureReason on a terminal SUCCESS: a task that was needs-human (reason set),
+        // then resumed to a green merge (or was abandoned), must not keep its old red reason on the card.
+        // DB-authoritative — the merged card reflects the final DB row, not a leftover.
+        if (status === "merged" || status === "abandoned") extra.failureReason = null;
         d.setStatus(task.id, status, extra);
         d.emit?.({ type: "status", status, terminalReason: reason });
         if (status === "merged" || status === "abandoned") {

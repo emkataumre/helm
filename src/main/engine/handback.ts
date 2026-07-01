@@ -14,7 +14,7 @@ import type { MergeStageResult } from "./mergeStage";
 export interface HandbackDeps {
     commitAll: (repo: string, message: string) => Promise<void>;
     runMergeStage: (project: Project, task: Task, taskBranch: string) => Promise<MergeStageResult>;
-    setStatus: (taskId: string, status: TaskStatus, extra?: { diffstat?: string; failureReason?: string }) => void;
+    setStatus: (taskId: string, status: TaskStatus, extra?: { diffstat?: string; failureReason?: string | null }) => void;
     removeWorktree: (repo: string, path: string, branch: string, keepBranch: boolean) => Promise<void>;
 }
 
@@ -25,7 +25,8 @@ export async function verifyAndMerge(project: Project, task: Task, taskBranch: s
     if (task.worktreePath) await d.commitAll(task.worktreePath, "ralph: handback");
     const r = await d.runMergeStage(project, task, taskBranch);
     if (r.outcome === "merged") {
-        d.setStatus(task.id, "merged", { diffstat: r.diffstat });
+        // Clear any stale failureReason (this task may have been needs-human before the human dropped in).
+        d.setStatus(task.id, "merged", { diffstat: r.diffstat, failureReason: null });
         if (task.worktreePath) await d.removeWorktree(project.repoPath, task.worktreePath, taskBranch, false);
     } else {
         d.setStatus(task.id, "needs-human", { failureReason: r.reason });
@@ -44,5 +45,5 @@ export async function abandon(project: Project, task: Task, taskBranch: string, 
             // Already reaped (worktree gone) — the postcondition (no worktree) still holds; don't fail.
         }
     }
-    d.setStatus(task.id, "abandoned");
+    d.setStatus(task.id, "abandoned", { failureReason: null }); // terminal-success: no stale red reason on the card
 }
