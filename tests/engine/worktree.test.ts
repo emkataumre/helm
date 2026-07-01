@@ -1,9 +1,9 @@
 // tests/engine/worktree.test.ts
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run, type ExecFn, type ExecResult } from "../../src/main/engine/exec";
-import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "../../src/main/engine/worktree";
+import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor, installTrunkGuard } from "../../src/main/engine/worktree";
 
 const ok = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: "", timedOut: false });
 
@@ -89,6 +89,70 @@ it("M6: lists real branches + worktrees, then rebuilds a worktree on an existing
         await removeWorktree(repo, wt, "ralph/task-1", false);
     } finally {
         rmSync(repo, { recursive: true, force: true });
+    }
+});
+
+// ── M6-② Task 4: worktree-scoped trunk-guard hook ────────────────────────────────────────────────
+// installTrunkGuard writes a reject-all pre-push into a Helm-managed hooks dir and points the
+// worktree's hooks there via worktree-scoped config (extensions.worktreeConfig + --worktree
+// core.hooksPath). Unit-level: real temp dir for the fs, fake exec records the git config argv.
+it("M6: installTrunkGuard writes a reject-all pre-push and issues the worktree-scoped hooksPath config", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "helm-guard-"));
+    try {
+        const wt = join(repo, ".helm", "worktrees", "ralph-task-1");
+        const calls: string[][] = [];
+        const fake: ExecFn = async (_cmd, args) => { calls.push(args ?? []); return ok(""); };
+
+        await installTrunkGuard(repo, wt, fake);
+
+        // The hook exists, rejects (exit 1), and carries the hand-back message.
+        const hookPath = join(repo, ".helm", "hooks", "pre-push");
+        expect(existsSync(hookPath)).toBe(true);
+        const hook = readFileSync(hookPath, "utf8");
+        expect(hook).toMatch(/exit 1/);
+        expect(hook).toMatch(/never push/i);
+
+        // extensions.worktreeConfig enabled repo-wide, then the worktree-scoped hooksPath set.
+        const flat = calls.map((c) => c.join(" "));
+        expect(flat.some((c) => c.includes(`-C ${repo}`) && c.includes("extensions.worktreeConfig") && c.includes("true"))).toBe(true);
+        expect(flat.some((c) => c.includes(`-C ${wt}`) && c.includes("--worktree") && c.includes("core.hooksPath"))).toBe(true);
+    } finally {
+        rmSync(repo, { recursive: true, force: true });
+    }
+});
+
+// The load-bearing REAL-git proof (mirrors the build-spike): a worktree created via createWorktree
+// gets a guard that ACTUALLY rejects a push from inside the worktree, while the main checkout — which
+// hosts the human's promotion push (slice ③) — is NOT hook-blocked.
+it("M6: a task worktree's push is rejected by the hook; the main checkout's push is not", async () => {
+    const base = mkdtempSync(join(tmpdir(), "helm-guardE2E-"));
+    const remote = join(base, "remote.git");
+    const repo = join(base, "main");
+    try {
+        await run("git", ["-C", base, "init", "--bare", "remote.git"]);
+        await run("git", ["init", "-b", "master", repo]);
+        await run("git", ["-C", repo, "config", "user.email", "t@t.t"]);
+        await run("git", ["-C", repo, "config", "user.name", "t"]);
+        await run("git", ["-C", repo, "remote", "add", "origin", remote]);
+        await run("git", ["-C", repo, "commit", "--allow-empty", "-m", "c1"]);
+        await run("git", ["-C", repo, "push", "origin", "master"]);
+        await ensureBranch(repo, "integration/ralph", "master");
+
+        // createWorktree installs the guard as part of creation.
+        const wt = await createWorktree(repo, "integration/ralph", "ralph/task-1", ".helm/worktrees");
+        await run("git", ["-C", wt, "commit", "--allow-empty", "-m", "c2"]);
+
+        // Push FROM the worktree → rejected (non-zero, the hook message on stderr).
+        const wtPush = await run("git", ["-C", wt, "push", "origin", "ralph/task-1"]);
+        expect(wtPush.code).not.toBe(0);
+        expect(wtPush.stderr).toMatch(/never push/i);
+
+        // Push from the MAIN checkout → NOT hook-blocked (the promotion-push path stays free).
+        await run("git", ["-C", repo, "commit", "--allow-empty", "-m", "c3"]);
+        const mainPush = await run("git", ["-C", repo, "push", "origin", "master"]);
+        expect(mainPush.code).toBe(0);
+    } finally {
+        rmSync(base, { recursive: true, force: true });
     }
 });
 

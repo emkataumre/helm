@@ -1,5 +1,6 @@
 // src/main/engine/worktree.ts
 import { join } from "node:path";
+import { writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { run, type ExecFn } from "./exec";
 import { createKeyedMutex } from "./mutex";
 import type { WorktreeInfo } from "./reconcile";
@@ -48,8 +49,39 @@ export async function checkoutBranch(repoRoot: string, name: string, exec: ExecF
 
 export async function createWorktree(repoRoot: string, fromBranch: string, branch: string, worktreeDir: string, exec: ExecFn = run): Promise<string> {
     const path = worktreePathFor(repoRoot, worktreeDir, branch);
-    await repoLock.withLock(repoRoot, () => git(repoRoot, ["worktree", "add", "-b", branch, path, fromBranch], exec));
+    await repoLock.withLock(repoRoot, async () => {
+        await git(repoRoot, ["worktree", "add", "-b", branch, path, fromBranch], exec);
+        await installTrunkGuard(repoRoot, path, exec);
+    });
     return path;
+}
+
+// ── M6-② Task 4: the worktree-scoped trunk-guard hook (the git-level suspenders under the classifier
+// belt) ───────────────────────────────────────────────────────────────────────────────────────────
+// A Helm-managed hooks dir holds a reject-all `pre-push`; each task/throwaway worktree points its
+// `core.hooksPath` at it via WORKTREE-scoped config, so the agent (and a drop-in human inside a
+// worktree) literally cannot push — even via an indirect script — while the primary checkout, which
+// hosts the human's promotion push (slice ③, run from repoRoot after the throwaway is removed), stays
+// free. Best-effort: a git too old for `extensions.worktreeConfig` degrades to belt-only (the Task-3
+// permissions.deny already blocks the agent) rather than bricking worktree creation. Verified on
+// Windows git by the Task-4 build-spike. Assumes the caller holds the repoLock (config writes to
+// .git/config race otherwise).
+const HELM_PRE_PUSH = "#!/bin/sh\necho 'Helm: agents never push - hand back to Helm to land/promote' 1>&2\nexit 1\n";
+
+export async function installTrunkGuard(repoRoot: string, worktreePath: string, exec: ExecFn = run): Promise<void> {
+    try {
+        const hooksDir = join(repoRoot, ".helm", "hooks");
+        mkdirSync(hooksDir, { recursive: true });
+        const hookPath = join(hooksDir, "pre-push");
+        if (!existsSync(hookPath)) writeFileSync(hookPath, HELM_PRE_PUSH, { mode: 0o755 }); // create once, idempotent
+        // Repo-wide switch that makes --worktree config legal (harmless), then the worktree-local hooksPath.
+        await git(repoRoot, ["config", "extensions.worktreeConfig", "true"], exec);
+        await git(worktreePath, ["config", "--worktree", "core.hooksPath", hooksDir], exec);
+    } catch (e) {
+        // Suspenders, not the belt: never fail worktree creation over the hook. The permissions.deny
+        // belt (Task 3) still blocks the agent; log the degradation so it's visible.
+        console.log(`[helm] trunk-guard hook not installed for ${worktreePath} (belt-only): ${e instanceof Error ? e.message : String(e)}`);
+    }
 }
 
 export async function removeWorktree(repoRoot: string, worktreePath: string, branch: string, keepBranch: boolean, exec: ExecFn = run): Promise<void> {
@@ -93,5 +125,8 @@ export async function listBranches(repoRoot: string, exec: ExecFn = run): Promis
 // The rebuild primitive: recreate a worktree on an ALREADY-EXISTING branch (no `-b`, unlike
 // createWorktree). Used when a crash left the task's branch alive but its worktree gone.
 export async function addWorktreeForBranch(repoRoot: string, path: string, branch: string, exec: ExecFn = run): Promise<void> {
-    await repoLock.withLock(repoRoot, () => git(repoRoot, ["worktree", "add", path, branch], exec));
+    await repoLock.withLock(repoRoot, async () => {
+        await git(repoRoot, ["worktree", "add", path, branch], exec);
+        await installTrunkGuard(repoRoot, path, exec); // the rebuilt worktree gets the same guard as a fresh one
+    });
 }
