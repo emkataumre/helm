@@ -63,6 +63,14 @@ const STEPS: Array<(db: Db) => void> = [
     (db) => {
         db.exec(`ALTER TABLE projects ADD COLUMN autoModeEnvironment TEXT`);
     },
+    // Step 6 — M6-③ per-project promotion strategy for the project-level batch Promote (spec §13/§3):
+    // 'pr' (push integration + hand a `gh pr create` command), 'direct' (push the validated promote
+    // branch + hand a raw-sha push to targetBranch), or 'strict' (push nothing; hand the full local
+    // sequence). NOT NULL DEFAULT 'pr' — the first non-nullable config column, so the ALTER backfills
+    // every existing row with 'pr' (the safe default: nothing is ever pushed to the target by the tool).
+    (db) => {
+        db.exec(`ALTER TABLE projects ADD COLUMN promotionMode TEXT NOT NULL DEFAULT 'pr'`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.

@@ -43,6 +43,22 @@ it("round-trips an all-NULL-config project (null, never undefined)", () => {
     db.close();
 });
 
+// M6-③: promotionMode is a NOT NULL TEXT column (DEFAULT 'pr') — the graduation strategy for the
+// project-level batch Promote (pr | direct | strict). Defaults to 'pr' when absent on insert, round-trips
+// a set value, and is patchable like the other config fields.
+it("defaults promotionMode to 'pr', round-trips a set value, and updateProject patches it", () => {
+    const db = openDb(":memory:");
+    const bare = insertProject(db, { name: "Bare", repoPath: "/r", targetBranch: "main", checkCommand: "c" });
+    expect(getProject(db, bare.id)?.promotionMode).toBe("pr"); // absent → the 'pr' default
+
+    const direct = insertProject(db, { name: "Direct", repoPath: "/r", targetBranch: "main", checkCommand: "c", promotionMode: "direct" });
+    expect(getProject(db, direct.id)?.promotionMode).toBe("direct");
+
+    updateProject(db, direct.id, { promotionMode: "strict" });
+    expect(getProject(db, direct.id)?.promotionMode).toBe("strict");
+    db.close();
+});
+
 // M6-②: the per-project auto-mode trusted-environment is a nullable TEXT column (NULL = engine
 // default ["$defaults"]), set on insert and patchable like the other config fields. Stored raw
 // (the confirmed shape from the Task-1 spike is a string[] of NL trust lines; the builder composes).

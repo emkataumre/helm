@@ -25,6 +25,7 @@ export interface Project {
     concurrencyCap: number | null;   // M4 scheduler cap (NOT a LoopConfig field); NULL = engine default 3
     terminalCommand: string | null;  // M5 drop-in launch template ({worktree}/{resume}); NULL = engine default
     autoModeEnvironment: string | null; // M6-② auto-mode trusted-env (spec §10); raw TEXT; NULL = ["$defaults"]
+    promotionMode: "pr" | "direct" | "strict"; // M6-③ batch-Promote graduation strategy (spec §13/§3); NOT NULL, default "pr"
 }
 
 export interface Task {
@@ -144,6 +145,7 @@ export interface NewProjectInput {
     concurrencyCap?: number | null;
     terminalCommand?: string | null;
     autoModeEnvironment?: string | null;
+    promotionMode?: "pr" | "direct" | "strict"; // absent → stored 'pr' (the DB default)
 }
 export interface NewTaskInput {
     projectId: string;
@@ -153,7 +155,7 @@ export interface NewTaskInput {
     scopeHint?: string | null;
 }
 // The editable per-project config columns (the project-config form patches these).
-export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment">>;
+export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode">>;
 // Best-effort registration pre-fill (current git branch → target, package.json → check, lockfile → setup).
 export interface DetectedConfig { targetBranch: string | null; checkCommand: string | null; setupCommand: string | null }
 export interface HelmApi {

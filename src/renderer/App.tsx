@@ -182,7 +182,7 @@ function TaskDetail({ task, onClose, onAction }: { task: Task; onClose: () => vo
 }
 
 function RegisterProjectForm({ onDone }: { onDone: () => void }) {
-    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "" });
+    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr" });
     const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
     const detect = async () => {
@@ -197,6 +197,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
             autoModeEnvironment: f.autoModeEnvironment || null,
+            promotionMode: f.promotionMode as "pr" | "direct" | "strict",
         };
         await window.helm.registerProject(input);
         onDone();
@@ -220,6 +221,13 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
                 {input("model", "model (blank = CLI default)")}
                 {input("terminalCommand", 'terminalCommand (blank = wt.exe -d "{worktree}" claude {resume})')}
                 {input("autoModeEnvironment", 'autoModeEnvironment (blank = ["$defaults"] — trusts repo + origin)')}
+                <label style={{ display: "block", margin: "4px 0" }}>promotionMode{" "}
+                    <select value={f.promotionMode} onChange={set("promotionMode")}>
+                        <option value="pr">pr — push integration, hand a gh pr create command</option>
+                        <option value="direct">direct — push the validated branch, hand a raw-sha push</option>
+                        <option value="strict">strict — push nothing, hand the full local sequence</option>
+                    </select>
+                </label>
                 <button disabled={!f.name || !f.repoPath || !f.checkCommand} onClick={submit}>Register</button>
             </div>
         </details>
@@ -229,7 +237,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
 function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: () => void }) {
     const [id, setId] = useState("");
     const selected = projects.find((p) => p.id === id);
-    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "" });
+    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr" });
 
     useEffect(() => {
         if (!selected) return;
@@ -242,6 +250,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
             concurrencyCap: selected.concurrencyCap?.toString() ?? "",
             terminalCommand: selected.terminalCommand ?? "",
             autoModeEnvironment: selected.autoModeEnvironment ?? "",
+            promotionMode: selected.promotionMode,
         });
     }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -252,6 +261,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
             autoModeEnvironment: f.autoModeEnvironment || null,
+            promotionMode: f.promotionMode as "pr" | "direct" | "strict",
         });
         onDone();
     };
@@ -274,6 +284,13 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
                         {input("model", "model")}
                         {input("terminalCommand", "terminalCommand")}
                         {input("autoModeEnvironment", 'autoModeEnvironment (blank = ["$defaults"])')}
+                        <label style={{ display: "block", margin: "4px 0" }}>promotionMode{" "}
+                            <select value={f.promotionMode} onChange={set("promotionMode")}>
+                                <option value="pr">pr</option>
+                                <option value="direct">direct</option>
+                                <option value="strict">strict</option>
+                            </select>
+                        </label>
                         <button onClick={save}>Save config</button>
                     </>
                 ) : null}

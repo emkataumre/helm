@@ -5,8 +5,8 @@ import type { Project, NewProjectInput } from "../../shared/types";
 
 // The M3 config columns, in one place. Every absent value binds NULL — better-sqlite3 throws on
 // `undefined`, and NULL is the meaningful "use the engine default / feature off" sentinel.
-type ConfigField = "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment";
-const CONFIG_FIELDS: ConfigField[] = ["setupCommand", "iterationCap", "noProgressK", "stallTimeoutMin", "model", "concurrencyCap", "terminalCommand", "autoModeEnvironment"];
+type ConfigField = "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode";
+const CONFIG_FIELDS: ConfigField[] = ["setupCommand", "iterationCap", "noProgressK", "stallTimeoutMin", "model", "concurrencyCap", "terminalCommand", "autoModeEnvironment", "promotionMode"];
 
 export function insertProject(db: Db, input: NewProjectInput): Project {
     // Trim every string input. A stray leading/trailing space (a paste artifact) in repoPath/
@@ -30,12 +30,13 @@ export function insertProject(db: Db, input: NewProjectInput): Project {
         concurrencyCap: input.concurrencyCap ?? null,
         terminalCommand: opt(input.terminalCommand),
         autoModeEnvironment: opt(input.autoModeEnvironment),
+        promotionMode: input.promotionMode ?? "pr", // NOT NULL — the safe default (nothing pushed to target)
     };
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir,
-                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,model,concurrencyCap,terminalCommand,autoModeEnvironment)
+                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,model,concurrencyCap,terminalCommand,autoModeEnvironment,promotionMode)
          VALUES (@id,@name,@repoPath,@integrationBranch,@targetBranch,@branchPrefix,@checkCommand,@worktreeDir,
-                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@model,@concurrencyCap,@terminalCommand,@autoModeEnvironment)`,
+                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@model,@concurrencyCap,@terminalCommand,@autoModeEnvironment,@promotionMode)`,
     ).run(p);
     return p;
 }
