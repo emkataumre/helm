@@ -17,6 +17,7 @@ import { ensureRalphExcluded, writeRalphFiles } from "./engine/ralph";
 import { runCheck } from "./engine/check";
 import { run } from "./engine/exec";
 import { spawnAgent } from "./engine/spawn";
+import { buildSpawnSettings } from "./engine/spawnSettings";
 import { createLogSink } from "./engine/logSink";
 import { createSnapshotStore } from "./engine/snapshotStore";
 import { snapshotFromRows } from "./engine/verifyState";
@@ -94,8 +95,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
             ensureBranch, checkoutBranch, createWorktree, removeWorktree,
             ensureRalphExcluded, writeRalphFiles,
             runSetup,
-            // Inject the per-iteration raw-log sink (keyed by taskId + index) at the chokepoint.
-            spawnAgent: (wt, prompt, opts) => spawnAgent(wt, prompt, { ...opts, logSink: createLogSink(logsDir, task.id, opts.iterationIndex ?? 0) }),
+            // Inject the per-iteration raw-log sink (keyed by taskId + index) AND the per-spawn --settings
+            // JSON (M6-② never-push belt + autoMode.environment) at the chokepoint. buildSpawnSettings runs
+            // at this ipc edge so spawn.ts stays decoupled from Project (it just forwards the string).
+            spawnAgent: (wt, prompt, opts) => spawnAgent(wt, prompt, { ...opts, logSink: createLogSink(logsDir, task.id, opts.iterationIndex ?? 0), settings: buildSpawnSettings(project) }),
             commitAll, headSha,
             runCheck: (wt, cmd, t) => runCheck(wt, cmd, t),
             runAcceptance: (wt, cmds, t) => runAcceptance(wt, cmds, t),

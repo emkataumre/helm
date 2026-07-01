@@ -89,4 +89,22 @@ describe("spawnAgent stream-json", () => {
         expect(res.aborted).toBe(true);
         expect(res.ok).toBe(false);
     });
+
+    // ── M6-②: the per-spawn --settings injection (never-push deny + autoMode.environment) ─────────
+    it("forwards `--settings <json>` to the CLI when opts.settings is set", async () => {
+        let seenArgs: string[] = [];
+        const exec: ExecFn = async (_cmd, args) => { seenArgs = args ?? []; return { code: 0, stdout: "", stderr: "", timedOut: false }; };
+        const settings = '{"permissions":{"deny":["Bash(git push:*)"]}}';
+        await spawnAgent("/wt", "/goal x", { settings }, exec);
+        const i = seenArgs.indexOf("--settings");
+        expect(i).toBeGreaterThanOrEqual(0);
+        expect(seenArgs[i + 1]).toBe(settings); // the JSON travels as the very next argv token, unmangled
+    });
+
+    it("omits --settings entirely when opts.settings is absent (unchanged default invocation)", async () => {
+        let seenArgs: string[] = [];
+        const exec: ExecFn = async (_cmd, args) => { seenArgs = args ?? []; return { code: 0, stdout: "", stderr: "", timedOut: false }; };
+        await spawnAgent("/wt", "/goal x", {}, exec);
+        expect(seenArgs).not.toContain("--settings");
+    });
 });

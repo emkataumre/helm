@@ -12,6 +12,7 @@ export interface SpawnOptions {
     onEvent?: (e: SnapshotEvent) => void; // translate stream events → snapshot events
     logSink?: (line: string) => void;   // called for EVERY raw line (the durable per-iteration log)
     signal?: AbortSignal;               // M5 drop-in: hard-kill this in-flight session on demand
+    settings?: string;                  // M6-② per-spawn --settings JSON (never-push deny + autoMode.environment)
 }
 export interface SpawnResult {
     ok: boolean;
@@ -99,6 +100,9 @@ export async function spawnAgent(
         "--output-format", "stream-json", "--verbose",
         "--session-id", sessionId,
         "--permission-mode", "auto",
+        // M6-②: inject the never-push belt + trusted-environment declaration inline. Built at the ipc edge
+        // (buildSpawnSettings) so this chokepoint stays decoupled from Project — it just forwards the string.
+        ...(opts.settings ? ["--settings", opts.settings] : []),
         ...(opts.model ? ["--model", opts.model] : []),
         ...(opts.extraArgs ?? []),
     ];
