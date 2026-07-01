@@ -10,6 +10,7 @@
 // ⚠️ CONTRACT — the primary repo checkout appears in `git worktree list` and MUST NEVER be pruned. This
 // planner has no way to recognise it, so the executor GUARANTEES it by passing only worktrees whose path
 // is under `join(repoPath, worktreeDir)`. Never call reconcile() with the primary checkout in GitState.
+import { join } from "node:path";
 import type { Task, TaskStatus } from "../../shared/types";
 
 export interface WorktreeInfo { path: string; branch: string | null }
@@ -31,6 +32,16 @@ function normPath(p: string): string {
 
 function ownsWorktree(task: Task, wt: WorktreeInfo): boolean {
     return task.worktreePath != null && normPath(task.worktreePath) === normPath(wt.path);
+}
+
+// The executor's safety filter: is `worktreePath` under `<repoPath>/<worktreeDir>`? Only worktrees for
+// which this holds may be passed to reconcile() — that's how the executor honours the ⚠️ contract above
+// (the primary repo checkout and any unrelated worktrees are excluded). The `+ "/"` boundary stops a
+// sibling like `.helm/worktrees-evil` from matching `.helm/worktrees`.
+export function isUnderWorktreeDir(worktreePath: string, repoPath: string, worktreeDir: string): boolean {
+    const root = normPath(join(repoPath, worktreeDir));
+    const p = normPath(worktreePath);
+    return p === root || p.startsWith(root + "/");
 }
 
 // A worktree is legitimately in use — never prune it — while a task in one of these statuses owns it.

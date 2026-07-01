@@ -15,6 +15,13 @@ function sanitize(branch: string): string {
     return branch.replace(/[^a-zA-Z0-9._-]/g, "-");
 }
 
+// The canonical on-disk location for a branch's worktree: <repoRoot>/<worktreeDir>/<sanitized-branch>.
+// Single source of truth shared by createWorktree (-b, fresh) and the M6 rebuild executor
+// (addWorktreeForBranch, from a surviving branch) so both land at the same path.
+export function worktreePathFor(repoRoot: string, worktreeDir: string, branch: string): string {
+    return join(repoRoot, worktreeDir, sanitize(branch));
+}
+
 async function git(repoRoot: string, args: string[], exec: ExecFn): Promise<string> {
     const r = await exec("git", ["-C", repoRoot, ...args]);
     if (r.code !== 0) throw new Error(`Helm: git ${args.join(" ")} failed: ${r.stderr.trim()}`);
@@ -40,7 +47,7 @@ export async function checkoutBranch(repoRoot: string, name: string, exec: ExecF
 }
 
 export async function createWorktree(repoRoot: string, fromBranch: string, branch: string, worktreeDir: string, exec: ExecFn = run): Promise<string> {
-    const path = join(repoRoot, worktreeDir, sanitize(branch));
+    const path = worktreePathFor(repoRoot, worktreeDir, branch);
     await repoLock.withLock(repoRoot, () => git(repoRoot, ["worktree", "add", "-b", branch, path, fromBranch], exec));
     return path;
 }

@@ -3,9 +3,13 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run, type ExecFn, type ExecResult } from "../../src/main/engine/exec";
-import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch } from "../../src/main/engine/worktree";
+import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "../../src/main/engine/worktree";
 
 const ok = (stdout: string): ExecResult => ({ code: 0, stdout, stderr: "", timedOut: false });
+
+it("M6: worktreePathFor maps a branch to <repoDir>/<worktreeDir>/<sanitized-branch>", () => {
+    expect(worktreePathFor("/repo", ".helm/worktrees", "ralph/task-1")).toBe(join("/repo", ".helm/worktrees", "ralph-task-1"));
+});
 
 async function tempRepo(): Promise<string> {
     const dir = mkdtempSync(join(tmpdir(), "helm-wt-"));

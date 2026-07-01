@@ -7,7 +7,9 @@ import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject } from "./db/projects";
 import { insertTask, listTasks, getTask, updateTask } from "./db/tasks";
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
-import { ensureBranch, checkoutBranch, createWorktree, removeWorktree } from "./engine/worktree";
+import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "./engine/worktree";
+import { reconcile, isUnderWorktreeDir } from "./engine/reconcile";
+import { buildInstructions, seedProgress } from "./engine/prompt";
 import { commitAll, squashMergeInto, diffStat, headSha, advanceBranch } from "./engine/merge";
 import { runMergeStage, type MergeStageDeps } from "./engine/mergeStage";
 import { runAcceptance } from "./engine/acceptance";
@@ -25,7 +27,7 @@ import { createScheduler, type Scheduler } from "./engine/scheduler";
 import { runTaskLoop, type RunTaskDeps, type ResumeContext } from "./engine/runTask";
 import { launchTerminal, DEFAULT_TERMINAL_COMMAND } from "./engine/terminalLaunch";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
-import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Task, TaskStatus } from "../shared/types";
+import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
@@ -240,10 +242,83 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         catch { return null; }
     });
 
-    // Boot: auto-start any tasks already queued (created in a prior session). The scheduler is
-    // event-driven and otherwise only kicks on create/settle/resume/cap-change, so without this a
-    // relaunch would leave queued tasks idle until the next event.
-    scheduler.kick();
+    // ── M6 ① boot reconcile (spec §4 "process death is cheap") ────────────────────────────────────
+    // Close out the interrupted turn's still-open iteration: mark it FAILED, and — critically — leave
+    // sessionId NULL (the M5 resume-guard: a crash-killed turn persisted no resumable claude session, so
+    // drop-in's latestSessionId must not target it). Never passes sessionId.
+    const closeOutDangling = (taskId: string): void => {
+        const last = listIterations(db, taskId).at(-1);
+        if (last && last.endedAt == null) {
+            finishIteration(db, last.id, { gateVerdict: "failed", outputTail: "interrupted by shutdown/crash" });
+        }
+    };
+
+    // Reconcile ONE project's DB ↔ git: list git state, filter to worktrees under worktreeDir (the
+    // reconcile safety contract — the primary checkout must never reach the planner), plan with the pure
+    // reconcile(), then apply each action with real git/DB fns. Its real effects are covered by manual
+    // acceptance (a headless slice with fake git can't prove real reconciliation).
+    const runReconcile = async (project: Project): Promise<void> => {
+        const config = resolveLoopConfig(project);
+        const wts = (await listWorktrees(project.repoPath)).filter((w) => isUnderWorktreeDir(w.path, project.repoPath, project.worktreeDir));
+        const branches = await listBranches(project.repoPath);
+        const tasks = listTasks(db).filter((t) => t.projectId === project.id);
+        const byId = new Map(tasks.map((t) => [t.id, t]));
+
+        for (const action of reconcile(tasks, { worktrees: wts, branches })) {
+            switch (action.type) {
+                case "requeue": {
+                    // Intact worktree → close out the dangling iteration, checkpoint any dirty bytes
+                    // (commitAll no-ops on a clean tree), flip to queued. worktreePath RETAINED → the boot
+                    // kick resumes it via the M5 resume path (worktreePath != null discriminator).
+                    closeOutDangling(action.taskId);
+                    const task = byId.get(action.taskId);
+                    if (task?.worktreePath) await commitAll(task.worktreePath, "ralph: crash-recovery checkpoint");
+                    updateTask(db, action.taskId, { status: "queued" });
+                    break;
+                }
+                case "rebuild": {
+                    // Worktree gone but branch alive → recreate the worktree from the branch tip, reseed the
+                    // lost .ralph files (progress.md was in the lost worktree; the committed code on the branch
+                    // is intact), reinstall deps, then queue it. Resume mode then skips clone/.ralph/setup.
+                    const task = byId.get(action.taskId);
+                    if (!task) break;
+                    closeOutDangling(action.taskId);
+                    const path = worktreePathFor(project.repoPath, project.worktreeDir, action.branch);
+                    await addWorktreeForBranch(project.repoPath, path, action.branch);
+                    ensureRalphExcluded(project.repoPath);
+                    writeRalphFiles(path, { instructions: buildInstructions(), progress: seedProgress(task) });
+                    if (project.setupCommand) await runSetup(path, project.setupCommand, config.checkTimeoutMs);
+                    updateTask(db, action.taskId, { worktreePath: path, status: "queued" });
+                    break;
+                }
+                case "to-needs-human": {
+                    closeOutDangling(action.taskId);
+                    updateTask(db, action.taskId, { status: "needs-human", failureReason: action.reason });
+                    break;
+                }
+                case "prune-worktree": {
+                    // Tolerant — a partially-removed worktree may throw; the postcondition "gone" is what matters.
+                    try { await removeWorktree(project.repoPath, action.path, action.branch ?? "", false); }
+                    catch (e) { console.log(`[helm] prune skipped for ${action.path}: ${e instanceof Error ? e.message : String(e)}`); }
+                    break;
+                }
+            }
+        }
+        notify(); // reflect the reconciled state on the board
+    };
+
+    // Boot: reconcile each project's DB ↔ git (crash-resume + orphan-prune) BEFORE the kick — a
+    // requeued/rebuilt task must be `queued` in the DB before the scheduler scans, or it's skipped until
+    // the next event. Then auto-start any queued tasks (created this session or in a prior one — the
+    // scheduler is otherwise event-driven and would leave them idle). Each project's reconcile is wrapped
+    // so one bad repo (e.g. deleted on disk) logs + skips rather than aborting the whole boot.
+    void (async () => {
+        for (const project of listProjects(db)) {
+            try { await runReconcile(project); }
+            catch (e) { console.log(`[helm] reconcile failed for project ${project.id}: ${e instanceof Error ? e.message : String(e)}`); }
+        }
+        scheduler.kick();
+    })();
 
     // The soft hourly check-in (spec §5.3): an OS Notification each interval with the live iteration
     // count + latest activity. Never kills; cleared when the loop terminates. Pure cadence math lives

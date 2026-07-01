@@ -3,7 +3,7 @@
 // do — no side effects. These are the unit red→green tests; the runtime verify slice (probes + the CI
 // matrix) lives in tests/verify/reconcile/.
 import { describe, it, expect } from "vitest";
-import { reconcile, type GitState, type ReconcileAction } from "../../src/main/engine/reconcile";
+import { reconcile, isUnderWorktreeDir, type GitState, type ReconcileAction } from "../../src/main/engine/reconcile";
 import type { Task } from "../../src/shared/types";
 
 function mkTask(over: Partial<Task> = {}): Task {
@@ -59,6 +59,21 @@ describe("reconcile — crashed running tasks", () => {
             (a) => (a.type === "requeue" || a.type === "rebuild" || a.type === "to-needs-human") && a.taskId === "t1",
         );
         expect(taskActions).toHaveLength(1);
+    });
+});
+
+describe("isUnderWorktreeDir — the executor's safety filter (only these reach the planner)", () => {
+    it("accepts a worktree under <repo>/<worktreeDir>", () => {
+        expect(isUnderWorktreeDir("/repo/.helm/worktrees/ralph-task-1", "/repo", ".helm/worktrees")).toBe(true);
+    });
+    it("rejects the primary repo checkout (the reconcile contract: never prune it)", () => {
+        expect(isUnderWorktreeDir("/repo", "/repo", ".helm/worktrees")).toBe(false);
+    });
+    it("rejects a sibling dir that only shares a prefix (worktrees-evil is not under worktrees)", () => {
+        expect(isUnderWorktreeDir("/repo/.helm/worktrees-evil/x", "/repo", ".helm/worktrees")).toBe(false);
+    });
+    it("matches across slash styles (git forward-slash path vs a backslash repoPath)", () => {
+        expect(isUnderWorktreeDir("C:/repo/.helm/worktrees/ralph-task-1", "C:\\repo", ".helm/worktrees")).toBe(true);
     });
 });
 
