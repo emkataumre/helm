@@ -24,6 +24,7 @@ export interface Project {
     model: string | null;            // claude --model for each spawn
     concurrencyCap: number | null;   // M4 scheduler cap (NOT a LoopConfig field); NULL = engine default 3
     terminalCommand: string | null;  // M5 drop-in launch template ({worktree}/{resume}); NULL = engine default
+    autoModeEnvironment: string | null; // M6-② auto-mode trusted-env (spec §10); raw TEXT; NULL = ["$defaults"]
 }
 
 export interface Task {
@@ -142,6 +143,7 @@ export interface NewProjectInput {
     model?: string | null;
     concurrencyCap?: number | null;
     terminalCommand?: string | null;
+    autoModeEnvironment?: string | null;
 }
 export interface NewTaskInput {
     projectId: string;
@@ -151,7 +153,7 @@ export interface NewTaskInput {
     scopeHint?: string | null;
 }
 // The editable per-project config columns (the project-config form patches these).
-export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand">>;
+export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment">>;
 // Best-effort registration pre-fill (current git branch → target, package.json → check, lockfile → setup).
 export interface DetectedConfig { targetBranch: string | null; checkCommand: string | null; setupCommand: string | null }
 export interface HelmApi {

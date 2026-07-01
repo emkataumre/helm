@@ -182,7 +182,7 @@ function TaskDetail({ task, onClose, onAction }: { task: Task; onClose: () => vo
 }
 
 function RegisterProjectForm({ onDone }: { onDone: () => void }) {
-    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "" });
+    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "" });
     const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
     const detect = async () => {
@@ -196,6 +196,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
             setupCommand: f.setupCommand || null, model: f.model || null,
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
+            autoModeEnvironment: f.autoModeEnvironment || null,
         };
         await window.helm.registerProject(input);
         onDone();
@@ -218,6 +219,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
                 {input("concurrencyCap", "concurrencyCap (blank = default 3)")}
                 {input("model", "model (blank = CLI default)")}
                 {input("terminalCommand", 'terminalCommand (blank = wt.exe -d "{worktree}" claude {resume})')}
+                {input("autoModeEnvironment", 'autoModeEnvironment (blank = ["$defaults"] — trusts repo + origin)')}
                 <button disabled={!f.name || !f.repoPath || !f.checkCommand} onClick={submit}>Register</button>
             </div>
         </details>
@@ -227,7 +229,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
 function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: () => void }) {
     const [id, setId] = useState("");
     const selected = projects.find((p) => p.id === id);
-    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "" });
+    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "" });
 
     useEffect(() => {
         if (!selected) return;
@@ -239,6 +241,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
             model: selected.model ?? "",
             concurrencyCap: selected.concurrencyCap?.toString() ?? "",
             terminalCommand: selected.terminalCommand ?? "",
+            autoModeEnvironment: selected.autoModeEnvironment ?? "",
         });
     }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -248,6 +251,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
             setupCommand: f.setupCommand || null, model: f.model || null,
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
+            autoModeEnvironment: f.autoModeEnvironment || null,
         });
         onDone();
     };
@@ -269,6 +273,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
                         {input("concurrencyCap", "concurrencyCap")}
                         {input("model", "model")}
                         {input("terminalCommand", "terminalCommand")}
+                        {input("autoModeEnvironment", 'autoModeEnvironment (blank = ["$defaults"])')}
                         <button onClick={save}>Save config</button>
                     </>
                 ) : null}

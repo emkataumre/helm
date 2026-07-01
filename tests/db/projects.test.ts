@@ -39,6 +39,22 @@ it("round-trips an all-NULL-config project (null, never undefined)", () => {
     expect(got.model).toBeNull();
     expect(got.concurrencyCap).toBeNull();
     expect(got.terminalCommand).toBeNull();
+    expect(got.autoModeEnvironment).toBeNull();
+    db.close();
+});
+
+// M6-②: the per-project auto-mode trusted-environment is a nullable TEXT column (NULL = engine
+// default ["$defaults"]), set on insert and patchable like the other config fields. Stored raw
+// (the confirmed shape from the Task-1 spike is a string[] of NL trust lines; the builder composes).
+it("round-trips a set autoModeEnvironment, and updateProject patches it", () => {
+    const db = openDb(":memory:");
+    const env = "**Trusted internal domains**: registry.acme.internal";
+    const p = insertProject(db, { name: "Env", repoPath: "/r", targetBranch: "main", checkCommand: "c", autoModeEnvironment: env });
+    expect(getProject(db, p.id)?.autoModeEnvironment).toBe(env);
+    updateProject(db, p.id, { autoModeEnvironment: "**Trusted cloud buckets**: s3://acme-private" });
+    expect(getProject(db, p.id)?.autoModeEnvironment).toBe("**Trusted cloud buckets**: s3://acme-private");
+    updateProject(db, p.id, { autoModeEnvironment: null }); // explicit null clears it back to the default
+    expect(getProject(db, p.id)?.autoModeEnvironment).toBeNull();
     db.close();
 });
 

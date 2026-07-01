@@ -31,7 +31,7 @@ export interface Scenario { projects: Project[]; tasks: ScenarioTask[]; }
 export const mkProject = (id: string, concurrencyCap: number | null): Project => ({
     id, name: id, repoPath: "/r", integrationBranch: "integration/ralph", targetBranch: "main", branchPrefix: "ralph",
     checkCommand: "c", worktreeDir: ".helm/worktrees", setupCommand: null, iterationCap: null, noProgressK: null,
-    stallTimeoutMin: null, model: null, concurrencyCap, terminalCommand: null,
+    stallTimeoutMin: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null,
 });
 export const mkTask = (id: string, projectId: string, createdAt: number): Task => ({
     id, projectId, title: id, intent: "", acceptance: ["x"], status: "queued", scopeHint: null,

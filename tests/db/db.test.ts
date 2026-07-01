@@ -88,6 +88,36 @@ function m4ShapeDb(): any {
     return db;
 }
 
+// An M5-shaped DB: the M4 columns + terminalCommand, user_version pinned at the M5 head (5). Built with
+// a raw handle so migrate() exercises the real ALTER path when adding the M6 autoModeEnvironment column.
+function m5ShapeDb(): any {
+    const db = new Database(":memory:");
+    db.exec(`
+        CREATE TABLE projects (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, repoPath TEXT NOT NULL,
+            integrationBranch TEXT NOT NULL, targetBranch TEXT NOT NULL,
+            branchPrefix TEXT NOT NULL, checkCommand TEXT NOT NULL, worktreeDir TEXT NOT NULL,
+            setupCommand TEXT, iterationCap INTEGER, noProgressK INTEGER, stallTimeoutMin INTEGER, model TEXT,
+            concurrencyCap INTEGER, terminalCommand TEXT
+        );
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, projectId TEXT NOT NULL, title TEXT NOT NULL,
+            intent TEXT NOT NULL, acceptance TEXT NOT NULL, status TEXT NOT NULL,
+            branchName TEXT, worktreePath TEXT, diffstat TEXT, failureReason TEXT,
+            createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, scopeHint TEXT
+        );
+        CREATE TABLE iterations (
+            id TEXT PRIMARY KEY, taskId TEXT NOT NULL, idx INTEGER NOT NULL,
+            sessionId TEXT, startedAt INTEGER NOT NULL, endedAt INTEGER,
+            gateVerdict TEXT, commitSha TEXT, outputTail TEXT,
+            inputTokens INTEGER, outputTokens INTEGER, cacheReadTokens INTEGER,
+            cacheCreationTokens INTEGER, costUsd REAL, durationMs INTEGER
+        );
+    `);
+    db.pragma("user_version = 5");
+    return db;
+}
+
 it("creates projects, tasks, iterations tables", () => {
     const db = openDb(":memory:");
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r: any) => r.name);
@@ -132,19 +162,20 @@ it("migrates an M3-shape DB through to head: adds concurrencyCap + terminalComma
 
     migrate(db);
 
-    // An M3 DB now applies TWO remaining steps (M4 concurrencyCap, M5 terminalCommand) to reach head.
-    expect(colNames(db, "projects")).toEqual(expect.arrayContaining(["concurrencyCap", "terminalCommand"]));
+    // An M3 DB now applies THREE remaining steps (M4 concurrencyCap, M5 terminalCommand, M6 autoModeEnvironment).
+    expect(colNames(db, "projects")).toEqual(expect.arrayContaining(["concurrencyCap", "terminalCommand", "autoModeEnvironment"]));
     const row = db.prepare("SELECT * FROM projects WHERE id = 'p1'").get() as any;
     expect(row.name).toBe("Legacy");          // existing data survived the ALTERs
     expect(row.concurrencyCap).toBeNull();    // new columns default to NULL
     expect(row.terminalCommand).toBeNull();
-    expect(db.pragma("user_version", { simple: true })).toBe(before + 2);
+    expect(row.autoModeEnvironment).toBeNull();
+    expect(db.pragma("user_version", { simple: true })).toBe(before + 3);
     db.close();
 });
 
-// The M5 step in isolation: an M4-shape DB → migrate adds terminalCommand, the existing row survives
-// with it NULL, and user_version advances by exactly one (the real ALTER path on a populated table).
-it("migrates an M4-shape DB: adds terminalCommand (NULL on the existing row), advances user_version by one", () => {
+// An M4-shape DB → migrate applies the remaining TWO steps (M5 terminalCommand + M6 autoModeEnvironment),
+// the existing row survives with both NULL, user_version advances by exactly two.
+it("migrates an M4-shape DB through to head: adds terminalCommand + autoModeEnvironment, advances user_version by two", () => {
     const db = m4ShapeDb();
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir)
@@ -155,10 +186,32 @@ it("migrates an M4-shape DB: adds terminalCommand (NULL on the existing row), ad
 
     migrate(db);
 
-    expect(colNames(db, "projects")).toContain("terminalCommand");
+    expect(colNames(db, "projects")).toEqual(expect.arrayContaining(["terminalCommand", "autoModeEnvironment"]));
     const row = db.prepare("SELECT * FROM projects WHERE id = 'p1'").get() as any;
-    expect(row.name).toBe("Legacy");          // existing data survived the ALTER
-    expect(row.terminalCommand).toBeNull();   // new column defaults to NULL
+    expect(row.name).toBe("Legacy");             // existing data survived the ALTERs
+    expect(row.terminalCommand).toBeNull();      // new columns default to NULL
+    expect(row.autoModeEnvironment).toBeNull();
+    expect(db.pragma("user_version", { simple: true })).toBe(before + 2);
+    db.close();
+});
+
+// The M6 step in isolation: an M5-shape DB → migrate adds autoModeEnvironment, the existing row survives
+// with it NULL, and user_version advances by exactly one (the real ALTER path on a populated table).
+it("migrates an M5-shape DB: adds autoModeEnvironment (NULL on the existing row), advances user_version by one", () => {
+    const db = m5ShapeDb();
+    db.prepare(
+        `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir)
+         VALUES (?,?,?,?,?,?,?,?)`,
+    ).run("p1", "Legacy", "/repo", "integration/ralph", "main", "ralph", "npm test", ".helm/worktrees");
+    const before = db.pragma("user_version", { simple: true }) as number;
+    expect(before).toBe(5);
+
+    migrate(db);
+
+    expect(colNames(db, "projects")).toContain("autoModeEnvironment");
+    const row = db.prepare("SELECT * FROM projects WHERE id = 'p1'").get() as any;
+    expect(row.name).toBe("Legacy");               // existing data survived the ALTER
+    expect(row.autoModeEnvironment).toBeNull();    // new column defaults to NULL
     expect(db.pragma("user_version", { simple: true })).toBe(before + 1);
     db.close();
 });

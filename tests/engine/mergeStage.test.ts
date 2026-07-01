@@ -9,7 +9,7 @@ import type { Project, Task, SnapshotEvent } from "../../src/shared/types";
 const PROJECT: Project = {
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main",
     branchPrefix: "ralph", checkCommand: "npm test", worktreeDir: ".helm/worktrees",
-    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null, concurrencyCap: null, terminalCommand: null,
+    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null,
 };
 const TASK: Task = {
     id: "abc", projectId: "p1", title: "T", intent: "do", acceptance: ["x"], status: "running", scopeHint: null,

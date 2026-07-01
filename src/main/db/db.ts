@@ -57,6 +57,12 @@ const STEPS: Array<(db: Db) => void> = [
     (db) => {
         db.exec(`ALTER TABLE projects ADD COLUMN terminalCommand TEXT`);
     },
+    // Step 5 — M6-② per-project auto-mode trusted environment (spec §10; nullable, NULL = engine
+    // default ["$defaults"]). Stored raw as TEXT (the confirmed Task-1 shape: NL trust line(s) or a
+    // JSON array); buildSpawnSettings composes the `autoMode.environment` array from it per spawn.
+    (db) => {
+        db.exec(`ALTER TABLE projects ADD COLUMN autoModeEnvironment TEXT`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.
