@@ -2,6 +2,7 @@
 import { join } from "node:path";
 import { run, type ExecFn } from "./exec";
 import { createKeyedMutex } from "./mutex";
+import type { WorktreeInfo } from "./reconcile";
 
 // Repo-level git mutations are NOT concurrency-safe. Under M4's parallel first-run, N tasks boot at
 // once and all race to create the integration branch ("fatal: branch 'integration/ralph' already
@@ -49,4 +50,41 @@ export async function removeWorktree(repoRoot: string, worktreePath: string, bra
         await git(repoRoot, ["worktree", "remove", "--force", worktreePath], exec);
         if (!keepBranch) await git(repoRoot, ["branch", "-D", branch], exec);
     });
+}
+
+// ── M6 ① boot-reconcile git-state primitives ─────────────────────────────────────────────────────
+// The read + rebuild ops the reconcile executor needs. Reads DON'T take the repoLock (they don't mutate
+// .git); addWorktreeForBranch does (it contends on .git/index.lock like the other mutations).
+
+// Parse `git worktree list --porcelain`: blocks of `worktree <path>` / `HEAD <sha>` /
+// `branch refs/heads/<name>` (or `detached`), separated by blank lines. Returns EVERY worktree
+// (including the primary checkout); the executor filters to those under worktreeDir. NOTE: git prints
+// paths with forward slashes even on Windows — the planner normalises before comparing.
+export async function listWorktrees(repoRoot: string, exec: ExecFn = run): Promise<WorktreeInfo[]> {
+    const out = await git(repoRoot, ["worktree", "list", "--porcelain"], exec);
+    const result: WorktreeInfo[] = [];
+    let current: WorktreeInfo | null = null;
+    for (const line of out.split(/\r?\n/)) {
+        if (line.startsWith("worktree ")) {
+            if (current) result.push(current);
+            current = { path: line.slice("worktree ".length), branch: null };
+        } else if (line.startsWith("branch ") && current) {
+            current.branch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
+        }
+        // `detached` (and the blank block separator) leave branch = null.
+    }
+    if (current) result.push(current);
+    return result;
+}
+
+// All local branch short-names (`ralph/task-*`, `integration/ralph`, `helm/*`, …).
+export async function listBranches(repoRoot: string, exec: ExecFn = run): Promise<string[]> {
+    const out = await git(repoRoot, ["branch", "--format=%(refname:short)"], exec);
+    return out.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+}
+
+// The rebuild primitive: recreate a worktree on an ALREADY-EXISTING branch (no `-b`, unlike
+// createWorktree). Used when a crash left the task's branch alive but its worktree gone.
+export async function addWorktreeForBranch(repoRoot: string, path: string, branch: string, exec: ExecFn = run): Promise<void> {
+    await repoLock.withLock(repoRoot, () => git(repoRoot, ["worktree", "add", path, branch], exec));
 }
