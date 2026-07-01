@@ -15,6 +15,7 @@ const BASELINE: DropinRecording = {
     slotFreedOnDropIn: true, handedOffEverStarted: false,
     commitAtEntryBoundary: true, everyHandbackPrecededByCommit: true,
     handedOffOrNeedsHumanWorktreeRetained: true, mergedOrAbandonedWorktreeRemoved: true,
+    killedIterationRecordsNoResumableSession: true,
 };
 
 export const DROPIN_FIXTURES: DropinFixture[] = [
@@ -33,4 +34,6 @@ export const DROPIN_FIXTURES: DropinFixture[] = [
     { id: "handback-without-commit", probe: true, mustFail: "commit-before-handback", recording: { ...BASELINE, everyHandbackPrecededByCommit: false } },
     // A handed-off task's worktree was removed (it must be retained for drop-in).
     { id: "handed-off-worktree-removed", probe: true, mustFail: "worktree-retained-while-handed-off/needs-human", recording: { ...BASELINE, handedOffOrNeedsHumanWorktreeRetained: false } },
+    // A killed iteration was recorded WITH a sessionId → drop-in would --resume a session claude never persisted.
+    { id: "killed-session-recorded-resumable", probe: true, mustFail: "killed-iteration-has-no-resumable-session", recording: { ...BASELINE, killedIterationRecordsNoResumableSession: false } },
 ];

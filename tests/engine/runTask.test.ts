@@ -41,9 +41,10 @@ describe("runIteration", () => {
         expect(o.verdict).toBe("green");
         expect(o.sessionId).toBe("s0");
     });
-    it("is hang when the agent stalled", async () => {
+    it("is hang when the agent stalled, and records no resumable sessionId", async () => {
         const o = await runIteration(project, task, ctx, DEFAULT_LOOP_CONFIG, deps({ spawnAgent: async () => ({ ok: false, output: "x", sessionId: "s0", stalled: true, usage: ZERO_USAGE, durationMs: null }) }));
         expect(o.verdict).toBe("hang");
+        expect(o.sessionId).toBeNull(); // a stalled/killed turn never persisted → not resumable (drop-in guard)
     });
     it("is failed when the check is red, and never runs acceptance", async () => {
         let ran = false;
@@ -189,15 +190,26 @@ describe("runTaskLoop — drop-in bail → handed-off (M5)", () => {
         expect(statusEvents).toContain("handed-off");
     });
 
-    it("captures the killed iteration's sessionId (durable) before bailing, so resume picks the freshest", async () => {
+    it("does NOT record a killed iteration's sessionId — its turn never persisted, so nothing is resumable", async () => {
         const controller = new AbortController();
-        let finishedSession: string | null | undefined;
+        let finishedSession: string | null | undefined = "unset";
         await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
             signal: controller.signal,
             spawnAgent: async () => { controller.abort(); return { ok: false, output: "killed", sessionId: "s-killed", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
             finishIteration: (_id, patch) => { finishedSession = patch.sessionId; },
         }));
-        expect(finishedSession).toBe("s-killed"); // the in-flight session is recorded even though it was killed
+        expect(finishedSession).toBeNull(); // the killed session is unpersisted → drop-in must not --resume it
+    });
+
+    it("DOES record a COMPLETED iteration's sessionId — a persisted session IS resumable", async () => {
+        let finishedSession: string | null | undefined = "unset";
+        await runTaskLoop(project, task, { ...DEFAULT_LOOP_CONFIG, iterationCap: 1, noProgressK: 99 }, deps({
+            // agent ok (turn completed → claude persisted <id>.jsonl) but check red → the loop keeps the session.
+            spawnAgent: async () => ({ ok: true, output: "ok", sessionId: "s-done", stalled: false, usage: ZERO_USAGE, durationMs: null }),
+            runCheck: async () => ({ green: false, timedOut: false, output: "red" }),
+            finishIteration: (_id, patch) => { finishedSession = patch.sessionId; },
+        }));
+        expect(finishedSession).toBe("s-done"); // a completed turn's session is resumable (Drop-in enabled)
     });
 
     it("PROBE: a signal already aborted at loop entry hands off at the top of the for, without spawning", async () => {

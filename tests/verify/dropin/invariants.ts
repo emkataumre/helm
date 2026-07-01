@@ -43,6 +43,15 @@ export const DROPIN_INVARIANTS: DropinInvariant[] = [
         holds: (r) => (r.handedOffOrNeedsHumanWorktreeRetained && r.mergedOrAbandonedWorktreeRemoved) ||
             `retention violated (retained=${r.handedOffOrNeedsHumanWorktreeRetained}, removedOnMerge=${r.mergedOrAbandonedWorktreeRemoved})`,
     },
+    // Resume-guard: a killed/stalled iteration never completed, so claude persisted no session. It must be
+    // recorded with sessionId=null — else drop-in's latestSessionId would --resume a session that doesn't
+    // exist ("No conversation found"). "a recorded sessionId ⇔ a resumable session" is what the Drop-in
+    // button reads to enable itself; Start fresh always works, so a disabled Drop-in strands no one.
+    {
+        name: "killed-iteration-has-no-resumable-session",
+        holds: (r) => r.killedIterationRecordsNoResumableSession ||
+            "a killed/unpersisted iteration was recorded with a sessionId — drop-in would resume a nonexistent session",
+    },
 ];
 
 export function runDropinInvariants(r: DropinRecording): InvariantResult[] {

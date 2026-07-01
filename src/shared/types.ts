@@ -42,6 +42,13 @@ export interface Task {
     updatedAt: number;
 }
 
+// tasks:list augments each task with `resumable`: whether a drop-in's latestSessionId would find a
+// PERSISTED claude session to `--resume`. Recomputed per list from the task's iterations (NOT a stored
+// column). Drives the Drop-in button's enabled state — false → Drop-in disabled, Start fresh instead.
+export interface TaskListItem extends Task {
+    resumable: boolean;
+}
+
 export interface Iteration {
     id: string;
     taskId: string;
@@ -153,7 +160,7 @@ export interface HelmApi {
     updateProject: (id: string, patch: ProjectConfigPatch) => Promise<Project | null>;
     detectProject: (repoPath: string) => Promise<DetectedConfig>;
     createTask: (input: NewTaskInput) => Promise<Task>;
-    listTasks: () => Promise<Task[]>;
+    listTasks: () => Promise<TaskListItem[]>;
     // M4: the scheduler auto-starts queued tasks; startNow is the paused-mode manual single-start
     // (replaces M3's run-to-completion runTask). Plus the live scheduler state + the pause toggle.
     startNow: (taskId: string) => Promise<void>;

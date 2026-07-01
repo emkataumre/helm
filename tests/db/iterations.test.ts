@@ -63,13 +63,15 @@ it("a finish patch that omits tokens leaves those columns NULL", () => {
     db.close();
 });
 
-// M5: drop-in resumes the FRESHEST session — the highest-index iteration that captured one (including
-// the just-killed in-flight one). A pure helper so the ipc drop-in handler stays glue.
+// M5: drop-in resumes the FRESHEST RESUMABLE session. Post-guard, a sessionId is recorded ONLY for a turn
+// that COMPLETED (persisted its <id>.jsonl); a killed/stalled iteration records null. So a null latest
+// iteration = a just-killed one, and this falls back to the freshest PERSISTED session (or null → Drop-in
+// disabled). A pure helper so the ipc drop-in handler stays glue.
 describe("latestSessionId", () => {
     it("picks the highest-index iteration that has a session id", () => {
         expect(latestSessionId([mkIter(0, "s0"), mkIter(1, "s1"), mkIter(2, "s2")])).toBe("s2");
     });
-    it("falls back to an earlier non-null session when the latest index has none", () => {
+    it("skips a killed (null) latest iteration, resuming the freshest PERSISTED session instead", () => {
         expect(latestSessionId([mkIter(0, "s0"), mkIter(1, null)])).toBe("s0");
     });
     it("returns null when no iteration captured a session id", () => {

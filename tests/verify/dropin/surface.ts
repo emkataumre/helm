@@ -42,6 +42,7 @@ export interface DropinRecording {
     everyHandbackPrecededByCommit: boolean;           // commitAll preceded mergeStage on every handback
     handedOffOrNeedsHumanWorktreeRetained: boolean;   // no removeWorktree for any task ending handed-off/needs-human
     mergedOrAbandonedWorktreeRemoved: boolean;        // removeWorktree DID happen for every merged/abandoned task
+    killedIterationRecordsNoResumableSession: boolean; // a killed/stalled iteration recorded sessionId=null (resume-guard)
 }
 
 // Scenario 1 (the comprehensive real run): cap 1, A (the drop-in target, whose session hangs until
@@ -56,6 +57,7 @@ export async function runFreesSlotScenario(): Promise<DropinRecording> {
     const transitions: Array<{ id: string; status: TaskStatus }> = [];
     const removeCalled = new Set<string>();
     const commitMsgs: Array<{ id: string; msg: string }> = [];
+    const finishSessions: Array<{ id: string; sessionId: string | null }> = []; // what runIteration recorded per finish (resume-guard)
     const startedOrder: string[] = [];
     const startedWhileHandedOff: string[] = [];
     let maxRunning = 0;
@@ -94,7 +96,8 @@ export async function runFreesSlotScenario(): Promise<DropinRecording> {
         squashMergeInto: async () => ({ merged: true, conflict: false }),
         diffStat: async () => "+1 -0",
         mergeStage: async () => ({ outcome: "merged", diffstat: "+1 -0" }),
-        setStatus, addIteration: () => ({ id: `it-${taskId}` }), finishIteration: () => {},
+        setStatus, addIteration: () => ({ id: `it-${taskId}` }),
+        finishIteration: (_id, patch) => { finishSessions.push({ id: taskId, sessionId: patch.sessionId ?? null }); },
         emit: () => {}, signal: controller.signal, log: () => {},
     });
 
@@ -146,6 +149,8 @@ export async function runFreesSlotScenario(): Promise<DropinRecording> {
     const finalStatus = (id: string) => tasks.get(id)!.status;
     const ids = [...tasks.keys()];
     const aHandedOff = transitions.some((t) => t.id === "A" && t.status === "handed-off");
+    // A was dropped-in mid-session (its spawn resolved not-ok = killed), so its recorded session must be null.
+    const aFinishes = finishSessions.filter((f) => f.id === "A");
     return {
         unit: "dropin",
         cap,
@@ -156,6 +161,7 @@ export async function runFreesSlotScenario(): Promise<DropinRecording> {
         everyHandbackPrecededByCommit: handbackCommitBeforeMerge,
         handedOffOrNeedsHumanWorktreeRetained: ids.filter((id) => finalStatus(id) === "handed-off" || finalStatus(id) === "needs-human").every((id) => !removeCalled.has(id)),
         mergedOrAbandonedWorktreeRemoved: ids.filter((id) => finalStatus(id) === "merged" || finalStatus(id) === "abandoned").every((id) => removeCalled.has(id)),
+        killedIterationRecordsNoResumableSession: aFinishes.length > 0 && aFinishes.every((f) => f.sessionId == null),
     };
 }
 
@@ -199,5 +205,6 @@ export async function runNeedsHumanRetainedScenario(): Promise<DropinRecording> 
         everyHandbackPrecededByCommit: true,      // vacuous — no handback
         handedOffOrNeedsHumanWorktreeRetained: endedNeedsHuman && !removeCalled.has("A"),
         mergedOrAbandonedWorktreeRemoved: true,   // vacuous — nothing merged/abandoned
+        killedIterationRecordsNoResumableSession: true, // vacuous — no drop-in kill in this scenario
     };
 }

@@ -107,7 +107,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
             },
             setStatus: (id, status, extra) => { updateTask(db, id, { status, ...extra }); notify(); },
             addIteration: (tid, idx) => addIteration(db, tid, idx),
-            finishIteration: (id, patch) => finishIteration(db, id, patch),
+            // notify() after each finish: a completed iteration records a sessionId, flipping the task's
+            // `resumable` true mid-run → the board re-fetches and enables Drop-in without a status change.
+            finishIteration: (id, patch) => { finishIteration(db, id, patch); notify(); },
             emit: (e) => snapshots.dispatch(task.id, e),
             signal: controller.signal, // M5: a drop-in hard-kills the in-flight session
             log: (m) => console.log(`[helm] ${m}`),
@@ -139,7 +141,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     ipcMain.handle("projects:detect", (_e, repoPath: string) => detectProjectConfig(repoPath));
     // Create → enqueue → kick: the scheduler auto-starts it when a slot is free (unless paused).
     ipcMain.handle("tasks:create", (_e, input: NewTaskInput) => { const t = insertTask(db, input); notify(); scheduler.kick(); return t; });
-    ipcMain.handle("tasks:list", () => listTasks(db));
+    // Augment each task with `resumable` — does drop-in have a PERSISTED session to --resume? latestSessionId
+    // is exactly what tasks:dropIn uses, so the button's enabled state matches what the click will actually do.
+    ipcMain.handle("tasks:list", () => listTasks(db).map((t) => ({ ...t, resumable: latestSessionId(listIterations(db, t.id)) != null })));
 
     // M4 scheduler IPC: paused-mode manual single-start, the live cockpit indicator state, pause toggle.
     ipcMain.handle("tasks:startNow", (_e, taskId: string) => { scheduler.startNow(taskId); });

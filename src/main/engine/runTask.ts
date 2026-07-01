@@ -71,7 +71,12 @@ export async function runIteration(
     const commitSha = await d.headSha(ctx.worktreePath);
 
     if (!agent.ok) {
-        return { verdict: agent.stalled ? "hang" : "failed", gateOutput: tail(agent.output), commitSha, ...base };
+        // A killed (drop-in) or stalled turn never completed, so claude never wrote a resumable
+        // <sessionId>.jsonl to disk. Record sessionId=null (NOT the agent's pre-generated id) so drop-in's
+        // latestSessionId only ever targets a session that actually exists — otherwise `claude --resume`
+        // dies "No conversation found". "a recorded sessionId ⇔ a resumable session" is the invariant the
+        // Drop-in button reads to enable/disable itself; Start fresh is always available to grab the agent.
+        return { verdict: agent.stalled ? "hang" : "failed", gateOutput: tail(agent.output), commitSha, ...base, sessionId: null };
     }
     // The engine's authoritative gates — emit a gate event around each so the cockpit shows the phase.
     const check = await d.runCheck(ctx.worktreePath, project.checkCommand, config.checkTimeoutMs);
@@ -195,8 +200,9 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         });
         d.emit?.({ type: "iteration-end", index: dbIndex, verdict: o.verdict, commitSha: o.commitSha });
 
-        // Post-iteration guard: a drop-in killed the in-flight session DURING this iteration. finishIteration
-        // above already stamped the killed iteration's sessionId (durable), so resume picks the freshest.
+        // Post-iteration guard: a drop-in killed the in-flight session DURING this iteration. runIteration
+        // recorded sessionId=null for that killed turn (it never persisted), so drop-in resumes the freshest
+        // PERSISTED session — or none, leaving Drop-in disabled and Start fresh as the way to grab it.
         if (d.signal?.aborted) return handOff();
 
         if (o.verdict === "green") {

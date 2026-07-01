@@ -99,6 +99,20 @@ describe("ActivityFeed / IterationHistory / BoardCard contracts", () => {
         expect(nh).toContain('data-verify-dropin="true"');
     });
 
+    // M5 resume-guard: Drop in --resumes the latest session, so it's DISABLED until one is persisted
+    // (`resumable`). Start fresh is always available, so a disabled Drop in strands no one.
+    it("BoardCard DISABLES Drop in until a session is resumable; Start fresh stays available", () => {
+        const notYet = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} onDropIn={() => {}} onStartFresh={() => {}} />);
+        expect(notYet).toContain('data-verify-resumable="false"'); // the machine-readable guard state
+        expect(notYet).toContain('disabled=""');                   // the (only) disabled button is Drop in
+        expect(notYet).toContain("No resumable session yet");      // its explanatory title
+        expect(notYet).toContain(">Start fresh<");                 // always available to grab the agent
+
+        const ready = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} resumable onDropIn={() => {}} onStartFresh={() => {}} />);
+        expect(ready).toContain('data-verify-resumable="true"');
+        expect(ready).not.toContain('disabled=""');                // a persisted session → Drop in enabled
+    });
+
     it("PROBE: a queued or merged card does NOT surface Drop in (data-verify-dropin=\"false\")", () => {
         const queued = renderToStaticMarkup(<BoardCard task={task({ status: "queued" })} onDropIn={() => {}} onStartFresh={() => {}} />);
         expect(queued).not.toContain(">Drop in<");

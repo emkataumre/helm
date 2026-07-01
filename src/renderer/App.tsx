@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import type { Project, Task, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState } from "../shared/types";
+import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState } from "../shared/types";
 import { TokenReadout } from "./components/TokenReadout";
 import { IterationHistory } from "./components/IterationHistory";
 import { ActivityFeed } from "./components/ActivityFeed";
@@ -17,7 +17,7 @@ const numOrNull = (s: string): number | null => (s.trim() === "" ? null : Number
 // the prop-driven presentational components. All data crosses window.helm; the components stay pure.
 export function App() {
     const [projects, setProjects] = useState<Project[]>([]);
-    const [tasks, setTasks] = useState<Task[]>([]);
+    const [tasks, setTasks] = useState<TaskListItem[]>([]);
     const [filter, setFilter] = useState<string>("");
     const [selected, setSelected] = useState<string | null>(null);
     const [live, setLive] = useState<Record<string, string>>({});
@@ -78,7 +78,7 @@ export function App() {
                                 <h3 style={{ fontFamily: "ui-monospace, monospace", fontSize: 13, textTransform: "uppercase", color: "#788C5D" }}>{lane}</h3>
                                 {shown.filter((t) => t.status === lane).map((t) => (
                                     <BoardCard
-                                        key={t.id} task={t} liveActivity={live[t.id]} paused={paused}
+                                        key={t.id} task={t} liveActivity={live[t.id]} paused={paused} resumable={t.resumable}
                                         onClick={() => setSelected(t.id)}
                                         onRun={() => { window.helm.startNow(t.id); }}
                                         onDropIn={() => { window.helm.dropIn(t.id).then(refresh); }}

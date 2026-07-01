@@ -63,6 +63,7 @@ describe("verify/dropin: negative controls — each broken recording FAILS its n
         unit: "dropin", cap: 1, maxRunningPerProject: { P: 1 },
         slotFreedOnDropIn: true, handedOffEverStarted: false, commitAtEntryBoundary: true,
         everyHandbackPrecededByCommit: true, handedOffOrNeedsHumanWorktreeRetained: true, mergedOrAbandonedWorktreeRemoved: true,
+        killedIterationRecordsNoResumableSession: true,
     };
 
     it("a slot that never freed FAILS drop-in-frees-a-slot", () => {
@@ -80,6 +81,9 @@ describe("verify/dropin: negative controls — each broken recording FAILS its n
     });
     it("a removed handed-off worktree FAILS worktree-retained-while-handed-off/needs-human", () => {
         expect(failed({ ...base, handedOffOrNeedsHumanWorktreeRetained: false })).toContain("worktree-retained-while-handed-off/needs-human");
+    });
+    it("a killed iteration recorded as resumable FAILS killed-iteration-has-no-resumable-session", () => {
+        expect(failed({ ...base, killedIterationRecordsNoResumableSession: false })).toContain("killed-iteration-has-no-resumable-session");
     });
 
     it("a verifier that throws becomes a FAIL, never a silent pass", () => {
