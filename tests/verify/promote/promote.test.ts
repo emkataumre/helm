@@ -12,7 +12,7 @@ import { PROMOTE_INVARIANTS, runPromoteInvariants } from "./invariants";
 import { PROMOTE_FIXTURES } from "./fixtures";
 import {
     runScenario, prReady, directReady, strictReady, nothingToPromote, conflictScenario, checkRed, acceptanceRed,
-    PROMOTE_BRANCH, VALIDATED_SHA, type PromoteRecording,
+    VALIDATED_SHA, type PromoteRecording,
 } from "./surface";
 
 const failed = (r: PromoteRecording) => runPromoteInvariants(r).filter((c) => !c.ok).map((c) => c.name);
@@ -26,9 +26,9 @@ describe("verify/promote: the CI matrix over every fixture", () => {
         expect(PROMOTE_FIXTURES.some((f) => f.probe)).toBe(true);
     });
 
-    it("declares the roadmap probes (pushes-target · ready-without-recheck)", () => {
+    it("declares the safety probes (advances-unvalidated-ref · pr-pushes-target · ready-without-recheck)", () => {
         const probeIds = PROMOTE_FIXTURES.filter((f) => f.probe).map((f) => f.id);
-        expect(probeIds).toEqual(expect.arrayContaining(["pushes-target", "ready-without-recheck"]));
+        expect(probeIds).toEqual(expect.arrayContaining(["advances-unvalidated-ref", "pr-pushes-target", "ready-without-recheck"]));
     });
 
     it("runAll reports a verdict for every fixture, all PASS, none BLOCKED", async () => {
@@ -49,10 +49,10 @@ describe("verify/promote: the recording is the real stage's behaviour", () => {
         expect(failed(rec)).toEqual([]);
     });
 
-    it("direct mode: pushes the validated promote branch + hands the raw-sha → refs/heads/<target> push", async () => {
+    it("direct mode: ADVANCES the target on the click, to exactly the validated sha (refs/heads/<target>)", async () => {
         const rec = await runScenario(directReady());
-        expect(rec.pushes).toEqual([{ localRef: PROMOTE_BRANCH, remoteRef: undefined }]);
-        expect(rec.pushedRefs).toEqual([PROMOTE_BRANCH]);
+        expect(rec.pushes).toEqual([{ localRef: VALIDATED_SHA, remoteRef: "refs/heads/main" }]);
+        expect(rec.pushedRefs).toEqual([]); // no separate helper push — the target advance IS the push
         expect(rec.commands).toContain(`git push origin ${VALIDATED_SHA}:refs/heads/main`);
         expect(failed(rec)).toEqual([]);
     });
@@ -96,9 +96,13 @@ describe("verify/promote: the recording is the real stage's behaviour", () => {
 });
 
 describe("verify/promote: negative controls — each broken recording FAILS its named invariant", () => {
-    it("routing the target through pushBranch FAILS never-push-target", () => {
-        const fx = PROMOTE_FIXTURES.find((f) => f.id === "pushes-target");
-        expect(fx?.probe && failed(fx.recording)).toContain("never-push-target");
+    it("advancing the target to a non-validated branch FAILS target-advance-is-validated", () => {
+        const fx = PROMOTE_FIXTURES.find((f) => f.id === "advances-unvalidated-ref");
+        expect(fx?.probe && failed(fx.recording)).toContain("target-advance-is-validated");
+    });
+    it("pushing the target in pr mode FAILS target-advance-is-validated", () => {
+        const fx = PROMOTE_FIXTURES.find((f) => f.id === "pr-pushes-target");
+        expect(fx?.probe && failed(fx.recording)).toContain("target-advance-is-validated");
     });
     it("a `ready` with a red gate FAILS promote-recheck-before-ready", () => {
         const fx = PROMOTE_FIXTURES.find((f) => f.id === "ready-without-recheck");

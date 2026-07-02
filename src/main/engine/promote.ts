@@ -15,8 +15,8 @@
 // Pure DI — no Electron, no direct git — so it unit-tests with fake deps. ipc.ts wires the real engine
 // fns behind the per-project merge mutex (Task 4). The result union lives in shared/ (the renderer's panel
 // reads it too); we re-export it here so the engine module stays self-describing.
-import type { Project, PromoteResult, PromoteReady } from "../../shared/types";
-export type { PromoteResult, PromoteReady };
+import type { Project, PromoteResult, PromoteReady, PromoteFinalizeInfo } from "../../shared/types";
+export type { PromoteResult, PromoteReady, PromoteFinalizeInfo };
 
 export interface PromoteStageDeps {
     fetchRemote: (repo: string, remote: string, branch: string) => Promise<void>;
@@ -97,36 +97,55 @@ export async function runPromoteStage(project: Project, d: PromoteStageDeps): Pr
     }
 }
 
-// Mode-specific push of a NON-PROTECTED helper branch + the printed commands the human runs to advance the
-// target. NEVER pushes/merges the target itself — the target-advancing step is always a PRINTED command.
+// The human-authorized finalize (one-click Promote). ONLY reachable from the projects:promote ipc — the
+// autonomous loop can never call it. Mode-specific:
+//   direct  — ADVANCE the target itself, on the click, to EXACTLY the re-validated commit (a raw-sha,
+//             non-force push, so a target that moved mid-flow is rejected rather than clobbered). This is
+//             the ONLY place the tool pushes the target, and never to any ref but validatedSha.
+//   pr      — push integration (a non-protected helper) + hand a gh command; opening the PR stays the
+//             human's explicit GitHub action (a reviewable step, and gh needs a GitHub remote + auth).
+//   strict  — push NOTHING; hand the full local sequence for the human to run by hand.
 export async function finalizePromotion(
     project: Project, ready: PromoteReady, d: FinalizeDeps,
-): Promise<{ pushedRefs: string[]; commands: string[] }> {
-    const { integrationBranch, targetBranch } = project;
+): Promise<PromoteFinalizeInfo> {
+    const { integrationBranch, targetBranch, repoPath } = project;
     switch (project.promotionMode) {
+        case "direct": {
+            const targetRef = `refs/heads/${targetBranch}`;
+            const command = `git push origin ${ready.validatedSha}:${targetRef}`;
+            try {
+                // Advance the target to the exact re-checked commit. remoteRef = refs/heads/<target> is the
+                // ONLY case the tool pushes the target — and localRef is always validatedSha (the verify slice
+                // asserts nothing else can ever reach the target). Non-force: a moved target → clean rejection.
+                await d.pushBranch(repoPath, "origin", ready.validatedSha, targetRef);
+                return {
+                    pushedRefs: [], commands: [command], advancedTarget: true, advancedTo: ready.validatedSha,
+                    note: `advanced ${targetBranch} → ${ready.validatedSha.slice(0, 12)} (the exact re-checked commit)`,
+                };
+            } catch (e) {
+                // e.g. the target moved between the fetch and the advance → non-ff rejection. The re-check was
+                // real; nothing landed. Hand the command so the human can re-run after a fresh Promote.
+                return {
+                    pushedRefs: [], commands: [command], advancedTarget: false,
+                    note: `could not advance ${targetBranch} — it may have moved; re-run Promote`,
+                    error: e instanceof Error ? e.message : String(e),
+                };
+            }
+        }
         case "pr": {
             // Push integration (a non-protected helper), then hand a gh command to open the PR. If the user
             // has no `gh`, the command simply won't run — the tool still did the safe part (pushed integration).
-            await d.pushBranch(project.repoPath, "origin", integrationBranch);
+            await d.pushBranch(repoPath, "origin", integrationBranch);
             return {
-                pushedRefs: [integrationBranch],
+                pushedRefs: [integrationBranch], advancedTarget: false,
                 commands: [`gh pr create --base ${targetBranch} --head ${integrationBranch} --fill`],
-            };
-        }
-        case "direct": {
-            // Push the validated promote branch (puts validatedSha on origin under a helper name), then hand a
-            // RAW-SHA push that advances the target to EXACTLY the re-checked commit — robust to the local
-            // promote branch being reaped later, and it never routes through pushBranch's target arg.
-            await d.pushBranch(project.repoPath, "origin", ready.promoteBranch);
-            return {
-                pushedRefs: [ready.promoteBranch],
-                commands: [`git push origin ${ready.validatedSha}:refs/heads/${targetBranch}`],
+                note: `pushed ${integrationBranch} — open the PR to graduate it into ${targetBranch}`,
             };
         }
         case "strict": {
-            // Push NOTHING. Hand the full local sequence the human runs by hand.
             return {
-                pushedRefs: [],
+                pushedRefs: [], advancedTarget: false,
+                note: `strict — run these yourself to advance ${targetBranch}`,
                 commands: [
                     `git fetch origin ${targetBranch}`,
                     `git switch -c promote origin/${targetBranch}`,

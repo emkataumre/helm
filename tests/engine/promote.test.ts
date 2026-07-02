@@ -141,20 +141,32 @@ function fakePush(): { deps: FinalizeDeps; pushes: Array<{ localRef: string; rem
 }
 
 describe("finalizePromotion", () => {
-    it("pr mode: pushes INTEGRATION (not the target) and hands a `gh pr create` command", async () => {
+    it("direct mode: ADVANCES the target on the click, to EXACTLY the validated sha (raw-sha, non-force)", async () => {
+        const { deps, pushes } = fakePush();
+        const r = await finalizePromotion({ ...PROJECT, promotionMode: "direct" }, READY, deps);
+        expect(pushes).toEqual([{ localRef: "validated-tip-sha", remoteRef: "refs/heads/main" }]);
+        expect(r.advancedTarget).toBe(true);
+        expect(r.advancedTo).toBe("validated-tip-sha");
+        expect(r.pushedRefs).toEqual([]); // no separate helper push — the target advance IS the push
+        expect(r.note).toMatch(/advanced main/);
+        expect(r.commands).toContain("git push origin validated-tip-sha:refs/heads/main"); // audit trail
+    });
+
+    it("direct mode: a rejected advance (e.g. the target moved) → advancedTarget=false + error, nothing lands", async () => {
+        const deps: FinalizeDeps = { pushBranch: async () => { throw new Error("! [rejected] (non-fast-forward)"); } };
+        const r = await finalizePromotion({ ...PROJECT, promotionMode: "direct" }, READY, deps);
+        expect(r.advancedTarget).toBe(false);
+        expect(r.error).toMatch(/non-fast-forward/);
+        expect(r.commands).toContain("git push origin validated-tip-sha:refs/heads/main"); // handed for a retry
+    });
+
+    it("pr mode: pushes INTEGRATION (never the target) and hands a `gh pr create` command", async () => {
         const { deps, pushes } = fakePush();
         const r = await finalizePromotion({ ...PROJECT, promotionMode: "pr" }, READY, deps);
         expect(pushes).toEqual([{ localRef: "integration/ralph", remoteRef: undefined }]);
         expect(r.pushedRefs).toEqual(["integration/ralph"]);
+        expect(r.advancedTarget).toBe(false);
         expect(r.commands.some((c) => /^gh pr create .*--base main .*--head integration\/ralph/.test(c))).toBe(true);
-    });
-
-    it("direct mode: pushes the VALIDATED promote branch and hands the raw-sha → refs/heads/<target> push", async () => {
-        const { deps, pushes } = fakePush();
-        const r = await finalizePromotion({ ...PROJECT, promotionMode: "direct" }, READY, deps);
-        expect(pushes).toEqual([{ localRef: PROMOTE_BRANCH, remoteRef: undefined }]);
-        expect(r.pushedRefs).toEqual([PROMOTE_BRANCH]);
-        expect(r.commands).toContain("git push origin validated-tip-sha:refs/heads/main");
     });
 
     it("strict mode: pushes NOTHING and hands the full local sequence", async () => {
@@ -162,6 +174,7 @@ describe("finalizePromotion", () => {
         const r = await finalizePromotion({ ...PROJECT, promotionMode: "strict" }, READY, deps);
         expect(pushes).toEqual([]);
         expect(r.pushedRefs).toEqual([]);
+        expect(r.advancedTarget).toBe(false);
         expect(r.commands).toEqual([
             "git fetch origin main",
             "git switch -c promote origin/main",
@@ -171,14 +184,18 @@ describe("finalizePromotion", () => {
         ]);
     });
 
-    it("INVARIANT: across all three modes, pushBranch is NEVER called with the target branch (as local or remote ref)", async () => {
+    it("INVARIANT: the target ref is ONLY ever pushed in direct mode, and ONLY with the validated sha", async () => {
+        const touchesTarget = (ref?: string) => ref === "main" || ref === "refs/heads/main";
         for (const mode of ["pr", "direct", "strict"] as const) {
             const { deps, pushes } = fakePush();
             await finalizePromotion({ ...PROJECT, promotionMode: mode }, READY, deps);
             for (const p of pushes) {
-                expect(p.localRef).not.toBe("main");
-                expect(p.remoteRef).not.toBe("main");
-                expect(p.remoteRef).not.toBe("refs/heads/main"); // and never the raw-sha→target push as an engine call
+                if (touchesTarget(p.localRef) || touchesTarget(p.remoteRef)) {
+                    // the only legal target push: direct mode, advancing to the validated sha
+                    expect(mode).toBe("direct");
+                    expect(p.localRef).toBe(READY.validatedSha);
+                    expect(p.remoteRef).toBe("refs/heads/main");
+                }
             }
         }
     });

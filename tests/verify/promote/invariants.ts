@@ -8,24 +8,24 @@ import type { PromoteRecording } from "./surface";
 export interface PromoteInvariant { name: string; holds: (r: PromoteRecording) => true | string; }
 export interface InvariantResult { name: string; ok: boolean; detail?: string }
 
-// A pushed ref "touches the target" if it IS the target branch, in either bare or refs/heads/ form, as a
-// local ref or a remote ref. finalizePromotion must never route the target through pushBranch.
+// A ref "touches the target" if it IS the target branch, in either bare or refs/heads/ form.
 const touchesTarget = (ref: string | undefined, target: string): boolean =>
     ref === target || ref === `refs/heads/${target}`;
 
 export const PROMOTE_INVARIANTS: PromoteInvariant[] = [
-    // THE non-negotiable (spec §13, roadmap): the tool pushes only NON-PROTECTED helper branches, never the
-    // PR/target. Every pushBranch call the real finalize made — and every ref it reports pushing — must be
-    // clear of the target branch (bare or refs/heads/). The target only ever advances via a PRINTED command.
+    // THE safety property (spec §13, reframed for one-click): the tool advances the target ONLY to a commit
+    // it just re-validated, and ONLY in `direct` mode. So every push that touches the target ref must be a
+    // `direct`-mode push of EXACTLY the validated sha — never a branch, never a different sha, and never at
+    // all in `pr`/`strict`. (The agent loop can't push the target regardless — that's the CLI-layer belt.)
     {
-        name: "never-push-target",
+        name: "target-advance-is-validated",
         holds: (r) => {
             for (const p of r.pushes) {
-                if (touchesTarget(p.localRef, r.targetBranch)) return `pushBranch called with the target as its LOCAL ref: ${p.localRef}`;
-                if (touchesTarget(p.remoteRef, r.targetBranch)) return `pushBranch called with the target as its REMOTE ref: ${p.remoteRef}`;
-            }
-            for (const ref of r.pushedRefs) {
-                if (touchesTarget(ref, r.targetBranch)) return `finalize reports pushing the target branch: ${ref}`;
+                const hitsTarget = touchesTarget(p.localRef, r.targetBranch) || touchesTarget(p.remoteRef, r.targetBranch);
+                if (!hitsTarget) continue;
+                if (r.mode !== "direct") return `the target was pushed in ${r.mode} mode (only direct may advance it): ${p.localRef} → ${p.remoteRef}`;
+                if (p.localRef !== r.validatedSha) return `the target was advanced to a NON-validated ref: ${p.localRef} (expected the re-checked sha ${r.validatedSha})`;
+                if (p.remoteRef !== `refs/heads/${r.targetBranch}`) return `target advance used an unexpected remote ref: ${p.remoteRef}`;
             }
             return true;
         },

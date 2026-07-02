@@ -179,28 +179,55 @@ describe("SchedulerBar contract", () => {
     });
 });
 
-describe("PromoteResultPanel contract (the hand-you-the-commands surface)", () => {
-    const ready: PromoteResponse = {
+describe("PromoteResultPanel contract (the result surface)", () => {
+    const directAdvanced: PromoteResponse = {
         outcome: "ready", validatedSha: "abcdef0123456789", diffstat: "+5 -2",
-        promoteBranch: "helm/promote-p1-abcdef012345", pushedRefs: ["helm/promote-p1-abcdef012345"],
+        promoteBranch: "helm/promote-p1-abcdef012345",
+        pushedRefs: [], advancedTarget: true, advancedTo: "abcdef0123456789",
+        note: "advanced main → abcdef012345 (the exact re-checked commit)",
         commands: ["git push origin abcdef0123456789:refs/heads/main"],
     };
 
-    it("ready: stamps the outcome + counts and renders the diffstat and the copyable command", () => {
-        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={ready} />);
+    it("direct advanced: stamps advanced=true and shows the target was advanced on the click", () => {
+        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={directAdvanced} />);
         expect(html).toContain('data-verify-unit="PromoteResultPanel"');
         expect(html).toContain('data-verify-outcome="ready"');
         expect(html).toContain('data-verify-ready="true"');
-        expect(html).toContain('data-verify-commands="1"');
-        expect(html).toContain('data-verify-pushed="1"');
+        expect(html).toContain('data-verify-advanced="true"');
+        expect(html).toContain('data-verify-pushed="0"'); // no helper push — the advance IS the push
         expect(html).toContain("+5 -2");
-        expect(html).toContain("git push origin abcdef0123456789:refs/heads/main"); // the deliverable is shown
+        expect(html).toContain("advanced main"); // the headline note
+    });
+
+    it("pr ready: advanced=false, integration pushed, the gh command shown to run", () => {
+        const pr: PromoteResponse = {
+            outcome: "ready", validatedSha: "abcdef0123456789", diffstat: "+5 -2", promoteBranch: "helm/promote-p1-abcdef012345",
+            pushedRefs: ["integration/ralph"], advancedTarget: false, note: "pushed integration/ralph — open the PR to graduate it into main",
+            commands: ["gh pr create --base main --head integration/ralph --fill"],
+        };
+        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={pr} />);
+        expect(html).toContain('data-verify-advanced="false"');
+        expect(html).toContain('data-verify-pushed="1"');
+        expect(html).toContain("gh pr create"); // the human still opens the PR
+    });
+
+    it("direct advance failed: shows the error and hands the retry command", () => {
+        const failed: PromoteResponse = {
+            outcome: "ready", validatedSha: "abcdef0123456789", diffstat: "+5 -2", promoteBranch: "helm/promote-p1-abcdef012345",
+            pushedRefs: [], advancedTarget: false, note: "could not advance main — it may have moved; re-run Promote",
+            error: "! [rejected] (non-fast-forward)", commands: ["git push origin abcdef0123456789:refs/heads/main"],
+        };
+        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={failed} />);
+        expect(html).toContain('data-verify-advanced="false"');
+        expect(html).toContain("non-fast-forward");
+        expect(html).toContain("git push origin abcdef0123456789:refs/heads/main"); // retry
     });
 
     it("recheck-failed: surfaces the outcome, the failure output, and NO commands", () => {
         const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={{ outcome: "recheck-failed", output: "tests failed on the fresh tip" }} />);
         expect(html).toContain('data-verify-outcome="recheck-failed"');
         expect(html).toContain('data-verify-ready="false"');
+        expect(html).toContain('data-verify-advanced="false"');
         expect(html).toContain('data-verify-commands="0"');
         expect(html).toContain("tests failed on the fresh tip");
     });

@@ -13,13 +13,14 @@ export interface PositiveFixture { id: string; probe?: false; run: () => Promise
 export interface ProbeFixture { id: string; probe: true; recording: PromoteRecording; mustFail: string }
 export type PromoteFixture = PositiveFixture | ProbeFixture;
 
-// A clean `direct` ready recording (all three invariants hold); each probe clones it and breaks ONE thing.
+// A clean `direct` ready recording (all invariants hold) — it advances the target to the validated sha,
+// which is now the legitimate one-click behaviour. Each probe clones it and breaks ONE thing.
 const BASELINE: PromoteRecording = {
     unit: "promote", mode: "direct", targetBranch: "main",
     outcome: "ready", validatedSha: VALIDATED_SHA, worktreeCreated: true, beyond: 3,
     checkGreen: true, acceptanceGreen: true,
-    pushes: [{ localRef: PROMOTE_BRANCH, remoteRef: undefined }],
-    pushedRefs: [PROMOTE_BRANCH],
+    pushes: [{ localRef: VALIDATED_SHA, remoteRef: "refs/heads/main" }], // direct advances the target to the validated sha
+    pushedRefs: [],
     commands: [`git push origin ${VALIDATED_SHA}:refs/heads/main`],
 };
 
@@ -34,11 +35,16 @@ export const PROMOTE_FIXTURES: PromoteFixture[] = [
     { id: "recheck-failed-acceptance", run: () => runScenario(acceptanceRed()) },
 
     // ── Probes — hand-crafted BROKEN recordings, each breaking ONE invariant ────────────────────────
-    // The finalizer routed the target through pushBranch (the raw-sha→target push must be a PRINTED command,
-    // never an engine push). MUST FAIL never-push-target.
+    // Direct advanced the target to a BRANCH (not the re-validated sha) — the advance isn't faithful to the
+    // re-check. MUST FAIL target-advance-is-validated.
     {
-        id: "pushes-target", probe: true, mustFail: "never-push-target",
+        id: "advances-unvalidated-ref", probe: true, mustFail: "target-advance-is-validated",
         recording: { ...BASELINE, pushes: [{ localRef: PROMOTE_BRANCH, remoteRef: "refs/heads/main" }] },
+    },
+    // pr mode pushed the TARGET ref — only direct may ever touch the target. MUST FAIL target-advance-is-validated.
+    {
+        id: "pr-pushes-target", probe: true, mustFail: "target-advance-is-validated",
+        recording: { ...BASELINE, mode: "pr", pushes: [{ localRef: "integration/ralph", remoteRef: "refs/heads/main" }] },
     },
     // A `ready` handed back despite a RED check — the re-check gate was skipped. MUST FAIL promote-recheck-before-ready.
     {

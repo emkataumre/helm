@@ -144,9 +144,20 @@ export type PromoteResult =
     | { outcome: "conflict" }
     | { outcome: "recheck-failed"; output: string }
     | PromoteReady;
-// The IPC response: the stage result plus finalize's extras (commands to run + the helper refs the tool
-// pushed), present only on a `ready` graduation.
-export type PromoteResponse = PromoteResult & { commands?: string[]; pushedRefs?: string[] };
+// What finalizePromotion does on a `ready` graduation — mode-specific. In `direct` mode the tool ADVANCES
+// the target itself, on the human's Promote click, to the exact re-validated commit (never any other ref);
+// in `pr` it pushes integration + hands a gh command; in `strict` it pushes nothing + hands the sequence.
+// The agent loop can never reach this — only the human-triggered projects:promote does.
+export interface PromoteFinalizeInfo {
+    pushedRefs: string[];      // NON-target helper refs the tool pushed (pr: [integration]; direct/strict: [])
+    commands: string[];        // the equivalent commands — audit trail (direct/pr) or the sequence to run (strict)
+    advancedTarget: boolean;   // direct: the tool advanced the target to the validated commit on your click
+    advancedTo?: string;       // direct: the sha the target now points at (== the re-validated PromoteReady.validatedSha)
+    note: string;              // human-readable one-line outcome
+    error?: string;            // direct: the advance push failed (e.g. the target moved) — retry with `commands`
+}
+// The IPC response: the stage result plus (only on `ready`) the finalize info.
+export type PromoteResponse = PromoteResult & Partial<PromoteFinalizeInfo>;
 
 // IPC contract: the renderer calls these; main implements them.
 export interface NewProjectInput {
