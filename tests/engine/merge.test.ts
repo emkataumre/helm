@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../../src/main/engine/exec";
-import { commitAll, squashMergeInto, diffStat, headSha, advanceBranch, fetchRemote, countCommitsBeyond, mergeNoFf, pushBranch } from "../../src/main/engine/merge";
+import { commitAll, squashMergeInto, diffStat, headSha, advanceBranch, fetchRemote, countCommitsBeyond, mergeNoFf, pushBranch, revParse } from "../../src/main/engine/merge";
 import type { ExecFn } from "../../src/main/engine/exec";
 
 async function tempRepo(): Promise<string> {
@@ -173,6 +173,20 @@ describe("mergeNoFf (real git)", () => {
         } finally {
             rmSync(repo, { recursive: true, force: true });
         }
+    });
+});
+
+describe("revParse", () => {
+    it("resolves a ref to its full sha via `git rev-parse <ref>`", async () => {
+        const exec: ExecFn = async (_cmd, args) => {
+            expect(args).toEqual(["-C", "/repo", "rev-parse", "integration/ralph"]);
+            return { code: 0, stdout: "deadbeefcafebabe\n", stderr: "", timedOut: false };
+        };
+        expect(await revParse("/repo", "integration/ralph", exec)).toBe("deadbeefcafebabe");
+    });
+    it("throws on a bad ref", async () => {
+        const exec: ExecFn = async () => ({ code: 128, stdout: "", stderr: "unknown revision", timedOut: false });
+        await expect(revParse("/repo", "nope", exec)).rejects.toThrow(/rev-parse/);
     });
 });
 

@@ -68,6 +68,16 @@ export async function countCommitsBeyond(repoRoot: string, base: string, tip: st
     return Number(res.stdout.trim()) || 0;
 }
 
+// Resolve a ref (branch, remote-tracking ref, tag) to its full commit sha (`git rev-parse <ref>`). The
+// promote stage uses this to read the integration tip sha for the UNIQUE throwaway branch name
+// `helm/promote-<projectId>-<integrationShortSha>` (integration is checked out nowhere, so headSha — which
+// reads a worktree's HEAD — can't reach it). Throws on a bad ref.
+export async function revParse(repoRoot: string, ref: string, exec: ExecFn = run): Promise<string> {
+    const res = await git(repoRoot, ["rev-parse", ref], exec);
+    if (res.code !== 0) throw new Error(`Helm: git rev-parse ${ref} failed: ${res.stderr.trim()}`);
+    return res.stdout.trim();
+}
+
 // A --no-ff --no-edit merge of <ref> into the worktree's checked-out branch, preserving the integration
 // history as a real merge commit. --no-edit kills the editor-abort footgun spec §13 calls out. On ANY
 // merge failure (conflict or otherwise) we `git merge --abort` and report conflict — the promote stage
