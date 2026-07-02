@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState } from "../shared/types";
+import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse } from "../shared/types";
 import { TokenReadout } from "./components/TokenReadout";
 import { IterationHistory } from "./components/IterationHistory";
 import { ActivityFeed } from "./components/ActivityFeed";
@@ -7,6 +7,7 @@ import { ProgressPanel } from "./components/ProgressPanel";
 import { BoardCard } from "./components/BoardCard";
 import { SchedulerBar } from "./components/SchedulerBar";
 import { HandbackActions } from "./components/HandbackActions";
+import { PromoteResultPanel } from "./components/PromoteResultPanel";
 import { parseProgress, type ParsedProgress } from "./progress";
 
 // M5: a 5th lane for handed-off (drop-in) tasks.
@@ -22,6 +23,8 @@ export function App() {
     const [selected, setSelected] = useState<string | null>(null);
     const [live, setLive] = useState<Record<string, string>>({});
     const [sched, setSched] = useState<SchedulerState | null>(null);
+    // M6-③: the last Promote and its result (null until the human clicks Promote on a project).
+    const [promote, setPromote] = useState<{ projectId: string; result: PromoteResponse | "loading" } | null>(null);
 
     const refresh = useCallback(async () => {
         setProjects(await window.helm.listProjects());
@@ -43,6 +46,14 @@ export function App() {
     const togglePaused = async (paused: boolean) => { await window.helm.setSchedulerPaused(paused); refreshSched(); };
     const paused = sched?.paused ?? false;
 
+    // Run one project's batch Promote: show a loading panel, then the PromoteResponse (a thrown engine
+    // error — e.g. a mid-promote git failure — is surfaced as a recheck-failed so the human sees why).
+    const doPromote = async (projectId: string) => {
+        setPromote({ projectId, result: "loading" });
+        try { setPromote({ projectId, result: await window.helm.promote(projectId) }); }
+        catch (e) { setPromote({ projectId, result: { outcome: "recheck-failed", output: e instanceof Error ? e.message : String(e) } }); }
+    };
+
     const selectedTask = selected ? tasks.find((t) => t.id === selected) : undefined;
     const shown = tasks.filter((t) => !filter || t.projectId === filter);
     const abandoned = shown.filter((t) => t.status === "abandoned");
@@ -62,6 +73,18 @@ export function App() {
                     <NewTaskForm projects={projects} onDone={refresh} />
 
                     {sched ? <SchedulerBar state={sched} queuedByProject={queuedByProject} names={names} onSetPaused={togglePaused} /> : null}
+
+                    {projects.length > 0 ? (
+                        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                            <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, textTransform: "uppercase", color: "#788C5D" }}>Promote (integration → target)</span>
+                            {projects.map((p) => (
+                                <button key={p.id} onClick={() => doPromote(p.id)} disabled={promote?.projectId === p.id && promote.result === "loading"}>
+                                    {p.name} ({p.promotionMode})
+                                </button>
+                            ))}
+                        </div>
+                    ) : null}
+                    {promote ? <PromoteResultPanel projectName={names[promote.projectId] ?? promote.projectId} result={promote.result} /> : null}
 
                     <div>
                         <label>Project filter:{" "}

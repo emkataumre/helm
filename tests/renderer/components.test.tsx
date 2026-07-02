@@ -13,8 +13,9 @@ import { ProgressPanel } from "../../src/renderer/components/ProgressPanel";
 import { BoardCard } from "../../src/renderer/components/BoardCard";
 import { SchedulerBar } from "../../src/renderer/components/SchedulerBar";
 import { HandbackActions } from "../../src/renderer/components/HandbackActions";
+import { PromoteResultPanel } from "../../src/renderer/components/PromoteResultPanel";
 import { parseProgress } from "../../src/renderer/progress";
-import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState } from "../../src/shared/types";
+import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse } from "../../src/shared/types";
 
 const schedState = (over: Partial<SchedulerState> = {}): SchedulerState =>
     ({ paused: false, perProject: [{ projectId: "p1", running: 2, cap: 3 }], ...over });
@@ -175,6 +176,48 @@ describe("SchedulerBar contract", () => {
         const paused = renderToStaticMarkup(<SchedulerBar state={schedState({ paused: true })} onSetPaused={() => {}} />);
         expect(paused).toContain("Resume");
         expect(paused).toContain('data-verify-paused="true"');
+    });
+});
+
+describe("PromoteResultPanel contract (the hand-you-the-commands surface)", () => {
+    const ready: PromoteResponse = {
+        outcome: "ready", validatedSha: "abcdef0123456789", diffstat: "+5 -2",
+        promoteBranch: "helm/promote-p1-abcdef012345", pushedRefs: ["helm/promote-p1-abcdef012345"],
+        commands: ["git push origin abcdef0123456789:refs/heads/main"],
+    };
+
+    it("ready: stamps the outcome + counts and renders the diffstat and the copyable command", () => {
+        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={ready} />);
+        expect(html).toContain('data-verify-unit="PromoteResultPanel"');
+        expect(html).toContain('data-verify-outcome="ready"');
+        expect(html).toContain('data-verify-ready="true"');
+        expect(html).toContain('data-verify-commands="1"');
+        expect(html).toContain('data-verify-pushed="1"');
+        expect(html).toContain("+5 -2");
+        expect(html).toContain("git push origin abcdef0123456789:refs/heads/main"); // the deliverable is shown
+    });
+
+    it("recheck-failed: surfaces the outcome, the failure output, and NO commands", () => {
+        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={{ outcome: "recheck-failed", output: "tests failed on the fresh tip" }} />);
+        expect(html).toContain('data-verify-outcome="recheck-failed"');
+        expect(html).toContain('data-verify-ready="false"');
+        expect(html).toContain('data-verify-commands="0"');
+        expect(html).toContain("tests failed on the fresh tip");
+    });
+
+    it("nothing-to-promote / conflict: a ready=false note, no commands", () => {
+        const nothing = renderToStaticMarkup(<PromoteResultPanel projectName="P" result={{ outcome: "nothing-to-promote" }} />);
+        expect(nothing).toContain('data-verify-outcome="nothing-to-promote"');
+        expect(nothing).toContain('data-verify-ready="false"');
+        const conflict = renderToStaticMarkup(<PromoteResultPanel projectName="P" result={{ outcome: "conflict" }} />);
+        expect(conflict).toContain('data-verify-outcome="conflict"');
+        expect(conflict).toContain("Resolve the conflict");
+    });
+
+    it("loading: stamps outcome=loading and shows the in-flight note", () => {
+        const html = renderToStaticMarkup(<PromoteResultPanel projectName="P" result="loading" />);
+        expect(html).toContain('data-verify-outcome="loading"');
+        expect(html).toContain("validating integration on a fresh origin tip");
     });
 });
 
