@@ -159,6 +159,26 @@ export interface PromoteFinalizeInfo {
 // The IPC response: the stage result plus (only on `ready`) the finalize info.
 export type PromoteResponse = PromoteResult & Partial<PromoteFinalizeInfo>;
 
+// ── M7 embedded terminal foundation (spec §8/§4) ──────────────────────────────────────────────────
+// A PTY session hosted in the Electron MAIN process (node-pty behind the injected factory — no test
+// ever loads the native module). Main-process residency is the point: a session survives a window-hide
+// (M6-④ tray) and re-attaches with scrollback intact; only a real Quit (disposeAll) kills it. The PTY
+// is a SIBLING seam to spawn.ts — humans-only; agents keep going through the spawn chokepoint. The
+// renderer renders one TerminalPane per session.
+export type PtyKind = "dropin" | "planner" | "free";
+export interface PtySession {
+    id: string;              // randomUUID(), assigned by the manager
+    kind: PtyKind;
+    title: string;
+    cwd: string;
+    taskId?: string;         // set for a drop-in session (the task it steers)
+    projectId?: string;
+}
+// list() augments each session with liveness (the renderer greys out a dead tab).
+export interface PtySessionInfo extends PtySession {
+    alive: boolean;
+}
+
 // IPC contract: the renderer calls these; main implements them.
 export interface NewProjectInput {
     name: string;
