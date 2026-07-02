@@ -10,8 +10,9 @@ import { addIteration, finishIteration, listIterations, latestSessionId } from "
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "./engine/worktree";
 import { reconcile, isUnderWorktreeDir } from "./engine/reconcile";
 import { buildInstructions, seedProgress } from "./engine/prompt";
-import { commitAll, squashMergeInto, diffStat, headSha, advanceBranch } from "./engine/merge";
+import { commitAll, squashMergeInto, diffStat, headSha, advanceBranch, fetchRemote, countCommitsBeyond, mergeNoFf, pushBranch, revParse } from "./engine/merge";
 import { runMergeStage, type MergeStageDeps } from "./engine/mergeStage";
+import { runPromoteStage, finalizePromotion, type PromoteStageDeps, type FinalizeDeps } from "./engine/promote";
 import { runAcceptance } from "./engine/acceptance";
 import { ensureRalphExcluded, writeRalphFiles } from "./engine/ralph";
 import { runCheck } from "./engine/check";
@@ -28,7 +29,7 @@ import { createScheduler, type Scheduler } from "./engine/scheduler";
 import { runTaskLoop, type RunTaskDeps, type ResumeContext } from "./engine/runTask";
 import { launchTerminal, DEFAULT_TERMINAL_COMMAND } from "./engine/terminalLaunch";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
-import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus } from "../shared/types";
+import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
@@ -63,6 +64,18 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         runMergeStage: (p, t, b) => scheduler.mutexFor(p.id).withLock(() => runMergeStage(p, t, b, buildMergeDeps(t.id, config))),
         setStatus: (id, status, extra) => { updateTask(db, id, { status, ...extra }); notify(); },
         removeWorktree,
+    });
+
+    // M6-③ batch-Promote deps: the same throwaway-worktree + setup + re-check engine fns as the merge
+    // stage, plus the promotion primitives. finalizePromotionDeps injects the ONLY push (pushBranch) —
+    // the verify slice inspects exactly this to prove the tool never pushes the target.
+    const finalizePromotionDeps: FinalizeDeps = { pushBranch };
+    const buildPromoteDeps = (config: LoopConfig): PromoteStageDeps => ({
+        fetchRemote, countCommitsBeyond, revParse, createWorktree, mergeNoFf, runSetup,
+        runCheck: (wt, cmd, t) => runCheck(wt, cmd, t),
+        runAcceptance: (wt, cmds, t) => runAcceptance(wt, cmds, t),
+        removeWorktree, headSha, diffStat,
+        checkTimeoutMs: config.checkTimeoutMs,
     });
 
     // M5: per-task AbortController registry. tasks:dropIn aborts the controller (hard-killing the live
@@ -144,6 +157,21 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     // A raised cap may free conceptual slots → kick the scheduler after a config change.
     ipcMain.handle("projects:update", (_e, id: string, patch: ProjectConfigPatch) => { updateProject(db, id, patch); notify(); scheduler.kick(); return getProject(db, id) ?? null; });
     ipcMain.handle("projects:detect", (_e, repoPath: string) => detectProjectConfig(repoPath));
+    // M6-③ project-level batch Promote. Mutex-serialized per project (don't promote while a task merge is
+    // advancing integration). runPromoteStage validates on a FRESH origin/<target> tip and pushes NOTHING;
+    // only on `ready` does finalizePromotion push a non-protected helper branch and return the copyable
+    // commands that advance the target — the tool never pushes/merges the target itself.
+    ipcMain.handle("projects:promote", (_e, projectId: string): Promise<PromoteResponse> => {
+        const project = getProject(db, projectId);
+        if (!project) throw new Error(`Helm: promote — unknown project ${projectId}`);
+        const config = resolveLoopConfig(project);
+        return scheduler.mutexFor(projectId).withLock(async () => {
+            const r = await runPromoteStage(project, buildPromoteDeps(config));
+            if (r.outcome !== "ready") return r;
+            const f = await finalizePromotion(project, r, finalizePromotionDeps);
+            return { ...r, ...f };
+        });
+    });
     // Create → enqueue → kick: the scheduler auto-starts it when a slot is free (unless paused).
     ipcMain.handle("tasks:create", (_e, input: NewTaskInput) => { const t = insertTask(db, input); notify(); scheduler.kick(); return t; });
     // Augment each task with `resumable` — does drop-in have a PERSISTED session to --resume? latestSessionId

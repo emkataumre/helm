@@ -13,22 +13,10 @@
 // target branch as its remoteRef — the verify slice inspects the injected pushBranch to prove it.
 //
 // Pure DI — no Electron, no direct git — so it unit-tests with fake deps. ipc.ts wires the real engine
-// fns behind the per-project merge mutex (Task 4).
-import type { Project } from "../../shared/types";
-
-export type PromoteResult =
-    | { outcome: "nothing-to-promote" }
-    | { outcome: "conflict" }
-    | { outcome: "recheck-failed"; output: string }
-    | PromoteReady;
-
-// The green outcome, split out so finalizePromotion can take it as a precise argument.
-export interface PromoteReady {
-    outcome: "ready";
-    validatedSha: string;   // the exact commit the re-check passed on — the raw sha the human's push advances the target to
-    diffstat: string;       // origin/<target>..promoteBranch, sized before anything is pushed
-    promoteBranch: string;  // helm/promote-<projectId>-<integration short sha> — the disposable artifact carrying validatedSha
-}
+// fns behind the per-project merge mutex (Task 4). The result union lives in shared/ (the renderer's panel
+// reads it too); we re-export it here so the engine module stays self-describing.
+import type { Project, PromoteResult, PromoteReady } from "../../shared/types";
+export type { PromoteResult, PromoteReady };
 
 export interface PromoteStageDeps {
     fetchRemote: (repo: string, remote: string, branch: string) => Promise<void>;

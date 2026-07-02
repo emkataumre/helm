@@ -130,6 +130,24 @@ export interface SchedulerState {
     perProject: Array<{ projectId: string; running: number; cap: number }>;
 }
 
+// ── M6-③ project-level batch Promote (spec §13) ──────────────────────────────────────────────────
+// The union the pure promote stage returns. Lives here (shared) so the renderer's result panel and the
+// engine agree on ONE shape; promote.ts imports + re-exports it so the engine stays self-describing.
+export interface PromoteReady {
+    outcome: "ready";
+    validatedSha: string;   // the exact re-checked commit the human's push advances the target to
+    diffstat: string;       // origin/<target>..promoteBranch, sized before anything is pushed
+    promoteBranch: string;  // helm/promote-<projectId>-<integration short sha>
+}
+export type PromoteResult =
+    | { outcome: "nothing-to-promote" }
+    | { outcome: "conflict" }
+    | { outcome: "recheck-failed"; output: string }
+    | PromoteReady;
+// The IPC response: the stage result plus finalize's extras (commands to run + the helper refs the tool
+// pushed), present only on a `ready` graduation.
+export type PromoteResponse = PromoteResult & { commands?: string[]; pushedRefs?: string[] };
+
 // IPC contract: the renderer calls these; main implements them.
 export interface NewProjectInput {
     name: string;
@@ -181,6 +199,9 @@ export interface HelmApi {
     // worktree's progress.md (null once the worktree is gone).
     getVerifyState: (taskId: string) => Promise<EngineSnapshot | null>;
     getProgress: (taskId: string) => Promise<string | null>;
+    // M6-③ project-level batch Promote: validate integration on a fresh origin/<target> tip, then hand the
+    // mode-specific push + the copyable commands that advance the target (the tool never pushes the target).
+    promote: (projectId: string) => Promise<PromoteResponse>;
     onTasksChanged: (cb: () => void) => void;
     onSnapshotChanged: (cb: (taskId: string) => void) => void;
 }

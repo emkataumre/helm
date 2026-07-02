@@ -6,6 +6,7 @@ const api: HelmApi = {
     listProjects: () => ipcRenderer.invoke("projects:list"),
     updateProject: (id, patch) => ipcRenderer.invoke("projects:update", id, patch),
     detectProject: (repoPath) => ipcRenderer.invoke("projects:detect", repoPath),
+    promote: (projectId) => ipcRenderer.invoke("projects:promote", projectId),
     createTask: (input) => ipcRenderer.invoke("tasks:create", input),
     listTasks: () => ipcRenderer.invoke("tasks:list"),
     startNow: (taskId) => ipcRenderer.invoke("tasks:startNow", taskId),
