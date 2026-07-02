@@ -178,6 +178,16 @@ export interface PtySession {
 export interface PtySessionInfo extends PtySession {
     alive: boolean;
 }
+// What the renderer/main hand the manager to spawn a session. argv[0] = command, rest = args
+// (the buildDropinArgv shape). Lives here so both the main manager and the renderer HelmApi share it.
+export interface CreatePtyOptions {
+    cwd: string;
+    argv: string[];
+    kind: PtyKind;
+    title: string;
+    taskId?: string;
+    projectId?: string;
+}
 
 // IPC contract: the renderer calls these; main implements them.
 export interface NewProjectInput {
@@ -235,6 +245,19 @@ export interface HelmApi {
     // M6-③ project-level batch Promote: validate integration on a fresh origin/<target> tip, then hand the
     // mode-specific push + the copyable commands that advance the target (the tool never pushes the target).
     promote: (projectId: string) => Promise<PromoteResponse>;
+    // M7 embedded terminal. create/write/resize/kill/list drive PTY sessions; attach wires the main-side
+    // scrollback-replay-then-live stream to onPtyData (detach stops it); onPtyExit fires when a session dies.
+    // The renderer TerminalPane attaches on mount, detaches (never kills) on unmount — closing a view ≠
+    // closing the session; kill is an explicit user action.
+    ptyCreate: (opts: CreatePtyOptions) => Promise<PtySession>;
+    ptyWrite: (id: string, data: string) => Promise<void>;
+    ptyResize: (id: string, cols: number, rows: number) => Promise<void>;
+    ptyKill: (id: string) => Promise<void>;
+    ptyList: () => Promise<PtySessionInfo[]>;
+    ptyAttach: (id: string) => Promise<void>;
+    ptyDetach: (id: string) => Promise<void>;
+    onPtyData: (cb: (id: string, chunk: string) => void) => void;
+    onPtyExit: (cb: (id: string, code: number) => void) => void;
     onTasksChanged: (cb: () => void) => void;
     onSnapshotChanged: (cb: (taskId: string) => void) => void;
 }

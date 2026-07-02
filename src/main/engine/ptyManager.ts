@@ -10,7 +10,8 @@
 // LEAF MODULE: imports only node:crypto + shared/types, so the verify slice drives the real manager
 // with a fake factory (the dropin-slice pattern).
 import { randomUUID } from "node:crypto";
-import type { PtyKind, PtySession, PtySessionInfo } from "../../shared/types";
+import type { PtySession, PtySessionInfo, CreatePtyOptions } from "../../shared/types";
+export type { CreatePtyOptions } from "../../shared/types";
 
 // The one native surface, injected. The real factory (ipc.ts) adapts node-pty to this; every test and
 // the verify slice supply a fake. `kill` in the real factory pairs pty.kill() with the exec.ts killTree
@@ -27,15 +28,6 @@ export type PtyFactory = (
     args: string[],
     opts: { cwd: string; cols: number; rows: number },
 ) => PtyHandle;
-
-export interface CreatePtyOptions {
-    cwd: string;
-    argv: string[];               // argv[0] = command, rest = args (buildDropinArgv shape)
-    kind: PtyKind;
-    title: string;
-    taskId?: string;
-    projectId?: string;
-}
 
 export interface PtyManager {
     create(opts: CreatePtyOptions): PtySession;

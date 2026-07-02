@@ -19,6 +19,16 @@ const api: HelmApi = {
     abandon: (taskId) => ipcRenderer.invoke("tasks:abandon", taskId),
     getVerifyState: (taskId) => ipcRenderer.invoke("tasks:verifyState", taskId),
     getProgress: (taskId) => ipcRenderer.invoke("tasks:progress", taskId),
+    // M7 embedded terminal.
+    ptyCreate: (opts) => ipcRenderer.invoke("pty:create", opts),
+    ptyWrite: (id, data) => ipcRenderer.invoke("pty:write", id, data),
+    ptyResize: (id, cols, rows) => ipcRenderer.invoke("pty:resize", id, cols, rows),
+    ptyKill: (id) => ipcRenderer.invoke("pty:kill", id),
+    ptyList: () => ipcRenderer.invoke("pty:list"),
+    ptyAttach: (id) => ipcRenderer.invoke("pty:attach", id),
+    ptyDetach: (id) => ipcRenderer.invoke("pty:detach", id),
+    onPtyData: (cb) => { ipcRenderer.on("pty:data", (_e, id: string, chunk: string) => cb(id, chunk)); },
+    onPtyExit: (cb) => { ipcRenderer.on("pty:exit", (_e, id: string, code: number) => cb(id, code)); },
     onTasksChanged: (cb) => { ipcRenderer.on("tasks:changed", () => cb()); },
     onSnapshotChanged: (cb) => { ipcRenderer.on("snapshot:changed", (_e, taskId: string) => cb(taskId)); },
 };

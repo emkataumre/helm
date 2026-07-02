@@ -29,16 +29,25 @@ import { createScheduler, type Scheduler } from "./engine/scheduler";
 import { runTaskLoop, type RunTaskDeps, type ResumeContext } from "./engine/runTask";
 import { launchTerminal, DEFAULT_TERMINAL_COMMAND } from "./engine/terminalLaunch";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
-import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse } from "../shared/types";
+import { createPtyManager } from "./engine/ptyManager";
+import { nodePtyFactory } from "./engine/nodePtyFactory";
+import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
-export function registerIpc(getWindow: () => BrowserWindow | null): void {
+export function registerIpc(getWindow: () => BrowserWindow | null): { disposePtys: () => void } {
     const db = openDb(join(app.getPath("userData"), "helm.db"));
     const logsDir = join(app.getPath("userData"), "logs");
     const notify = () => getWindow()?.webContents.send("tasks:changed");
     // One live EngineSnapshot per active task; each dispatch nudges the renderer's detail view.
     const snapshots = createSnapshotStore((taskId) => getWindow()?.webContents.send("snapshot:changed", taskId));
+
+    // M7 embedded terminal: ONE PtyManager for the whole app, with the real node-pty factory (the only
+    // place node-pty is imported). SIBLING seam to spawn.ts — humans-only; agents keep the chokepoint.
+    // A session's exit pushes pty:exit to the renderer; attach (below) pushes pty:data. Killed on Quit
+    // (disposePtys, returned to index.ts) — a window-hide must NOT kill them (main-process residency).
+    const ptyManager = createPtyManager(nodePtyFactory);
+    ptyManager.onExit((id, code) => getWindow()?.webContents.send("pty:exit", id, code));
 
     // Forward-declared so startTask can close over the scheduler it itself is driven by (the merge
     // mutex lives on the scheduler, shared across a project's task loops).
@@ -277,6 +286,20 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         catch { return null; }
     });
 
+    // ── M7 embedded terminal IPC (spec §8/§4) ─────────────────────────────────────────────────────
+    // Drive the single PtyManager. attach wires the main-side scrollback-replay-then-live stream to the
+    // renderer via pty:data (utf8 strings are fine at v1 volumes); detach stops it WITHOUT killing (a
+    // closed view ≠ a closed session). Kill is the only thing that ends a session; disposePtys (Quit)
+    // ends them all. The drop-in retrofit (tasks:dropIn) creates its session in-process via ptyManager
+    // directly — these handlers are the general surface the renderer + M8 free-tabs also use.
+    ipcMain.handle("pty:create", (_e, opts: CreatePtyOptions) => ptyManager.create(opts));
+    ipcMain.handle("pty:write", (_e, id: string, data: string) => { ptyManager.write(id, data); });
+    ipcMain.handle("pty:resize", (_e, id: string, cols: number, rows: number) => { ptyManager.resize(id, cols, rows); });
+    ipcMain.handle("pty:kill", (_e, id: string) => { ptyManager.kill(id); });
+    ipcMain.handle("pty:list", () => ptyManager.list());
+    ipcMain.handle("pty:attach", (_e, id: string) => { ptyManager.attach(id, (chunk) => getWindow()?.webContents.send("pty:data", id, chunk)); });
+    ipcMain.handle("pty:detach", (_e, id: string) => { ptyManager.detach(id); });
+
     // ── M6 ① boot reconcile (spec §4 "process death is cheap") ────────────────────────────────────
     // Close out the interrupted turn's still-open iteration: mark it FAILED, and — critically — leave
     // sessionId NULL (the M5 resume-guard: a crash-killed turn persisted no resumable claude session, so
@@ -372,4 +395,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         }, CHECKIN_POLL_MS);
         return () => clearInterval(id);
     }
+
+    // Handed to index.ts's before-quit: a real Quit kills every live PTY session (no orphan pwsh/conhost).
+    // A window-hide (M6-④ tray) must NOT call this — sessions keep running in the main process.
+    return { disposePtys: () => ptyManager.disposeAll() };
 }

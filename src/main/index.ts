@@ -7,6 +7,9 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 // True only during a deliberate quit (tray Quit / OS before-quit); otherwise close means "hide".
 let quitting = false;
+// M7: kill every live PTY session on a real quit (no orphan pwsh/conhost). Assigned in whenReady;
+// a no-op until then. A window-hide must NOT call this — sessions are main-process-resident.
+let disposePtys: () => void = () => {};
 
 function createWindow(): void {
     mainWindow = new BrowserWindow({
@@ -47,7 +50,7 @@ function createTray(): void {
 }
 
 app.whenReady().then(() => {
-    registerIpc(() => mainWindow);
+    ({ disposePtys } = registerIpc(() => mainWindow));
     createTray();
     createWindow();
 });
@@ -55,5 +58,6 @@ app.whenReady().then(() => {
 // Tray-resident: hiding the window must NOT quit the app. No-op on all platforms.
 app.on("window-all-closed", () => {});
 
-// A real quit (tray Quit, OS shutdown) — let the hide-on-close guard fall through so the window closes.
-app.on("before-quit", () => { quitting = true; });
+// A real quit (tray Quit, OS shutdown) — flip the hide-on-close guard so the window closes, and kill
+// every live PTY session (the only place sessions die — a window-hide leaves them running in main).
+app.on("before-quit", () => { quitting = true; disposePtys(); });

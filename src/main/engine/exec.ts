@@ -62,7 +62,9 @@ export const run: ExecFn = (command, args = [], opts = {}) =>
         child.on("error", (err) => { stderr += String(err); finish(-1); });
     });
 
-function killTree(pid?: number): void {
+// Exported for the pty real factory (M7): pairing pty.kill() with taskkill /T /F reaps the whole ConPTY
+// tree (conhost/OpenConsole/grandchildren) that node-pty's own reaper misses under Electron (Task-1 spike).
+export function killTree(pid?: number): void {
     if (!pid) return;
     if (process.platform === "win32") spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true });
     else { try { process.kill(-pid, "SIGKILL"); } catch { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } }
