@@ -1,0 +1,72 @@
+// tests/verify/promote/invariants.ts
+// The three M6-③ Promote safety invariants — pure predicates over the flat PromoteRecording. Each returns
+// `true` or a human-readable violation string; runPromoteInvariants wraps them so a predicate that THROWS
+// becomes a failed check, never a silent pass ("when in doubt, FAIL"). Distinct from, and complementary to,
+// the untouched M2–M6-② slices.
+import type { PromoteRecording } from "./surface";
+
+export interface PromoteInvariant { name: string; holds: (r: PromoteRecording) => true | string; }
+export interface InvariantResult { name: string; ok: boolean; detail?: string }
+
+// A pushed ref "touches the target" if it IS the target branch, in either bare or refs/heads/ form, as a
+// local ref or a remote ref. finalizePromotion must never route the target through pushBranch.
+const touchesTarget = (ref: string | undefined, target: string): boolean =>
+    ref === target || ref === `refs/heads/${target}`;
+
+export const PROMOTE_INVARIANTS: PromoteInvariant[] = [
+    // THE non-negotiable (spec §13, roadmap): the tool pushes only NON-PROTECTED helper branches, never the
+    // PR/target. Every pushBranch call the real finalize made — and every ref it reports pushing — must be
+    // clear of the target branch (bare or refs/heads/). The target only ever advances via a PRINTED command.
+    {
+        name: "never-push-target",
+        holds: (r) => {
+            for (const p of r.pushes) {
+                if (touchesTarget(p.localRef, r.targetBranch)) return `pushBranch called with the target as its LOCAL ref: ${p.localRef}`;
+                if (touchesTarget(p.remoteRef, r.targetBranch)) return `pushBranch called with the target as its REMOTE ref: ${p.remoteRef}`;
+            }
+            for (const ref of r.pushedRefs) {
+                if (touchesTarget(ref, r.targetBranch)) return `finalize reports pushing the target branch: ${ref}`;
+            }
+            return true;
+        },
+    },
+    // A `ready` graduation (a validated sha the human's push advances the target to) may ONLY appear when
+    // BOTH gates went green on the fresh tip. A red gate must yield recheck-failed with no sha — the
+    // re-check is the whole point, so it can't be theatre.
+    {
+        name: "promote-recheck-before-ready",
+        holds: (r) => {
+            if (r.outcome === "ready") {
+                if (r.validatedSha == null) return "ready outcome carries no validated sha";
+                if (!r.checkGreen) return "ready despite a RED check re-check (the gate was skipped)";
+                if (!r.acceptanceGreen) return "ready despite a RED acceptance re-check (the gate was skipped)";
+            }
+            // …and no validated sha may leak on any non-ready outcome.
+            if (r.outcome !== "ready" && r.validatedSha != null) return `non-ready outcome (${r.outcome}) leaked a validated sha`;
+            return true;
+        },
+    },
+    // Nothing beyond the target ⇒ nothing-to-promote, detected BEFORE any worktree is built (no throwaway
+    // worktree churn, and certainly no push). createWorktree must be uncalled.
+    {
+        name: "nothing-to-promote-detected",
+        holds: (r) => {
+            if (r.beyond === 0) {
+                if (r.outcome !== "nothing-to-promote") return `0 commits beyond the target but outcome was ${r.outcome}`;
+                if (r.worktreeCreated) return "built a throwaway worktree despite there being nothing to promote";
+            }
+            return true;
+        },
+    },
+];
+
+export function runPromoteInvariants(r: PromoteRecording): InvariantResult[] {
+    return PROMOTE_INVARIANTS.map((inv) => {
+        try {
+            const verdict = inv.holds(r);
+            return verdict === true ? { name: inv.name, ok: true } : { name: inv.name, ok: false, detail: verdict };
+        } catch (err) {
+            return { name: inv.name, ok: false, detail: `threw: ${(err as Error)?.message ?? String(err)}` };
+        }
+    });
+}
