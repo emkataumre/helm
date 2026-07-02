@@ -27,11 +27,11 @@ import { detectProjectConfig } from "./engine/detect";
 import { checkInsDue } from "./engine/checkIn";
 import { createScheduler, type Scheduler } from "./engine/scheduler";
 import { runTaskLoop, type RunTaskDeps, type ResumeContext } from "./engine/runTask";
-import { launchTerminal, DEFAULT_TERMINAL_COMMAND } from "./engine/terminalLaunch";
+import { launchTerminal, buildDropinArgv } from "./engine/terminalLaunch";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
 import { createPtyManager } from "./engine/ptyManager";
 import { nodePtyFactory } from "./engine/nodePtyFactory";
-import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions } from "../shared/types";
+import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
@@ -196,15 +196,19 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
     ipcMain.handle("scheduler:state", () => scheduler.state());
     ipcMain.handle("scheduler:setPaused", (_e, paused: boolean) => { scheduler.setPaused(paused); notify(); });
 
-    // ── M5 drop-in handoff (spec §8) ────────────────────────────────────────────────────────────
+    // ── M5 drop-in handoff (spec §8), M7-retrofitted onto the in-app terminal ──────────────────────
     // Grab a running or needs-human task: hard-interrupt the live claude (freeing the slot), flip it to
-    // handed-off (worktree retained), and launch a terminal resuming the latest session. `fresh` = Start
-    // fresh (no --resume). Available from {running, needs-human} only.
-    ipcMain.handle("tasks:dropIn", async (_e, taskId: string, fresh?: boolean) => {
+    // handed-off (worktree retained), and open a terminal in the worktree resuming the latest session.
+    // `fresh` = Start fresh (no --resume). Available from {running, needs-human} only. Returns the in-app
+    // PtySession (so the renderer opens the drawer on it), or null for an external launch / any no-op.
+    //
+    // M7 semantics change: NULL terminalCommand → in-app PTY tab (the new default); non-NULL → external
+    // launch via the existing (unchanged) template. The resume-guard + handed-off machine are UNTOUCHED.
+    ipcMain.handle("tasks:dropIn", async (_e, taskId: string, fresh?: boolean): Promise<PtySession | null> => {
         const task = getTask(db, taskId);
-        if (!task) return;
+        if (!task) return null;
         const project = getProject(db, task.projectId);
-        if (!project) return;
+        if (!project) return null;
 
         if (task.status === "running") {
             // Abort the in-flight session and AWAIT the handed-off transition (bounded: taskkill + the
@@ -218,21 +222,36 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
             updateTask(db, taskId, { status: "handed-off" });
             notify();
         } else {
-            return; // queued (no worktree yet) / merged / abandoned — drop-in isn't offered
+            return null; // queued (no worktree yet) / merged / abandoned — drop-in isn't offered
         }
 
         // Re-read: a merge that won the race may have landed the task merged (worktree gone) → don't launch.
         const current = getTask(db, taskId);
-        if (!current || current.status !== "handed-off" || !current.worktreePath) return;
+        if (!current || current.status !== "handed-off" || !current.worktreePath) return null;
 
         const sessionId = fresh ? null : latestSessionId(listIterations(db, taskId));
+
+        if (project.terminalCommand == null) {
+            // In-app tab: a main-resident PTY in the worktree, resuming the latest session (resilient shell).
+            return ptyManager.create({
+                cwd: current.worktreePath,
+                argv: buildDropinArgv(sessionId),
+                kind: "dropin",
+                title: current.title,
+                taskId,
+                projectId: project.id,
+            });
+        }
+
+        // External launch via the (unchanged) template — the project opted out of the in-app tab.
         const resume = sessionId ? `--resume ${sessionId}` : "";
-        const launch = launchTerminal(project.terminalCommand ?? DEFAULT_TERMINAL_COMMAND, { worktree: current.worktreePath, resume });
+        const launch = launchTerminal(project.terminalCommand, { worktree: current.worktreePath, resume });
         if (!launch.ok) {
             console.log(`[helm] terminal launch failed for task ${taskId}: ${launch.error}`);
             updateTask(db, taskId, { failureReason: `terminal launch failed: ${launch.error}` });
             notify();
         }
+        return null;
     });
 
     // Resume the autonomous loop from the human's committed state: commit the handback, re-enqueue

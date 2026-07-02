@@ -231,10 +231,12 @@ export interface HelmApi {
     startNow: (taskId: string) => Promise<void>;
     getSchedulerState: () => Promise<SchedulerState>;
     setSchedulerPaused: (paused: boolean) => Promise<void>;
-    // M5 drop-in handoff. dropIn (fresh = Start fresh, no --resume) hard-interrupts a running/needs-human
-    // task → handed-off + launches a terminal; the handback trio acts out of handed-off (resumeTask =
-    // continue the loop; verifyAndMerge = gate + land; abandon = reap the worktree).
-    dropIn: (taskId: string, fresh?: boolean) => Promise<void>;
+    // M5 drop-in handoff, M7-retrofitted. dropIn (fresh = Start fresh, no --resume) hard-interrupts a
+    // running/needs-human task → handed-off + opens a terminal; the handback trio acts out of handed-off
+    // (resumeTask = continue the loop; verifyAndMerge = gate + land; abandon = reap the worktree). Returns
+    // the in-app PtySession (NULL terminalCommand → the renderer opens the drawer on it) or null (external
+    // launch via a non-NULL template, or a no-op).
+    dropIn: (taskId: string, fresh?: boolean) => Promise<PtySession | null>;
     resumeTask: (taskId: string) => Promise<void>;
     verifyAndMerge: (taskId: string) => Promise<void>;
     abandon: (taskId: string) => Promise<void>;

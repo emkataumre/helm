@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse } from "../shared/types";
+import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession } from "../shared/types";
 import { TokenReadout } from "./components/TokenReadout";
 import { IterationHistory } from "./components/IterationHistory";
 import { ActivityFeed } from "./components/ActivityFeed";
@@ -8,6 +8,7 @@ import { BoardCard } from "./components/BoardCard";
 import { SchedulerBar } from "./components/SchedulerBar";
 import { HandbackActions } from "./components/HandbackActions";
 import { PromoteResultPanel } from "./components/PromoteResultPanel";
+import { TerminalPane } from "./components/TerminalPane";
 import { parseProgress, type ParsedProgress } from "./progress";
 
 // M5: a 5th lane for handed-off (drop-in) tasks.
@@ -25,6 +26,11 @@ export function App() {
     const [sched, setSched] = useState<SchedulerState | null>(null);
     // M6-③: the last Promote and its result (null until the human clicks Promote on a project).
     const [promote, setPromote] = useState<{ projectId: string; result: PromoteResponse | "loading" } | null>(null);
+    // M7: the in-app terminal drawer. `term` is the session shown at the bottom (null = no drawer);
+    // `termOpen` toggles the pane without dropping the session (Hide detaches, Show re-attaches → replay).
+    const [term, setTerm] = useState<PtySession | null>(null);
+    const [termOpen, setTermOpen] = useState(true);
+    const openTerm = (s: PtySession) => { setTerm(s); setTermOpen(true); };
 
     const refresh = useCallback(async () => {
         setProjects(await window.helm.listProjects());
@@ -39,8 +45,10 @@ export function App() {
             const snap = await window.helm.getVerifyState(taskId);
             if (snap?.currentIteration) setLive((m) => ({ ...m, [taskId]: snap.currentIteration!.latestActivity }));
         });
+        // A drop-in session that exits (claude quit + pwsh closed, or killed) → drop its drawer.
+        const unsubExit = window.helm.onPtyExit((id) => { setTerm((t) => (t?.id === id ? null : t)); });
         const id = setInterval(refreshSched, 1000); // keep the per-project running counts live
-        return () => clearInterval(id);
+        return () => { clearInterval(id); unsubExit(); };
     }, [refresh, refreshSched]);
 
     const togglePaused = async (paused: boolean) => { await window.helm.setSchedulerPaused(paused); refreshSched(); };
@@ -104,8 +112,8 @@ export function App() {
                                         key={t.id} task={t} liveActivity={live[t.id]} paused={paused} resumable={t.resumable}
                                         onClick={() => setSelected(t.id)}
                                         onRun={() => { window.helm.startNow(t.id); }}
-                                        onDropIn={() => { window.helm.dropIn(t.id).then(refresh); }}
-                                        onStartFresh={() => { window.helm.dropIn(t.id, true).then(refresh); }}
+                                        onDropIn={() => { window.helm.dropIn(t.id).then((s) => { refresh(); if (s) openTerm(s); }); }}
+                                        onStartFresh={() => { window.helm.dropIn(t.id, true).then((s) => { refresh(); if (s) openTerm(s); }); }}
                                         onAbandon={() => { window.helm.abandon(t.id).then(refresh); }}
                                     />
                                 ))}
@@ -121,6 +129,26 @@ export function App() {
                     ) : null}
                 </>
             )}
+
+            {/* M7 terminal drawer: reserve space so the fixed drawer doesn't cover the board's tail. */}
+            {term ? <div style={{ height: termOpen ? 360 : 52 }} /> : null}
+            {term ? (
+                <div
+                    data-verify-unit="TerminalDrawer" data-verify-open={String(termOpen)}
+                    style={{ position: "fixed", left: 0, right: 0, bottom: 0, height: termOpen ? 348 : 40, background: "#1e1e1c", borderTop: "1.5px solid #3D3D3A", display: "flex", flexDirection: "column", zIndex: 50 }}
+                >
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 12px", color: "#FAF9F5", fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
+                        <span style={{ textTransform: "uppercase", color: "#D97757", letterSpacing: 0.5 }}>terminal</span>
+                        <span style={{ fontWeight: 600 }}>{term.title}</span>
+                        <span style={{ color: "#788C5D" }}>· {term.kind}</span>
+                        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                            <button onClick={() => setTermOpen((v) => !v)}>{termOpen ? "Hide" : "Show"}</button>
+                            <button onClick={() => { window.helm.ptyKill(term.id); setTerm(null); }} title="Close the terminal (kills this session)">✕</button>
+                        </div>
+                    </div>
+                    {termOpen ? <div style={{ flex: 1, minHeight: 0 }}><TerminalPane session={term} /></div> : null}
+                </div>
+            ) : null}
         </div>
     );
 }
@@ -242,7 +270,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
                 {input("stallTimeoutMin", "stallTimeoutMin (blank = default 40)")}
                 {input("concurrencyCap", "concurrencyCap (blank = default 3)")}
                 {input("model", "model (blank = CLI default)")}
-                {input("terminalCommand", 'terminalCommand (blank = wt.exe -d "{worktree}" claude {resume})')}
+                {input("terminalCommand", 'terminalCommand (blank = in-app terminal tab; set a template to launch externally, e.g. wt.exe -d "{worktree}" pwsh -NoExit -Command "claude {resume}")')}
                 {input("autoModeEnvironment", 'autoModeEnvironment (blank = ["$defaults"] — trusts repo + origin)')}
                 <label style={{ display: "block", margin: "4px 0" }}>promotionMode{" "}
                     <select value={f.promotionMode} onChange={set("promotionMode")}>
@@ -314,7 +342,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
                         {input("stallTimeoutMin", "stallTimeoutMin")}
                         {input("concurrencyCap", "concurrencyCap")}
                         {input("model", "model")}
-                        {input("terminalCommand", "terminalCommand")}
+                        {input("terminalCommand", "terminalCommand (blank = in-app tab; else external template)")}
                         {input("autoModeEnvironment", 'autoModeEnvironment (blank = ["$defaults"])')}
                         <label style={{ display: "block", margin: "4px 0" }}>promotionMode{" "}
                             <select value={f.promotionMode} onChange={set("promotionMode")}>

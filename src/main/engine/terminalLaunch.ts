@@ -26,6 +26,18 @@ export interface TerminalVars {
     resume: string;   // already-formed: `--resume <id>` normally, or "" (Start fresh / no captured session)
 }
 
+// M7 in-app-tab sibling of buildTerminalCommand: the SAME resilient-shell contract, expressed as an argv
+// array for node-pty (PtyFactory: argv[0]=program, rest=args) instead of a shell string for wt.exe. The
+// worktree is the pty's cwd (set by the manager), so it's NOT in the argv — hence no path-quoting needed.
+//
+// `pwsh -NoExit -Command "claude [--resume <id>]"`: -NoExit keeps the pwsh pane alive after claude
+// exits/fails, so a killed-before-persist session (`claude --resume <id>` → "No conversation found") lands
+// the user at a live shell in the worktree instead of a dead tab — M5's fix, carried onto the in-app surface.
+export function buildDropinArgv(sessionId: string | null): string[] {
+    const claude = sessionId ? `claude --resume ${sessionId}` : "claude";
+    return ["pwsh.exe", "-NoExit", "-Command", claude];
+}
+
 // Substitute EVERY occurrence of {worktree} and {resume}, leaving the rest of the template intact.
 export function buildTerminalCommand(template: string, vars: TerminalVars): string {
     return template.split("{worktree}").join(vars.worktree).split("{resume}").join(vars.resume);
