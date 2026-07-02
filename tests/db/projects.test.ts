@@ -1,6 +1,8 @@
 // tests/db/projects.test.ts
 import { openDb } from "../../src/main/db/db";
-import { insertProject, listProjects, getProject, updateProject } from "../../src/main/db/projects";
+import { insertProject, listProjects, getProject, updateProject, deleteProject } from "../../src/main/db/projects";
+import { insertTask, getTask } from "../../src/main/db/tasks";
+import { addIteration, listIterations } from "../../src/main/db/iterations";
 
 it("inserts a project with defaults and lists it back", () => {
     const db = openDb(":memory:");
@@ -113,6 +115,45 @@ it("updateProject patches config fields, coalescing absent values", () => {
     // explicit null clears a field
     updateProject(db, p.id, { setupCommand: null });
     expect(getProject(db, p.id)?.setupCommand).toBeNull();
+    db.close();
+});
+
+// projects:delete — removing a project cascades to its tasks and their iterations (there are no FK
+// cascades, so deleteProject does it explicitly + atomically). The isolation probe is the point: a
+// SECOND project's task + iterations must survive completely untouched — this is a scoped delete, not a
+// wipe.
+it("deleteProject cascades to the project's tasks + iterations, leaving a second project untouched", () => {
+    const db = openDb(":memory:");
+    const doomed = insertProject(db, { name: "Doomed", repoPath: "/r", targetBranch: "main", checkCommand: "c" });
+    const keep = insertProject(db, { name: "Keep", repoPath: "/r2", targetBranch: "main", checkCommand: "c" });
+
+    const dt = insertTask(db, { projectId: doomed.id, title: "t", intent: "i", acceptance: ["a"] });
+    addIteration(db, dt.id, 0);
+    addIteration(db, dt.id, 1);
+    const kt = insertTask(db, { projectId: keep.id, title: "t2", intent: "i2", acceptance: ["a2"] });
+    addIteration(db, kt.id, 0);
+
+    deleteProject(db, doomed.id);
+
+    // the project, its task, and both its iterations are gone
+    expect(getProject(db, doomed.id)).toBeUndefined();
+    expect(getTask(db, dt.id)).toBeUndefined();
+    expect(listIterations(db, dt.id)).toHaveLength(0);
+    // the OTHER project's rows survive untouched (scoped delete, not a wipe)
+    expect(getProject(db, keep.id)?.name).toBe("Keep");
+    expect(getTask(db, kt.id)?.title).toBe("t2");
+    expect(listIterations(db, kt.id)).toHaveLength(1);
+    db.close();
+});
+
+// Deleting an id that isn't there must not throw and must not disturb existing rows (a stale double-click
+// on an already-removed project is harmless).
+it("deleteProject is a harmless no-op for an unknown id", () => {
+    const db = openDb(":memory:");
+    const keep = insertProject(db, { name: "Keep", repoPath: "/r", targetBranch: "main", checkCommand: "c" });
+    expect(() => deleteProject(db, "does-not-exist")).not.toThrow();
+    expect(listProjects(db)).toHaveLength(1);
+    expect(getProject(db, keep.id)?.name).toBe("Keep");
     db.close();
 });
 

@@ -4,7 +4,7 @@ import { app } from "electron";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { openDb } from "./db/db";
-import { insertProject, listProjects, getProject, updateProject } from "./db/projects";
+import { insertProject, listProjects, getProject, updateProject, deleteProject } from "./db/projects";
 import { insertTask, listTasks, getTask, updateTask } from "./db/tasks";
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "./engine/worktree";
@@ -156,6 +156,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     ipcMain.handle("projects:list", () => listProjects(db));
     // A raised cap may free conceptual slots → kick the scheduler after a config change.
     ipcMain.handle("projects:update", (_e, id: string, patch: ProjectConfigPatch) => { updateProject(db, id, patch); notify(); scheduler.kick(); return getProject(db, id) ?? null; });
+    // Remove a project + all its tasks/iterations (deleteProject cascades atomically), then refresh the
+    // board. An in-flight run of a deleted project keeps running in-memory but its DB writes simply no-op
+    // (UPDATE ... WHERE id matches nothing) — the reconcile/scheduler already tolerate a vanished row.
+    ipcMain.handle("projects:delete", (_e, id: string) => { deleteProject(db, id); notify(); });
     ipcMain.handle("projects:detect", (_e, repoPath: string) => detectProjectConfig(repoPath));
     // M6-③ project-level batch Promote. Mutex-serialized per project (don't promote while a task merge is
     // advancing integration). runPromoteStage validates on a FRESH origin/<target> tip and pushes NOTHING;

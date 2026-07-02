@@ -288,6 +288,15 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
         });
         onDone();
     };
+    // Delete the whole project (+ its tasks/iterations, cascaded in the DB). Guarded by a confirm since it's
+    // irreversible; on success clear the selection and refresh the board.
+    const remove = async () => {
+        if (!selected) return;
+        if (!window.confirm(`Delete project "${selected.name}" and all its tasks? This cannot be undone.`)) return;
+        await window.helm.deleteProject(selected.id);
+        setId("");
+        onDone();
+    };
     const input = (k: keyof typeof f, ph: string) => <input placeholder={ph} value={f[k]} onChange={set(k)} style={{ display: "block", margin: "4px 0", width: 480 }} />;
     return (
         <details>
@@ -314,7 +323,10 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
                                 <option value="strict">strict</option>
                             </select>
                         </label>
-                        <button onClick={save}>Save config</button>
+                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                            <button onClick={save}>Save config</button>
+                            <button onClick={remove} style={{ color: "#D97757" }}>Delete project</button>
+                        </div>
                     </>
                 ) : null}
             </div>

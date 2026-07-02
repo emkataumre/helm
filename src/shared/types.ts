@@ -191,6 +191,8 @@ export interface HelmApi {
     registerProject: (input: NewProjectInput) => Promise<Project>;
     listProjects: () => Promise<Project[]>;
     updateProject: (id: string, patch: ProjectConfigPatch) => Promise<Project | null>;
+    // Remove a project and all its tasks/iterations (cascaded, atomic). Human-only, from the config form.
+    deleteProject: (id: string) => Promise<void>;
     detectProject: (repoPath: string) => Promise<DetectedConfig>;
     createTask: (input: NewTaskInput) => Promise<Task>;
     listTasks: () => Promise<TaskListItem[]>;
