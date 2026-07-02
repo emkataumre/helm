@@ -256,8 +256,10 @@ export interface HelmApi {
     ptyList: () => Promise<PtySessionInfo[]>;
     ptyAttach: (id: string) => Promise<void>;
     ptyDetach: (id: string) => Promise<void>;
-    onPtyData: (cb: (id: string, chunk: string) => void) => void;
-    onPtyExit: (cb: (id: string, code: number) => void) => void;
+    // These return an UNSUBSCRIBE fn (unlike the app-singleton onTasksChanged): a TerminalPane subscribes
+    // on mount and must tear the listener down on unmount, or listeners leak as the drawer switches sessions.
+    onPtyData: (cb: (id: string, chunk: string) => void) => () => void;
+    onPtyExit: (cb: (id: string, code: number) => void) => () => void;
     onTasksChanged: (cb: () => void) => void;
     onSnapshotChanged: (cb: (taskId: string) => void) => void;
 }

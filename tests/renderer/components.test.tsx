@@ -14,8 +14,9 @@ import { BoardCard } from "../../src/renderer/components/BoardCard";
 import { SchedulerBar } from "../../src/renderer/components/SchedulerBar";
 import { HandbackActions } from "../../src/renderer/components/HandbackActions";
 import { PromoteResultPanel } from "../../src/renderer/components/PromoteResultPanel";
+import { TerminalPane } from "../../src/renderer/components/TerminalPane";
 import { parseProgress } from "../../src/renderer/progress";
-import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse } from "../../src/shared/types";
+import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse, PtySession } from "../../src/shared/types";
 
 const schedState = (over: Partial<SchedulerState> = {}): SchedulerState =>
     ({ paused: false, perProject: [{ projectId: "p1", running: 2, cap: 3 }], ...over });
@@ -245,6 +246,26 @@ describe("PromoteResultPanel contract (the result surface)", () => {
         const html = renderToStaticMarkup(<PromoteResultPanel projectName="P" result="loading" />);
         expect(html).toContain('data-verify-outcome="loading"');
         expect(html).toContain("validating integration on a fresh origin tip");
+    });
+});
+
+describe("TerminalPane contract (shell only — xterm is the vendor edge)", () => {
+    const sess = (over: Partial<PtySession> = {}): PtySession =>
+        ({ id: "sess-123", kind: "dropin", title: "task-42 drop-in", cwd: "/wt/task-42", taskId: "t42", ...over });
+
+    // react-dom/server does NOT run useEffect, so xterm never loads (node env, no DOM) — the shell renders
+    // alone. This asserts the machine-readable contract a verifier/agent reads to find a mounted terminal.
+    it("stamps the session id + kind on the shell root without mounting xterm", () => {
+        const html = renderToStaticMarkup(<TerminalPane session={sess()} />);
+        expect(html).toContain('data-verify-unit="TerminalPane"');
+        expect(html).toContain('data-verify-session="sess-123"');
+        expect(html).toContain('data-verify-kind="dropin"');
+    });
+
+    it("reflects a different session's kind (planner) — the same reusable pane", () => {
+        const html = renderToStaticMarkup(<TerminalPane session={sess({ id: "p1", kind: "planner" })} />);
+        expect(html).toContain('data-verify-session="p1"');
+        expect(html).toContain('data-verify-kind="planner"');
     });
 });
 
