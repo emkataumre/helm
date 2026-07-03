@@ -54,6 +54,15 @@ export interface TerminalRecording {
     replayed: string;               // what the attach listener received as the replay (must === emittedBeforeAttach)
     liveEmittedAfterAttach: string; // chunks emitted AFTER attach
     streamedAfterAttach: string;    // what the listener received live after the replay (must === liveEmittedAfterAttach, in order)
+    // close-tab-kills-pty (M8) — closing a tab is the ONLY renderer-initiated kill
+    closedTabId: string;            // the session id closed via kill(id)
+    closedTabAlive: boolean;        // its alive flag in list() AFTER the close — must be false
+    closedTabHandleKilled: boolean; // the underlying pty handle's kill was invoked
+    // reap-kills-worktree-shells (M8) — killByCwdPrefix(worktree) before a task-worktree removeWorktree
+    reapedWorktree: string;                 // the worktree path passed to killByCwdPrefix
+    survivorsUnderReapedWorktree: number;   // live sessions still under reapedWorktree AFTER the reap — must be 0
+    outsideSessionsStillAlive: number;      // sessions OUTSIDE the worktree that must remain alive (no over-reach)
+    outsideSessionsExpected: number;        // how many outside sessions there were (all must survive)
 }
 
 // The comprehensive positive run: one real manager driven through all three concerns.
@@ -93,6 +102,27 @@ export function runTerminalScenario(): TerminalRecording {
     const liveChunks = ["four ", "five "];
     liveChunks.forEach((c) => h2[0].emit(c));
 
+    // ── close-tab-kills-pty (M8): closing a tab = kill(id); the session must be DEAD in list() ───────
+    const { factory: f3, handles: h3 } = recordingFactory();
+    const m3 = createPtyManager(f3);
+    const closed = m3.create({ cwd: "/wt/close-me", argv: ["pwsh.exe", "-NoLogo"], kind: "free", title: "close-me" });
+    m3.kill(closed.id); // the tab's × → pty:kill — the ONLY renderer-initiated kill
+    const closedTabAlive = m3.list().find((x) => x.id === closed.id)?.alive === true;
+    const closedTabHandleKilled = h3[0].killed;
+
+    // ── reap-kills-worktree-shells (M8): killByCwdPrefix(worktree) reaps shells under it, spares the rest ─
+    const { factory: f4 } = recordingFactory();
+    const m4 = createPtyManager(f4);
+    const wt = "C:\\repo\\.helm\\worktrees\\ralph-task-1";
+    const free = (cwd: string, title: string) => m4.create({ cwd, argv: ["pwsh.exe", "-NoLogo"], kind: "free", title });
+    // Track ids by group so we read liveness directly (no need to re-implement the manager's prefix match).
+    const underIds = [free(wt, "at-root").id, free(`${wt}\\src`, "nested").id, free(wt.replace(/\\/g, "/"), "slash-style").id];
+    const outsideIds = [free("C:\\repo", "primary-checkout").id, free(`${wt}-evil`, "sibling-evil").id];
+    m4.killByCwdPrefix(wt);
+    const isAlive = (id: string) => m4.list().find((x) => x.id === id)?.alive === true;
+    const survivorsUnderReapedWorktree = underIds.filter(isAlive).length;
+    const outsideSessionsStillAlive = outsideIds.filter(isAlive).length;
+
     return {
         unit: "terminal",
         createdCount: 3,
@@ -105,6 +135,13 @@ export function runTerminalScenario(): TerminalRecording {
         replayed,
         liveEmittedAfterAttach: liveChunks.join(""),
         streamedAfterAttach,
+        closedTabId: closed.id,
+        closedTabAlive,
+        closedTabHandleKilled,
+        reapedWorktree: wt,
+        survivorsUnderReapedWorktree,
+        outsideSessionsStillAlive,
+        outsideSessionsExpected: outsideIds.length,
     };
 }
 
@@ -124,4 +161,11 @@ export const BASELINE: TerminalRecording = {
     replayed: "one two three ",
     liveEmittedAfterAttach: "four five ",
     streamedAfterAttach: "four five ",
+    closedTabId: "closed-1",
+    closedTabAlive: false,
+    closedTabHandleKilled: true,
+    reapedWorktree: "C:/repo/.helm/worktrees/ralph-task-1",
+    survivorsUnderReapedWorktree: 0,
+    outsideSessionsStillAlive: 2,
+    outsideSessionsExpected: 2,
 };

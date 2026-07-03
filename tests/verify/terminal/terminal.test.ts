@@ -22,9 +22,9 @@ describe("verify/terminal: the CI matrix over every fixture", () => {
         expect(TERMINAL_FIXTURES.some((f) => f.probe)).toBe(true);
     });
 
-    it("has a probe for each of the three invariants (each must be catchable)", () => {
+    it("has a probe for EVERY declared invariant (each must be catchable — no all-happy-path invariant)", () => {
         const covered = new Set(TERMINAL_FIXTURES.filter((f) => f.probe).map((f) => (f as { mustFail: string }).mustFail));
-        expect([...covered].sort()).toEqual(["attach-replays-scrollback", "dropin-respects-resume-guard", "no-orphan-ptys"]);
+        expect([...covered].sort()).toEqual(TERMINAL_INVARIANTS.map((i) => i.name).sort());
     });
 
     it("runAll reports a verdict for every fixture, all PASS, none BLOCKED", () => {
@@ -57,6 +57,18 @@ describe("verify/terminal: the recording is the real units' behaviour", () => {
         expect(rec.streamedAfterAttach).toBe(rec.liveEmittedAfterAttach);
     });
 
+    it("closing a tab kills its session (dead in list, handle killed) — the only renderer-initiated kill", () => {
+        const rec = runTerminalScenario();
+        expect(rec.closedTabAlive).toBe(false);
+        expect(rec.closedTabHandleKilled).toBe(true);
+    });
+
+    it("reaping a worktree kills every shell under it and spares the rest (no over-reach)", () => {
+        const rec = runTerminalScenario();
+        expect(rec.survivorsUnderReapedWorktree).toBe(0);
+        expect(rec.outsideSessionsStillAlive).toBe(rec.outsideSessionsExpected);
+    });
+
     it("the evaluated invariant set equals the declared set", () => {
         expect(runTerminalInvariants(runTerminalScenario()).map((r) => r.name).sort())
             .toEqual(TERMINAL_INVARIANTS.map((i) => i.name).sort());
@@ -83,6 +95,18 @@ describe("verify/terminal: negative controls — each broken recording FAILS its
     });
     it("a replay that dropped a chunk FAILS attach-replays-scrollback", () => {
         expect(failed({ ...BASELINE, replayed: "one three " })).toContain("attach-replays-scrollback");
+    });
+    it("a closed tab whose session stayed alive FAILS close-tab-kills-pty", () => {
+        expect(failed({ ...BASELINE, closedTabAlive: true })).toContain("close-tab-kills-pty");
+    });
+    it("a closed tab whose handle was never killed FAILS close-tab-kills-pty", () => {
+        expect(failed({ ...BASELINE, closedTabHandleKilled: false })).toContain("close-tab-kills-pty");
+    });
+    it("a survivor shell under the reaped worktree FAILS reap-kills-worktree-shells", () => {
+        expect(failed({ ...BASELINE, survivorsUnderReapedWorktree: 1 })).toContain("reap-kills-worktree-shells");
+    });
+    it("a reap that over-reached (killed an outside session) FAILS reap-kills-worktree-shells", () => {
+        expect(failed({ ...BASELINE, outsideSessionsStillAlive: 1 })).toContain("reap-kills-worktree-shells");
     });
 
     it("a verifier that throws becomes a FAIL, never a silent pass", () => {

@@ -50,6 +50,29 @@ export const TERMINAL_INVARIANTS: TerminalInvariant[] = [
             return true;
         },
     },
+    // M8: closing a tab (the × → pty:kill) actually ends the session — it's DEAD in list() and the pty
+    // handle's kill was invoked. This is the ONLY renderer-initiated kill; a closed-but-still-alive tab
+    // would leak a pwsh the user thinks they closed (the exact orphan Task-3 manual acceptance hunts for).
+    {
+        name: "close-tab-kills-pty",
+        holds: (r) => {
+            if (r.closedTabAlive) return `closed tab ${r.closedTabId} is still alive in list()`;
+            if (!r.closedTabHandleKilled) return "closing the tab did not invoke the pty handle's kill";
+            return true;
+        },
+    },
+    // M8: the worktree-reap seam — killByCwdPrefix(worktree), run just before a task-worktree removeWorktree
+    // (abandon / verify-&-merge merged / boot orphan-prune), leaves NO live shell under the reaped worktree
+    // (so the removal can't EBUSY-wedge), AND does not over-reach — every session OUTSIDE the worktree (the
+    // primary checkout, the `-evil` sibling) stays alive.
+    {
+        name: "reap-kills-worktree-shells",
+        holds: (r) => {
+            if (r.survivorsUnderReapedWorktree !== 0) return `${r.survivorsUnderReapedWorktree} shell(s) still alive under reaped worktree ${r.reapedWorktree}`;
+            if (r.outsideSessionsStillAlive !== r.outsideSessionsExpected) return `reap over-reached: killed ${r.outsideSessionsExpected - r.outsideSessionsStillAlive} session(s) OUTSIDE ${r.reapedWorktree}`;
+            return true;
+        },
+    },
 ];
 
 export function runTerminalInvariants(r: TerminalRecording): InvariantResult[] {

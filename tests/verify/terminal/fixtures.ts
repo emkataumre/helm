@@ -26,4 +26,11 @@ export const TERMINAL_FIXTURES: TerminalFixture[] = [
     },
     // A replay that dropped a chunk → the reopened tab lies about history.
     { id: "dropped-scrollback-chunk", probe: true, mustFail: "attach-replays-scrollback", recording: { ...BASELINE, replayed: "one three " } },
+
+    // M8 — a tab the user closed whose pwsh kept running (the leaked-shell orphan).
+    { id: "closed-but-alive", probe: true, mustFail: "close-tab-kills-pty", recording: { ...BASELINE, closedTabAlive: true } },
+    // M8 — a survivor shell still holding the reaped worktree → removeWorktree would EBUSY.
+    { id: "survivor-under-reaped-worktree", probe: true, mustFail: "reap-kills-worktree-shells", recording: { ...BASELINE, survivorsUnderReapedWorktree: 1 } },
+    // M8 — the reap over-reached and killed a shell OUTSIDE the worktree (the primary checkout / sibling).
+    { id: "reap-over-reach", probe: true, mustFail: "reap-kills-worktree-shells", recording: { ...BASELINE, outsideSessionsStillAlive: 1 } },
 ];
