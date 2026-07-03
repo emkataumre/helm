@@ -68,11 +68,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
     });
     // The handback deps (verify-&-merge / abandon). runMergeStage is mutex-wrapped per project (no
     // concurrency slot — drop-in freed it; only the merge mutex, so the cap + integration stay safe).
+    // M8: the TASK-worktree removal (abandon + the verify-&-merge merged path both go through THIS
+    // removeWorktree) first reaps any human shell cwd'd inside it — on Windows an open pwsh holds the
+    // dir and would EBUSY the removal. Best-effort unlock only: removeWorktree keeps its tolerant/throwing
+    // behavior unchanged. The engine-internal throwaway cleanups (buildMergeDeps/buildPromoteDeps) use the
+    // RAW removeWorktree — no PTY can be cwd'd in a merge/promote throwaway, so they are deliberately untouched.
     const buildHandbackDeps = (config: LoopConfig): HandbackDeps => ({
         commitAll,
         runMergeStage: (p, t, b) => scheduler.mutexFor(p.id).withLock(() => runMergeStage(p, t, b, buildMergeDeps(t.id, config))),
         setStatus: (id, status, extra) => { updateTask(db, id, { status, ...extra }); notify(); },
-        removeWorktree,
+        removeWorktree: async (repo, path, branch, keepBranch) => { ptyManager.killByCwdPrefix(path); await removeWorktree(repo, path, branch, keepBranch); },
     });
 
     // M6-③ batch-Promote deps: the same throwaway-worktree + setup + re-check engine fns as the merge
@@ -374,6 +379,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
                     break;
                 }
                 case "prune-worktree": {
+                    // M8: reap any human shell holding the orphan worktree dir BEFORE removing it (a live
+                    // pwsh EBUSY-wedges the removal on Windows). reconcile only ever prunes helm throwaways /
+                    // no-owner / terminal-owned worktrees — never a handed-off/needs-human/requeued one — so
+                    // this never kills a shell in a worktree the human is still meant to be steering.
+                    ptyManager.killByCwdPrefix(action.path);
                     // Tolerant — a partially-removed worktree may throw; the postcondition "gone" is what matters.
                     try { await removeWorktree(project.repoPath, action.path, action.branch ?? "", false); }
                     catch (e) { console.log(`[helm] prune skipped for ${action.path}: ${e instanceof Error ? e.message : String(e)}`); }

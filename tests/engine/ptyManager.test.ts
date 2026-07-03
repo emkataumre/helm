@@ -192,6 +192,26 @@ describe("killByCwdPrefix + disposeAll", () => {
         expect(handles[0].killCount).toBe(1); // only `under` was killed
     });
 
+    // M8 worktree-reap seam: the ipc edge calls killByCwdPrefix(worktreePath) immediately before a
+    // task-worktree removeWorktree (abandon / verify-&-merge merged / boot orphan-prune) so an open human
+    // shell can't EBUSY-wedge the removal. This is the pure kernel of that seam: reap the shells INSIDE the
+    // reaped worktree (root + nested), spare a shell in the primary checkout, spare the `-evil` sibling.
+    it("reaps every shell under a task worktree (root + nested) and spares the primary checkout + siblings", () => {
+        const { factory } = makeFakeFactory();
+        const m = createPtyManager(factory);
+        const wt = "C:\\repo\\.helm\\worktrees\\ralph-task-1";
+        const atRoot = create(m, { cwd: wt, title: "shell-at-worktree-root" });
+        const nested = create(m, { cwd: `${wt}\\src\\deep`, title: "shell-nested" });
+        const primary = create(m, { cwd: "C:\\repo", title: "primary-checkout" });      // must survive
+        const sibling = create(m, { cwd: `${wt}-evil`, title: "sibling-evil" });          // boundary — must survive
+        m.killByCwdPrefix(wt);
+        const alive = (id: string) => m.list().find((x) => x.id === id)?.alive;
+        expect(alive(atRoot.id)).toBe(false);
+        expect(alive(nested.id)).toBe(false);
+        expect(alive(primary.id)).toBe(true);
+        expect(alive(sibling.id)).toBe(true);
+    });
+
     it("disposeAll kills every live session (the quit path), skipping already-dead ones", () => {
         const { factory, handles } = makeFakeFactory();
         const m = createPtyManager(factory);
