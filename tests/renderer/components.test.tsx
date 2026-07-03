@@ -15,8 +15,9 @@ import { SchedulerBar } from "../../src/renderer/components/SchedulerBar";
 import { HandbackActions } from "../../src/renderer/components/HandbackActions";
 import { PromoteResultPanel } from "../../src/renderer/components/PromoteResultPanel";
 import { TerminalPane } from "../../src/renderer/components/TerminalPane";
+import { TerminalTabs } from "../../src/renderer/components/TerminalTabs";
 import { parseProgress } from "../../src/renderer/progress";
-import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse, PtySession } from "../../src/shared/types";
+import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse, PtySession, PtySessionInfo } from "../../src/shared/types";
 
 const schedState = (over: Partial<SchedulerState> = {}): SchedulerState =>
     ({ paused: false, perProject: [{ projectId: "p1", running: 2, cap: 3 }], ...over });
@@ -113,6 +114,20 @@ describe("ActivityFeed / IterationHistory / BoardCard contracts", () => {
         const ready = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} resumable onDropIn={() => {}} onStartFresh={() => {}} />);
         expect(ready).toContain('data-verify-resumable="true"');
         expect(ready).not.toContain('disabled=""');                // a persisted session → Drop in enabled
+    });
+
+    // M8: a retained worktree (needs-human / handed-off with a worktreePath) offers a free [+ terminal].
+    it("BoardCard offers [+ terminal] on a retained-worktree card (needs-human / handed-off), not otherwise", () => {
+        const nh = renderToStaticMarkup(<BoardCard task={task({ status: "needs-human", worktreePath: "/wt/t" })} onNewTerminal={() => {}} onDropIn={() => {}} onStartFresh={() => {}} onAbandon={() => {}} />);
+        expect(nh).toContain("+ terminal");
+        const ho = renderToStaticMarkup(<BoardCard task={task({ status: "handed-off", worktreePath: "/wt/t" })} onNewTerminal={() => {}} />);
+        expect(ho).toContain("+ terminal"); // handed-off has no drop-in row, but still gets the free shell
+        // a running task has no retained worktree yet → no [+ terminal]
+        const running = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} onNewTerminal={() => {}} onDropIn={() => {}} onStartFresh={() => {}} />);
+        expect(running).not.toContain("+ terminal");
+        // needs-human WITHOUT a worktree (pre-retention / already reaped) → no [+ terminal]
+        const noWt = renderToStaticMarkup(<BoardCard task={task({ status: "needs-human", worktreePath: null })} onNewTerminal={() => {}} onDropIn={() => {}} onStartFresh={() => {}} onAbandon={() => {}} />);
+        expect(noWt).not.toContain("+ terminal");
     });
 
     it("PROBE: a queued or merged card does NOT surface Drop in (data-verify-dropin=\"false\")", () => {
@@ -266,6 +281,41 @@ describe("TerminalPane contract (shell only — xterm is the vendor edge)", () =
         const html = renderToStaticMarkup(<TerminalPane session={sess({ id: "p1", kind: "planner" })} />);
         expect(html).toContain('data-verify-session="p1"');
         expect(html).toContain('data-verify-kind="planner"');
+    });
+});
+
+describe("TerminalTabs contract (M8 tab strip — the terminal host)", () => {
+    const info = (id: string, over: Partial<PtySessionInfo> = {}): PtySessionInfo =>
+        ({ id, kind: "free", title: id, cwd: `/wt/${id}`, alive: true, ...over });
+
+    it("stamps the tab count and marks exactly the active tab", () => {
+        const html = renderToStaticMarkup(<TerminalTabs sessions={[info("a", { kind: "dropin" }), info("b")]} activeId="a" onFocus={() => {}} onClose={() => {}} />);
+        expect(html).toContain('data-verify-unit="TerminalTabs"');
+        expect(html).toContain('data-verify-count="2"');
+        expect(html).toContain('data-verify-active="a"'); // the strip's active id
+        // per-tab kind + which one is active
+        expect(html).toContain('data-verify-session="a"');
+        expect(html).toContain('data-verify-kind="dropin"');
+        expect(html).toContain('data-verify-kind="free"');
+        // the active tab reads active=true, the other active=false (machine-readable focus)
+        expect(html).toMatch(/data-verify-session="a"[^>]*data-verify-kind="dropin"[^>]*data-verify-active="true"/);
+        expect(html).toMatch(/data-verify-session="b"[^>]*data-verify-active="false"/);
+    });
+
+    it("renders a close (×) control per tab (the only renderer-initiated kill)", () => {
+        const html = renderToStaticMarkup(<TerminalTabs sessions={[info("a")]} activeId="a" onFocus={() => {}} onClose={() => {}} />);
+        expect(html).toContain("×");
+    });
+
+    it("greys out a dead session (alive=false) until its exit event prunes it", () => {
+        const html = renderToStaticMarkup(<TerminalTabs sessions={[info("a", { alive: false })]} activeId="a" onFocus={() => {}} onClose={() => {}} />);
+        expect(html).toContain('data-verify-alive="false"');
+    });
+
+    it("an empty strip stamps count=0 and no active tab", () => {
+        const html = renderToStaticMarkup(<TerminalTabs sessions={[]} activeId={null} onFocus={() => {}} onClose={() => {}} />);
+        expect(html).toContain('data-verify-count="0"');
+        expect(html).not.toContain('data-verify-active='); // null active → attribute dropped
     });
 });
 

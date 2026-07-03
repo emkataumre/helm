@@ -37,18 +37,25 @@ export function TerminalPane({ session }: { session: PtySession }) {
             const fit = new FitAddon();
             t.loadAddon(fit);
             t.open(host);
-            fit.fit();
             term = t;
 
             t.onData((data) => { void window.helm.ptyWrite(session.id, data); });
             unsubData = window.helm.onPtyData((id, chunk) => { if (id === session.id) t.write(chunk); });
 
-            // attach LAST: the replay + live stream now lands in a terminal that's open and sized.
-            const pushResize = () => { fit.fit(); void window.helm.ptyResize(session.id, t.cols, t.rows); };
-            void window.helm.ptyAttach(session.id);
-            pushResize();
-            resizeObs = new ResizeObserver(() => pushResize());
+            // M8 fit-timing fix (the M7 cosmetic note): fit ONLY once the host has real dimensions.
+            // A synchronous fit() right after open() ran on an unlaid-out element — and a hidden tab's
+            // element measures 0×0 — so the pty was sized to 0 and the TUI rendered full-width/sparse.
+            // The ResizeObserver fires when layout lands (0→real) AND on every tab-switch remount/window
+            // resize; tryFit no-ops until the element actually has a box, so the pty is always sized right.
+            const tryFit = () => {
+                if (disposed || !host.clientWidth || !host.clientHeight) return;
+                fit.fit();
+                void window.helm.ptyResize(session.id, t.cols, t.rows);
+            };
+            void window.helm.ptyAttach(session.id); // replay scrollback + live stream (xterm reflows on the first real fit)
+            resizeObs = new ResizeObserver(() => tryFit());
             resizeObs.observe(host);
+            tryFit(); // belt: fit now if the element is already laid out at mount
         })();
 
         return () => {

@@ -10,7 +10,7 @@ import { verifyAttrs } from "./verifyAttrs";
 // Abandon. Drop in --resumes the latest session, so it's DISABLED until one is actually persisted
 // (`resumable`) — a killed/not-yet-completed iteration has nothing to resume; Start fresh always works.
 // The deliberate hand-back trio lives in TaskDetail (HandbackActions).
-export function BoardCard({ task, liveActivity, paused, resumable, onClick, onRun, onDropIn, onStartFresh, onAbandon }: {
+export function BoardCard({ task, liveActivity, paused, resumable, onClick, onRun, onDropIn, onStartFresh, onAbandon, onNewTerminal }: {
     task: Task;
     liveActivity?: string;
     paused?: boolean;
@@ -20,9 +20,13 @@ export function BoardCard({ task, liveActivity, paused, resumable, onClick, onRu
     onDropIn?: () => void;
     onStartFresh?: () => void;
     onAbandon?: () => void;
+    onNewTerminal?: () => void;
 }) {
     const running = task.status === "running";
     const canDropIn = task.status === "running" || task.status === "needs-human";
+    // M8: a retained worktree (needs-human/handed-off) can host a free shell cwd'd inside it — one click
+    // to open a plain pwsh tab in the worktree (poke around, run git, etc.) without touching the loop.
+    const hasRetainedWorktree = (task.status === "needs-human" || task.status === "handed-off") && !!task.worktreePath;
     // Drop in resumes latestSessionId; only offer it once a completed turn has persisted a session.
     const canResume = canDropIn && !!resumable;
     const click = (fn?: () => void) => (e: { stopPropagation: () => void }) => { e.stopPropagation(); fn?.(); };
@@ -37,10 +41,11 @@ export function BoardCard({ task, liveActivity, paused, resumable, onClick, onRu
             {running && liveActivity ? <div style={{ fontSize: 12, color: "#788C5D", marginTop: 4 }}>{liveActivity}</div> : null}
             {task.failureReason ? <div style={{ fontSize: 12, color: "#b00", marginTop: 4 }}>{task.failureReason}</div> : null}
             {task.status === "queued" && paused && onRun ? <button onClick={click(onRun)} style={{ marginTop: 6 }}>Run</button> : null}
-            {canDropIn ? (
+            {canDropIn || hasRetainedWorktree ? (
                 <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {onDropIn ? <button onClick={click(onDropIn)} disabled={!canResume} title={canResume ? "Resume the latest claude session in a terminal" : "No resumable session yet — the current/last iteration hasn't persisted one. Use Start fresh."}>Drop in</button> : null}
-                    {onStartFresh ? <button onClick={click(onStartFresh)}>Start fresh</button> : null}
+                    {canDropIn && onDropIn ? <button onClick={click(onDropIn)} disabled={!canResume} title={canResume ? "Resume the latest claude session in a terminal" : "No resumable session yet — the current/last iteration hasn't persisted one. Use Start fresh."}>Drop in</button> : null}
+                    {canDropIn && onStartFresh ? <button onClick={click(onStartFresh)}>Start fresh</button> : null}
+                    {hasRetainedWorktree && onNewTerminal ? <button onClick={click(onNewTerminal)} title="Open a plain shell in this task's worktree">+ terminal</button> : null}
                     {task.status === "needs-human" && onAbandon ? <button onClick={click(onAbandon)}>Abandon</button> : null}
                 </div>
             ) : null}

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession } from "../shared/types";
+import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession, PtySessionInfo } from "../shared/types";
 import { TokenReadout } from "./components/TokenReadout";
 import { IterationHistory } from "./components/IterationHistory";
 import { ActivityFeed } from "./components/ActivityFeed";
@@ -9,7 +9,13 @@ import { SchedulerBar } from "./components/SchedulerBar";
 import { HandbackActions } from "./components/HandbackActions";
 import { PromoteResultPanel } from "./components/PromoteResultPanel";
 import { TerminalPane } from "./components/TerminalPane";
+import { TerminalTabs } from "./components/TerminalTabs";
+import { upsertTab, removeTab, resolveActive } from "./terminalTabs";
 import { parseProgress, type ParsedProgress } from "./progress";
+
+// A plain pwsh shell (no claude) is the default program for a free [+ terminal] — the human runs claude
+// themselves if they want it. Drop-in tabs still use buildDropinArgv (main-side, in tasks:dropIn).
+const FREE_SHELL_ARGV = ["pwsh.exe", "-NoLogo"];
 
 // M5: a 5th lane for handed-off (drop-in) tasks.
 const LANES: TaskStatus[] = ["queued", "running", "handed-off", "needs-human", "merged"];
@@ -26,11 +32,28 @@ export function App() {
     const [sched, setSched] = useState<SchedulerState | null>(null);
     // M6-③: the last Promote and its result (null until the human clicks Promote on a project).
     const [promote, setPromote] = useState<{ projectId: string; result: PromoteResponse | "loading" } | null>(null);
-    // M7: the in-app terminal drawer. `term` is the session shown at the bottom (null = no drawer);
-    // `termOpen` toggles the pane without dropping the session (Hide detaches, Show re-attaches → replay).
-    const [term, setTerm] = useState<PtySession | null>(null);
+    // M8 terminal host: a full tab strip over the manager's live sessions (pty:list). `terms` are the open
+    // tabs (drop-in returns + free [+ terminal] creates); `activeTerm` is the ONE mounted TerminalPane —
+    // switching tabs remounts it (key=id) so it re-attaches and replays the main-side scrollback. `termOpen`
+    // collapses the whole host without dropping any session (main-process residency keeps them running).
+    const [terms, setTerms] = useState<PtySessionInfo[]>([]);
+    const [activeTerm, setActiveTerm] = useState<string | null>(null);
     const [termOpen, setTermOpen] = useState(true);
-    const openTerm = (s: PtySession) => { setTerm(s); setTermOpen(true); };
+
+    // Open/focus a session as a tab (a Drop-in return or a [+ terminal] create). upsertTab is idempotent,
+    // so re-opening a live session just re-focuses it.
+    const showTerm = useCallback((s: PtySession) => { setTerms((ts) => upsertTab(ts, s)); setActiveTerm(s.id); setTermOpen(true); }, []);
+    // Close a tab = kill the session — the ONLY renderer-initiated kill (an explicit user action). Unmount
+    // (Hide / tab-switch / window-hide) NEVER kills. The exit event then prunes the tab; drop it optimistically.
+    const closeTerm = useCallback((id: string) => { window.helm.ptyKill(id); setTerms((ts) => removeTab(ts, id)); }, []);
+    // A plain shell in a project's repo (cwd = repoPath) or a task's retained worktree (cwd = worktreePath).
+    const newProjectTerminal = useCallback((p: Project) => {
+        window.helm.ptyCreate({ cwd: p.repoPath, argv: FREE_SHELL_ARGV, kind: "free", title: `${p.name} — shell`, projectId: p.id }).then(showTerm);
+    }, [showTerm]);
+    const newTaskTerminal = useCallback((t: Task) => {
+        if (!t.worktreePath) return;
+        window.helm.ptyCreate({ cwd: t.worktreePath, argv: FREE_SHELL_ARGV, kind: "free", title: `${t.title} — shell`, taskId: t.id, projectId: t.projectId }).then(showTerm);
+    }, [showTerm]);
 
     const refresh = useCallback(async () => {
         setProjects(await window.helm.listProjects());
@@ -40,16 +63,21 @@ export function App() {
 
     useEffect(() => {
         refresh(); refreshSched();
+        window.helm.ptyList().then(setTerms); // repopulate the tab strip on (re)mount — sessions live in main
         window.helm.onTasksChanged(() => { refresh(); refreshSched(); });
         window.helm.onSnapshotChanged(async (taskId) => {
             const snap = await window.helm.getVerifyState(taskId);
             if (snap?.currentIteration) setLive((m) => ({ ...m, [taskId]: snap.currentIteration!.latestActivity }));
         });
-        // A drop-in session that exits (claude quit + pwsh closed, or killed) → drop its drawer.
-        const unsubExit = window.helm.onPtyExit((id) => { setTerm((t) => (t?.id === id ? null : t)); });
+        // A session that exits (claude quit + pwsh closed, killed, or the process died) → prune its tab.
+        const unsubExit = window.helm.onPtyExit((id) => setTerms((ts) => removeTab(ts, id)));
         const id = setInterval(refreshSched, 1000); // keep the per-project running counts live
         return () => { clearInterval(id); unsubExit(); };
     }, [refresh, refreshSched]);
+
+    // Keep the focused tab valid: whenever the tab list changes, a closed/exited active tab hands focus to
+    // a neighbour (resolveActive) instead of blanking the pane; an empty list drops focus to null.
+    useEffect(() => { setActiveTerm((a) => resolveActive(terms, a)); }, [terms]);
 
     const togglePaused = async (paused: boolean) => { await window.helm.setSchedulerPaused(paused); refreshSched(); };
     const paused = sched?.paused ?? false;
@@ -94,6 +122,15 @@ export function App() {
                     ) : null}
                     {promote ? <PromoteResultPanel projectName={names[promote.projectId] ?? promote.projectId} result={promote.result} /> : null}
 
+                    {projects.length > 0 ? (
+                        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                            <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, textTransform: "uppercase", color: "#788C5D" }}>Terminals (free shell in repo)</span>
+                            {projects.map((p) => (
+                                <button key={p.id} onClick={() => newProjectTerminal(p)} title={`Open a pwsh shell in ${p.repoPath}`}>+ {p.name}</button>
+                            ))}
+                        </div>
+                    ) : null}
+
                     <div>
                         <label>Project filter:{" "}
                             <select value={filter} onChange={(e) => setFilter(e.target.value)}>
@@ -112,9 +149,10 @@ export function App() {
                                         key={t.id} task={t} liveActivity={live[t.id]} paused={paused} resumable={t.resumable}
                                         onClick={() => setSelected(t.id)}
                                         onRun={() => { window.helm.startNow(t.id); }}
-                                        onDropIn={() => { window.helm.dropIn(t.id).then((s) => { refresh(); if (s) openTerm(s); }); }}
-                                        onStartFresh={() => { window.helm.dropIn(t.id, true).then((s) => { refresh(); if (s) openTerm(s); }); }}
+                                        onDropIn={() => { window.helm.dropIn(t.id).then((s) => { refresh(); if (s) showTerm(s); }); }}
+                                        onStartFresh={() => { window.helm.dropIn(t.id, true).then((s) => { refresh(); if (s) showTerm(s); }); }}
                                         onAbandon={() => { window.helm.abandon(t.id).then(refresh); }}
+                                        onNewTerminal={() => newTaskTerminal(t)}
                                     />
                                 ))}
                             </div>
@@ -130,26 +168,44 @@ export function App() {
                 </>
             )}
 
-            {/* M7 terminal drawer: reserve space so the fixed drawer doesn't cover the board's tail. */}
-            {term ? <div style={{ height: termOpen ? 360 : 52 }} /> : null}
-            {term ? (
-                <div
-                    data-verify-unit="TerminalDrawer" data-verify-open={String(termOpen)}
-                    style={{ position: "fixed", left: 0, right: 0, bottom: 0, height: termOpen ? 348 : 40, background: "#1e1e1c", borderTop: "1.5px solid #3D3D3A", display: "flex", flexDirection: "column", zIndex: 50 }}
-                >
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 12px", color: "#FAF9F5", fontFamily: "ui-monospace, monospace", fontSize: 12 }}>
-                        <span style={{ textTransform: "uppercase", color: "#D97757", letterSpacing: 0.5 }}>terminal</span>
-                        <span style={{ fontWeight: 600 }}>{term.title}</span>
-                        <span style={{ color: "#788C5D" }}>· {term.kind}</span>
-                        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                            <button onClick={() => setTermOpen((v) => !v)}>{termOpen ? "Hide" : "Show"}</button>
-                            <button onClick={() => { window.helm.ptyKill(term.id); setTerm(null); }} title="Close the terminal (kills this session)">✕</button>
-                        </div>
-                    </div>
-                    {termOpen ? <div style={{ flex: 1, minHeight: 0 }}><TerminalPane session={term} /></div> : null}
-                </div>
-            ) : null}
+            {/* M8 terminal host: a docked, constrained tab strip + ONE mounted pane. Reserve space so the
+                fixed host never covers the board's tail. */}
+            {terms.length > 0 ? <TerminalHost terms={terms} activeId={activeTerm} open={termOpen} onFocus={(id) => { setActiveTerm(id); setTermOpen(true); }} onClose={closeTerm} onToggleOpen={() => setTermOpen((v) => !v)} /> : null}
         </div>
+    );
+}
+
+// The docked terminal host: a tab strip over every live session + the single active TerminalPane (keyed by
+// id, so a tab switch remounts it → re-attach + scrollback replay, and a hidden tab's 0×0 element never
+// mis-fits). Collapsed (Hide) it keeps every session running (main-process residency); Show re-attaches.
+function TerminalHost({ terms, activeId, open, onFocus, onClose, onToggleOpen }: {
+    terms: PtySessionInfo[];
+    activeId: string | null;
+    open: boolean;
+    onFocus: (id: string) => void;
+    onClose: (id: string) => void;
+    onToggleOpen: () => void;
+}) {
+    const active = terms.find((t) => t.id === activeId) ?? null;
+    return (
+        <>
+            <div style={{ height: open ? 372 : 60 }} />
+            <div
+                data-verify-unit="TerminalHost" data-verify-open={String(open)} data-verify-count={terms.length}
+                style={{ position: "fixed", left: 0, right: 0, bottom: 0, height: open ? 360 : 44, background: "#1e1e1c", borderTop: "1.5px solid #3D3D3A", display: "flex", flexDirection: "column", zIndex: 50 }}
+            >
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 12px", borderBottom: open ? "1px solid #2a2a28" : "none", color: "#FAF9F5" }}>
+                    <span style={{ textTransform: "uppercase", color: "#D97757", fontFamily: "ui-monospace, monospace", fontSize: 11, letterSpacing: 0.5, flexShrink: 0 }}>terminals</span>
+                    <TerminalTabs sessions={terms} activeId={activeId} onFocus={onFocus} onClose={onClose} />
+                    <button style={{ flexShrink: 0 }} onClick={onToggleOpen}>{open ? "Hide" : "Show"}</button>
+                </div>
+                {open && active ? (
+                    <div style={{ flex: 1, minHeight: 0, padding: 8, boxSizing: "border-box", maxWidth: 1120, width: "100%", margin: "0 auto" }}>
+                        <TerminalPane key={active.id} session={active} />
+                    </div>
+                ) : null}
+            </div>
+        </>
     );
 }
 
