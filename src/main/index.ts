@@ -2,6 +2,13 @@ import { app, BrowserWindow, Tray, Menu, nativeImage } from "electron";
 import { join } from "node:path";
 import { registerIpc } from "./ipc";
 
+// M8.5 acceptance harness: redirect userData to a throwaway dir BEFORE anything opens the DB (registerIpc
+// opens helm.db under app.getPath("userData") at whenReady). This runs at module load — earlier than the
+// whenReady callback — so the override is always in force by the time the DB is opened. Set only by the
+// accept harness (_electron.launch env); unset in real use → the real %APPDATA%\helm userData is untouched.
+// This is what makes the real board unreachable BY CONSTRUCTION during an accept run.
+if (process.env.HELM_USER_DATA) app.setPath("userData", process.env.HELM_USER_DATA);
+
 let mainWindow: BrowserWindow | null = null;
 // Hold the Tray in a module-level var — a local would be GC'd and vanish from the tray after a tick.
 let tray: Tray | null = null;

@@ -4,3 +4,5 @@ dist/
 *.log
 .helm/
 helm.db
+# M8.5 accept harness: recorded .webm evidence from `npm run accept` (human watches one for Task 5).
+tests/accept/artifacts/
