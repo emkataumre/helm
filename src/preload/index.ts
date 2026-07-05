@@ -10,6 +10,7 @@ const api: HelmApi = {
     promote: (projectId) => ipcRenderer.invoke("projects:promote", projectId),
     createTask: (input) => ipcRenderer.invoke("tasks:create", input),
     listTasks: () => ipcRenderer.invoke("tasks:list"),
+    setDependsOn: (taskId, ids) => ipcRenderer.invoke("tasks:setDependsOn", taskId, ids),
     startNow: (taskId) => ipcRenderer.invoke("tasks:startNow", taskId),
     getSchedulerState: () => ipcRenderer.invoke("scheduler:state"),
     setSchedulerPaused: (paused) => ipcRenderer.invoke("scheduler:setPaused", paused),

@@ -106,7 +106,7 @@ export function App() {
                 <>
                     <RegisterProjectForm onDone={refresh} />
                     <ProjectConfigForm projects={projects} onDone={refresh} />
-                    <NewTaskForm projects={projects} onDone={refresh} />
+                    <NewTaskForm projects={projects} tasks={tasks} onDone={refresh} />
 
                     {sched ? <SchedulerBar state={sched} queuedByProject={queuedByProject} names={names} onSetPaused={togglePaused} /> : null}
 
@@ -147,12 +147,14 @@ export function App() {
                                 {shown.filter((t) => t.status === lane).map((t) => (
                                     <BoardCard
                                         key={t.id} task={t} liveActivity={live[t.id]} paused={paused} resumable={t.resumable}
+                                        blocked={t.blocked} waitingOn={t.waitingOn}
                                         onClick={() => setSelected(t.id)}
                                         onRun={() => { window.helm.startNow(t.id); }}
                                         onDropIn={() => { window.helm.dropIn(t.id).then((s) => { refresh(); if (s) showTerm(s); }); }}
                                         onStartFresh={() => { window.helm.dropIn(t.id, true).then((s) => { refresh(); if (s) showTerm(s); }); }}
                                         onAbandon={() => { window.helm.abandon(t.id).then(refresh); }}
                                         onNewTerminal={() => newTaskTerminal(t)}
+                                        onClearDeps={() => { window.helm.setDependsOn(t.id, []).then(refresh); }}
                                     />
                                 ))}
                             </div>
@@ -418,13 +420,18 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
     );
 }
 
-function NewTaskForm({ projects, onDone }: { projects: Project[]; onDone: () => void }) {
+function NewTaskForm({ projects, tasks, onDone }: { projects: Project[]; tasks: TaskListItem[]; onDone: () => void }) {
     const [f, setF] = useState({ projectId: "", title: "", intent: "", acceptance: "", scopeHint: "" });
+    // M9: hand-made dependency chains. Candidate parents are the selected project's non-terminal tasks
+    // (merged/abandoned are pointless to wait on). Reset the picks when the project changes so a chosen id
+    // can't leak across projects.
+    const [deps, setDeps] = useState<string[]>([]);
+    const candidates = tasks.filter((t) => t.projectId === f.projectId && t.status !== "merged" && t.status !== "abandoned");
     return (
         <details>
             <summary>New task</summary>
             <div style={{ paddingTop: 8 }}>
-                <select value={f.projectId} onChange={(e) => setF({ ...f, projectId: e.target.value })}>
+                <select value={f.projectId} onChange={(e) => { setF({ ...f, projectId: e.target.value }); setDeps([]); }}>
                     <option value="">— project —</option>
                     {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
@@ -432,6 +439,13 @@ function NewTaskForm({ projects, onDone }: { projects: Project[]; onDone: () => 
                 <textarea placeholder="intent (what to build)" value={f.intent} onChange={(e) => setF({ ...f, intent: e.target.value })} style={{ display: "block", margin: "4px 0", width: 480, height: 60 }} />
                 <textarea placeholder="acceptance commands, one per line" value={f.acceptance} onChange={(e) => setF({ ...f, acceptance: e.target.value })} style={{ display: "block", margin: "4px 0", width: 480, height: 60 }} />
                 <input placeholder="scopeHint (optional, e.g. src/widgets/**)" value={f.scopeHint} onChange={(e) => setF({ ...f, scopeHint: e.target.value })} style={{ display: "block", margin: "4px 0", width: 480 }} />
+                {candidates.length > 0 ? (
+                    <label style={{ display: "block", margin: "4px 0", fontSize: 13 }}>depends on (optional — waits for these to merge first)
+                        <select multiple value={deps} onChange={(e) => setDeps(Array.from(e.target.selectedOptions, (o) => o.value))} style={{ display: "block", width: 480, minHeight: 60, margin: "4px 0" }}>
+                            {candidates.map((t) => <option key={t.id} value={t.id}>{t.title} ({t.status})</option>)}
+                        </select>
+                    </label>
+                ) : null}
                 <button
                     disabled={!f.projectId || !f.title || !f.intent || !f.acceptance.trim()}
                     onClick={async () => {
@@ -439,6 +453,7 @@ function NewTaskForm({ projects, onDone }: { projects: Project[]; onDone: () => 
                             projectId: f.projectId, title: f.title, intent: f.intent,
                             acceptance: f.acceptance.split("\n").map((s) => s.trim()).filter(Boolean),
                             scopeHint: f.scopeHint.trim() || null,
+                            dependsOn: deps,
                         });
                         onDone();
                     }}

@@ -55,3 +55,11 @@ export function updateTask(db: Db, id: string, patch: Partial<Pick<Task, "status
     const set = fields.map((f) => `${f} = @${f}`).join(", ");
     db.prepare(`UPDATE tasks SET ${set}, updatedAt = @updatedAt WHERE id = @id`).run({ ...patch, id, updatedAt: Date.now() });
 }
+
+// M9: replace a task's dependency edges (the cockpit's Clear-dependencies affordance passes []). Serialized
+// like insert: empty → stored NULL (byte-identical to a no-deps task). Kept separate from updateTask because
+// dependsOn is the one column that stores JSON, not a raw scalar.
+export function setDependsOn(db: Db, id: string, ids: string[]): void {
+    db.prepare("UPDATE tasks SET dependsOn = @dependsOn, updatedAt = @updatedAt WHERE id = @id")
+        .run({ dependsOn: ids.length ? JSON.stringify(ids) : null, id, updatedAt: Date.now() });
+}

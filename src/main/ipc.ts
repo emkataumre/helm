@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject, deleteProject } from "./db/projects";
-import { insertTask, listTasks, getTask, updateTask } from "./db/tasks";
+import { insertTask, listTasks, getTask, updateTask, setDependsOn } from "./db/tasks";
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "./engine/worktree";
 import { reconcile, isUnderWorktreeDir } from "./engine/reconcile";
@@ -26,6 +26,7 @@ import { resolveLoopConfig, type LoopConfig } from "./engine/loopConfig";
 import { detectProjectConfig } from "./engine/detect";
 import { checkInsDue } from "./engine/checkIn";
 import { createScheduler, type Scheduler } from "./engine/scheduler";
+import { waitingOnFor } from "./engine/deps";
 import { runTaskLoop, type RunTaskDeps, type ResumeContext } from "./engine/runTask";
 import { launchTerminal, buildDropinArgv } from "./engine/terminalLaunch";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
@@ -196,7 +197,19 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
     ipcMain.handle("tasks:create", (_e, input: NewTaskInput) => { const t = insertTask(db, input); notify(); scheduler.kick(); return t; });
     // Augment each task with `resumable` — does drop-in have a PERSISTED session to --resume? latestSessionId
     // is exactly what tasks:dropIn uses, so the button's enabled state matches what the click will actually do.
-    ipcMain.handle("tasks:list", () => listTasks(db).map((t) => ({ ...t, resumable: latestSessionId(listIterations(db, t.id)) != null })));
+    // Plus the M9 derived merged-gate view: `blocked` + the `waitingOn` parents (waitingOnFor over the whole
+    // board), so the cockpit can render "waiting on X" without the renderer knowing the gate rule.
+    ipcMain.handle("tasks:list", () => {
+        const tasks = listTasks(db);
+        const byId = new Map(tasks.map((t) => [t.id, t]));
+        return tasks.map((t) => {
+            const waitingOn = waitingOnFor(t, (id) => byId.get(id));
+            return { ...t, resumable: latestSessionId(listIterations(db, t.id)) != null, blocked: waitingOn.length > 0, waitingOn };
+        });
+    });
+    // M9: replace a task's dependency edges — the cockpit's Clear-dependencies affordance on a stuck card
+    // passes []. Clearing may unblock the task, so kick the scheduler after (honours pause).
+    ipcMain.handle("tasks:setDependsOn", (_e, taskId: string, ids: string[]) => { setDependsOn(db, taskId, ids); notify(); scheduler.kick(); });
 
     // M4 scheduler IPC: paused-mode manual single-start, the live cockpit indicator state, pause toggle.
     ipcMain.handle("tasks:startNow", (_e, taskId: string) => { scheduler.startNow(taskId); });

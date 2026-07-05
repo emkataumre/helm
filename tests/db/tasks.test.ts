@@ -1,6 +1,6 @@
 // tests/db/tasks.test.ts
 import { openDb } from "../../src/main/db/db";
-import { insertTask, getTask, listTasks, updateTask } from "../../src/main/db/tasks";
+import { insertTask, getTask, listTasks, updateTask, setDependsOn } from "../../src/main/db/tasks";
 
 it("inserts a queued task, round-trips acceptance, updates status", () => {
     const db = openDb(":memory:");
@@ -35,5 +35,17 @@ it("round-trips dependsOn edges; an absent list defaults to []", () => {
     const b = insertTask(db, { projectId: "p1", title: "B", intent: "x", acceptance: ["x"], dependsOn: [a.id] });
     expect(b.dependsOn).toEqual([a.id]);
     expect(getTask(db, b.id)?.dependsOn).toEqual([a.id]);   // persisted + round-trips through JSON
+    db.close();
+});
+
+// M9: setDependsOn replaces the edge list — the Clear-dependencies affordance passes [] (→ stored NULL).
+it("setDependsOn replaces the edge list; clearing to [] reads back as []", () => {
+    const db = openDb(":memory:");
+    const a = insertTask(db, { projectId: "p1", title: "A", intent: "x", acceptance: ["x"] });
+    const b = insertTask(db, { projectId: "p1", title: "B", intent: "x", acceptance: ["x"], dependsOn: [a.id] });
+    setDependsOn(db, b.id, []);                    // clear (the stuck-card affordance)
+    expect(getTask(db, b.id)?.dependsOn).toEqual([]);
+    setDependsOn(db, b.id, [a.id, "x"]);           // re-point
+    expect(getTask(db, b.id)?.dependsOn).toEqual([a.id, "x"]);
     db.close();
 });

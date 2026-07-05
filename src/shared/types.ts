@@ -46,11 +46,20 @@ export interface Task {
     updatedAt: number;
 }
 
+// M9: the derived "why isn't this queued task starting yet" view — one unmerged existing parent it waits on.
+// Computed per tasks:list (like resumable), never stored. status lets the cockpit distinguish WAITING (parent
+// in flight) from STUCK (parent needs-human/abandoned).
+export interface WaitingOn { id: string; title: string; status: TaskStatus }
+
 // tasks:list augments each task with `resumable`: whether a drop-in's latestSessionId would find a
 // PERSISTED claude session to `--resume`. Recomputed per list from the task's iterations (NOT a stored
 // column). Drives the Drop-in button's enabled state — false → Drop-in disabled, Start fresh instead.
+// Plus the M9 derived merged-gate view: `blocked` (some existing parent hasn't merged) and the `waitingOn`
+// list that explains it — both derived per list from the current board, never a stored TaskStatus.
 export interface TaskListItem extends Task {
     resumable: boolean;
+    blocked: boolean;
+    waitingOn: WaitingOn[];
 }
 
 export interface Iteration {
@@ -232,6 +241,8 @@ export interface HelmApi {
     detectProject: (repoPath: string) => Promise<DetectedConfig>;
     createTask: (input: NewTaskInput) => Promise<Task>;
     listTasks: () => Promise<TaskListItem[]>;
+    // M9: replace a task's dependency edges (the cockpit's Clear-dependencies affordance passes []).
+    setDependsOn: (taskId: string, ids: string[]) => Promise<void>;
     // M4: the scheduler auto-starts queued tasks; startNow is the paused-mode manual single-start
     // (replaces M3's run-to-completion runTask). Plus the live scheduler state + the pause toggle.
     startNow: (taskId: string) => Promise<void>;

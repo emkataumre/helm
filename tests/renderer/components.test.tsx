@@ -138,6 +138,34 @@ describe("ActivityFeed / IterationHistory / BoardCard contracts", () => {
         expect(merged).not.toContain(">Drop in<");
         expect(merged).toContain('data-verify-dropin="false"');
     });
+
+    // M9: a queued + blocked card shows a waiting-on line and distinguishes WAITING (parent in flight) from
+    // STUCK (parent needs-human/abandoned), which also offers Clear dependencies. The manual Run is hidden
+    // while blocked (startNow is gated — a Run click would be a no-op).
+    it("BoardCard renders the waiting-on line on a queued+blocked card — waiting vs stuck", () => {
+        const waiting = renderToStaticMarkup(
+            <BoardCard task={task({ status: "queued" })} blocked waitingOn={[{ id: "p1", title: "Parent A", status: "running" }]} paused onRun={() => {}} onClearDeps={() => {}} />,
+        );
+        expect(waiting).toContain('data-verify-blocked="true"');
+        expect(waiting).toContain('data-verify-waiting-on="Parent A"');
+        expect(waiting).toContain("waiting on");
+        expect(waiting).toContain("Parent A");
+        expect(waiting).not.toContain("Clear dependencies"); // an in-flight parent → just wait
+        expect(waiting).not.toContain(">Run<");               // gated → no misleading manual Run
+
+        const stuck = renderToStaticMarkup(
+            <BoardCard task={task({ status: "queued" })} blocked waitingOn={[{ id: "p1", title: "Wedged Parent", status: "needs-human" }]} onClearDeps={() => {}} />,
+        );
+        expect(stuck).toContain("Wedged Parent");
+        expect(stuck).toContain("Clear dependencies");        // stuck → offer the unblock affordance
+    });
+
+    it("PROBE: an unblocked queued card has NO waiting-on line (data-verify-blocked=\"false\") and keeps its Run", () => {
+        const html = renderToStaticMarkup(<BoardCard task={task({ status: "queued" })} paused onRun={() => {}} />);
+        expect(html).toContain('data-verify-blocked="false"');
+        expect(html).not.toContain("waiting on");
+        expect(html).toContain(">Run<"); // eligible → the manual Run stays
+    });
 });
 
 describe("HandbackActions contract (the handed-off trio)", () => {
