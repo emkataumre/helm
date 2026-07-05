@@ -54,12 +54,19 @@ export function applyEvent(draft: EngineSnapshot, event: SnapshotEvent): EngineS
         }
         case "assistant": {
             pushFeed(draft, { iterationIndex: event.index, kind: "assistant", text: event.text });
-            if (draft.currentIteration) draft.currentIteration.latestActivity = event.text;
+            if (draft.currentIteration) {
+                draft.currentIteration.latestActivity = event.text;
+                // First agent output ⇒ we're past launch: spawning → working (gates flip it later).
+                if (draft.currentIteration.phase === "spawning") draft.currentIteration.phase = "working";
+            }
             break;
         }
         case "tool-use": {
             pushFeed(draft, { iterationIndex: event.index, kind: "tool-use", text: event.name });
-            if (draft.currentIteration) draft.currentIteration.latestActivity = event.name;
+            if (draft.currentIteration) {
+                draft.currentIteration.latestActivity = event.name;
+                if (draft.currentIteration.phase === "spawning") draft.currentIteration.phase = "working";
+            }
             break;
         }
         case "gate": {

@@ -39,7 +39,8 @@ export interface RunTaskDeps {
 
 export interface IterationOutcome {
     verdict: IterationVerdict;
-    gateOutput: string;   // failing layer's output tail (empty on green)
+    gateOutput: string;   // failing layer's output tail (empty on green) — the full detail
+    gateSummary: string;  // one-line "why the gate failed" (empty on green) — folded into the terminal reason
     commitSha: string;    // worktree HEAD after this iteration's commit
     sessionId: string | null;
     usage: TokenTotals;   // this iteration's token totals (from spawn's result event)
@@ -76,20 +77,21 @@ export async function runIteration(
         // latestSessionId only ever targets a session that actually exists — otherwise `claude --resume`
         // dies "No conversation found". "a recorded sessionId ⇔ a resumable session" is the invariant the
         // Drop-in button reads to enable/disable itself; Start fresh is always available to grab the agent.
-        return { verdict: agent.stalled ? "hang" : "failed", gateOutput: tail(agent.output), commitSha, ...base, sessionId: null };
+        const summary = agent.stalled ? "agent stalled (stream idle timeout)" : "agent run exited non-zero";
+        return { verdict: agent.stalled ? "hang" : "failed", gateOutput: tail(agent.output), gateSummary: summary, commitSha, ...base, sessionId: null };
     }
     // The engine's authoritative gates — emit a gate event around each so the cockpit shows the phase.
     const check = await d.runCheck(ctx.worktreePath, project.checkCommand, config.checkTimeoutMs);
     d.emit?.({ type: "gate", index: ctx.index, label: check.green ? "check: passed" : `check: ${check.timedOut ? "hang" : "failed"}` });
     if (!check.green) {
-        return { verdict: check.timedOut ? "hang" : "failed", gateOutput: tail(check.output), commitSha, ...base };
+        return { verdict: check.timedOut ? "hang" : "failed", gateOutput: tail(check.output), gateSummary: check.timedOut ? "project check timed out" : "project check failed", commitSha, ...base };
     }
     const acc = await d.runAcceptance(ctx.worktreePath, task.acceptance, config.checkTimeoutMs);
     d.emit?.({ type: "gate", index: ctx.index, label: acc.ok ? "acceptance: passed" : "acceptance: failed" });
     if (!acc.ok) {
-        return { verdict: "failed", gateOutput: tail(`acceptance command failed: ${acc.failedCommand}\n${acc.output}`), commitSha, ...base };
+        return { verdict: "failed", gateOutput: tail(`acceptance command failed: ${acc.failedCommand}\n${acc.output}`), gateSummary: `acceptance failed: ${acc.failedCommand ?? "(command)"}`, commitSha, ...base };
     }
-    return { verdict: "green", gateOutput: "", commitSha, ...base };
+    return { verdict: "green", gateOutput: "", gateSummary: "", commitSha, ...base };
 }
 
 // Resume re-enters an existing handed-off worktree (Task 4). worktreePath != null is the discriminator
@@ -172,6 +174,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     }
 
     let priorFailure: string | undefined;
+    let lastGateSummary = ""; // one-liner from the most recent failing gate — folded into the terminal reason
     let prevSha = await d.headSha(worktreePath); // baseSha — the worktree tip before any iteration
     let noProgress = 0;
 
@@ -219,11 +222,12 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         }
 
         priorFailure = o.gateOutput;
+        lastGateSummary = o.gateSummary;
         noProgress = o.commitSha === prevSha ? noProgress + 1 : 0;
         prevSha = o.commitSha;
         if (noProgress >= config.noProgressK) {
-            return terminate("needs-human", `no progress for ${config.noProgressK} iterations`, true);
+            return terminate("needs-human", `no progress for ${config.noProgressK} iterations${lastGateSummary ? ` — last gate: ${lastGateSummary}` : ""}`, true);
         }
     }
-    return terminate("needs-human", `iteration cap reached (${config.iterationCap})`, true);
+    return terminate("needs-human", `iteration cap reached (${config.iterationCap})${lastGateSummary ? ` — last gate: ${lastGateSummary}` : ""}`, true);
 }

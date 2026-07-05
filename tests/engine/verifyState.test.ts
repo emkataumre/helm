@@ -57,6 +57,17 @@ describe("applyEvent", () => {
         expect(s.currentIteration?.phase).toBe("accepting");
     });
 
+    it("agent output advances the phase spawning → working (not stuck on 'spawning' while the agent works)", () => {
+        const s = reduce("t", [{ type: "iteration-start", index: 0 }]);
+        expect(s.currentIteration?.phase).toBe("spawning"); // launching, no output yet
+        applyEvent(s, { type: "assistant", index: 0, text: "let me start" });
+        expect(s.currentIteration?.phase).toBe("working");
+        applyEvent(s, { type: "tool-use", index: 0, name: "Bash" });
+        expect(s.currentIteration?.phase).toBe("working"); // stays working across agent activity
+        applyEvent(s, { type: "gate", index: 0, label: "check passed" });
+        expect(s.currentIteration?.phase).toBe("checking"); // the gate still advances it afterwards
+    });
+
     it("accumulates totals across multiple iterations", () => {
         const s = reduce("t", [
             { type: "iteration-start", index: 0 },

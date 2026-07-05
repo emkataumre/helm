@@ -104,7 +104,10 @@ export interface ActivityEntry {
 export interface EngineSnapshot {
     taskId: string;
     status: TaskStatus;
-    currentIteration: { index: number; phase: "spawning" | "checking" | "accepting"; latestActivity: string } | null;
+    // phase: "spawning" = launching claude (no output yet); "working" = the agent is actively producing
+    // assistant/tool-use output; "checking"/"accepting" = the engine's post-agent gates. The whole
+    // agent-active majority of an iteration is "working" (not "spawning") so the cockpit label stays honest.
+    currentIteration: { index: number; phase: "spawning" | "working" | "checking" | "accepting"; latestActivity: string } | null;
     iterations: IterationView[];
     totals: TokenTotals;            // sum of every iteration's tokens
     feed: ActivityEntry[];          // bounded in-memory ring (cap 200)

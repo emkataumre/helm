@@ -146,6 +146,7 @@ describe("runTaskLoop — bounds & retry", () => {
         ));
         expect(status).toBe("needs-human");
         expect(reason).toContain("iteration cap");
+        expect(reason).toContain("last gate: project check failed"); // the terminal reason names the last failing gate
     });
 
     it("bails via the no-progress breaker when the commit-sha stops moving", async () => {
@@ -157,6 +158,7 @@ describe("runTaskLoop — bounds & retry", () => {
         ));
         expect(status).toBe("needs-human");
         expect(reason).toContain("no progress");
+        expect(reason).toContain("last gate: project check failed"); // includes why the gate kept failing
     });
 
     it("recycles a stall (hang) and still merges on a later green", async () => {
