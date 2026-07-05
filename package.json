@@ -15,7 +15,7 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "check": "npm run typecheck && npm run test",
-    "accept": "npm run abi:electron && npm run build && vitest run --config vitest.accept.config.ts",
+    "accept": "npm run abi:electron && npm run build && node tests/accept/run-all.mjs",
     "abi:electron": "cd node_modules/better-sqlite3 && prebuild-install -r electron -t 31.7.7",
     "abi:node": "cd node_modules/better-sqlite3 && prebuild-install -r node -t 24.15.0"
   },
