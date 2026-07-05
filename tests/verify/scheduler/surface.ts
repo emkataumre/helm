@@ -100,6 +100,9 @@ export async function runScenario(scenario: Scenario): Promise<SchedulerRecordin
     scheduler = createScheduler({
         listQueued: () => queued,
         getProject: (id) => projectById.get(id),
+        // M4 fixtures carry no dependency edges, so depsSatisfied([]) short-circuits true and this is never
+        // consulted — a stub keeps the M4 slice byte-identical while satisfying the widened deps shape.
+        getTaskStatus: () => undefined,
         startTask: (task) => {
             const p = startTask(task);
             void p.finally(() => { if (--remaining === 0) resolveDone(); });

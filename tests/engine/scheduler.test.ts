@@ -19,20 +19,25 @@ const mkProject = (id: string, concurrencyCap: number | null): Project => ({
 });
 
 // A harness with a controllable startTask: each started task hangs until the test settles it, and
-// starting a task removes it from the queue (mirroring the DB flipping its status off "queued").
+// starting a task removes it from the queue (mirroring the DB flipping its status off "queued"). A live
+// status map feeds getTaskStatus (queued → running on start → merged on settle) so the M9 gate can read
+// real parent statuses; only tasks that are actually queued are schedulable.
 function harness(tasks: Task[], projects: Project[]) {
-    let queued = [...tasks];
+    const statuses = new Map<string, TaskStatus>(tasks.map((t) => [t.id, t.status]));
+    let queued = tasks.filter((t) => t.status === "queued");
     const started: string[] = [];
     const resolvers = new Map<string, () => void>();
     const startTask = (t: Task): Promise<TaskStatus> => {
         started.push(t.id);
+        statuses.set(t.id, "running");
         queued = queued.filter((q) => q.id !== t.id);
-        return new Promise<TaskStatus>((resolve) => { resolvers.set(t.id, () => resolve("merged")); });
+        return new Promise<TaskStatus>((resolve) => { resolvers.set(t.id, () => { statuses.set(t.id, "merged"); resolve("merged"); }); });
     };
     const scheduler = createScheduler({
         listQueued: () => queued,
         getProject: (id) => projects.find((p) => p.id === id),
         startTask,
+        getTaskStatus: (id) => statuses.get(id),
     });
     const settle = async (id: string) => { resolvers.get(id)?.(); await flush(); };
     const runningOf = (pid: string) => scheduler.state().perProject.find((x) => x.projectId === pid)?.running ?? 0;
@@ -124,9 +129,71 @@ describe("createScheduler — slot filling", () => {
     });
 });
 
+describe("createScheduler — the M9 dependsOn merged-gate", () => {
+    const dep = (id: string, projectId: string, createdAt: number, dependsOn: string[]): Task => ({ ...mkTask(id, projectId, createdAt), dependsOn });
+
+    it("holds a child until its parent MERGES, then auto-starts it on the settle kick", async () => {
+        const project = mkProject("p", 3);
+        const parent = mkTask("parent", "p", 1);
+        const child = dep("child", "p", 2, ["parent"]);
+        const h = harness([parent, child], [project]);
+
+        h.scheduler.kick();
+        await flush();
+        expect(h.started).toEqual(["parent"]);          // child blocked — parent not merged (only 1 running)
+        expect(h.runningOf("p")).toBe(1);
+
+        await h.settle("parent");                        // parent → merged → settle kick re-scans
+        expect(h.started).toEqual(["parent", "child"]);  // the gate opened; child now runs
+    });
+
+    it("startNow respects the gate — a blocked child can't be hand-started, even paused", async () => {
+        const project = mkProject("p", 3);
+        const parent = mkTask("parent", "p", 1);
+        const child = dep("child", "p", 2, ["parent"]);
+        const h = harness([parent, child], [project]);
+        h.scheduler.setPaused(true);
+
+        h.scheduler.startNow("child"); // parent still queued (unmerged) → gated no-op
+        await flush();
+        expect(h.started).toEqual([]);
+
+        h.scheduler.startNow("parent"); // no deps → starts even while paused
+        await flush();
+        expect(h.started).toEqual(["parent"]);
+    });
+
+    it("a deleted (unknown) parent does NOT wedge the child — it starts", async () => {
+        const project = mkProject("p", 3);
+        const child = dep("child", "p", 1, ["ghost"]); // no such task id
+        const h = harness([child], [project]);
+        h.scheduler.kick();
+        await flush();
+        expect(h.started).toEqual(["child"]); // unknown parent = satisfied (deliberate)
+    });
+
+    it("a child with a mix of merged + unmerged parents waits for the LAST merge", async () => {
+        const project = mkProject("p", 3);
+        const a = mkTask("a", "p", 1);
+        const b = mkTask("b", "p", 2);
+        const child = dep("child", "p", 3, ["a", "b"]);
+        const h = harness([a, b, child], [project]);
+
+        h.scheduler.kick();
+        await flush();
+        expect(h.started).toEqual(["a", "b"]); // both parents start; child blocked
+
+        await h.settle("a");
+        expect(h.started).toEqual(["a", "b"]); // one parent merged — still blocked on b
+
+        await h.settle("b");
+        expect(h.started).toEqual(["a", "b", "child"]); // both merged → child runs
+    });
+});
+
 describe("createScheduler — mutexFor", () => {
     it("serializes same-project merges and runs different projects' merges concurrently", async () => {
-        const scheduler = createScheduler({ listQueued: () => [], getProject: () => undefined, startTask: async () => "merged" });
+        const scheduler = createScheduler({ listQueued: () => [], getProject: () => undefined, startTask: async () => "merged", getTaskStatus: () => undefined });
         const order: string[] = [];
         let releaseFirst!: () => void;
         const firstGate = new Promise<void>((res) => { releaseFirst = res; });

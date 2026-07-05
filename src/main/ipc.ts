@@ -164,6 +164,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
         listQueued: () => listTasks(db).filter((t) => t.status === "queued"),
         getProject: (id) => getProject(db, id),
         startTask,
+        // M9 merged-gate: a queued child stays unstarted until every parent id reads "merged" (or is gone).
+        getTaskStatus: (id) => getTask(db, id)?.status,
     });
 
     ipcMain.handle("projects:register", (_e, input: NewProjectInput) => insertProject(db, input));

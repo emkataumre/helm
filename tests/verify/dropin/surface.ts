@@ -127,6 +127,7 @@ export async function runFreesSlotScenario(): Promise<DropinRecording> {
         listQueued: () => [...tasks.values()].filter((t) => t.status === "queued"),
         getProject: () => project,
         startTask,
+        getTaskStatus: (id) => tasks.get(id)?.status, // M9: dropin fixtures carry no edges, but honour the shape
     });
 
     scheduler.kick();                       // A starts (cap 1) — B waits

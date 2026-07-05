@@ -7,6 +7,7 @@
 // Electron-free and fully DI'd, so the M4 verify slice can drive it headlessly.
 import type { Project, Task, TaskStatus, SchedulerState } from "../../shared/types";
 import { createKeyedMutex } from "./mutex";
+import { depsSatisfied } from "./deps";
 
 const DEFAULT_CAP = 3;
 
@@ -14,6 +15,9 @@ export interface SchedulerDeps {
     listQueued: () => Task[];                          // tasks currently in status "queued"
     getProject: (id: string) => Project | undefined;
     startTask: (task: Task) => Promise<TaskStatus>;    // run one task's loop to completion (fire-and-forget)
+    // M9: current status of any task by id (undefined = unknown/deleted). The dependsOn merged-gate reads
+    // this to hold a child until every parent has merged. A no-deps task never triggers a lookup.
+    getTaskStatus: (id: string) => TaskStatus | undefined;
 }
 
 export interface Scheduler {
@@ -59,6 +63,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         const byProject = new Map<string, Task[]>();
         for (const t of deps.listQueued()) {
             if (running.has(t.id)) continue;
+            if (!depsSatisfied(t, deps.getTaskStatus)) continue; // M9: an unmerged parent holds the child
             (byProject.get(t.projectId) ?? byProject.set(t.projectId, []).get(t.projectId)!).push(t);
         }
         for (const [pid, tasks] of byProject) {
@@ -73,6 +78,8 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         if (running.has(taskId)) return;
         const task = deps.listQueued().find((t) => t.id === taskId);
         if (!task) return;
+        if (!depsSatisfied(task, deps.getTaskStatus)) return; // M9: the paused-mode manual start respects the
+        // gate too — the escape hatch for a wrongly-blocked task is editing its edges, not racing the gate.
         if (runningIn(task.projectId) >= capFor(task.projectId)) return; // no slot — no-op (ignores FIFO + pause)
         start(task);
     };
