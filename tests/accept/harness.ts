@@ -17,6 +17,7 @@
 //   • Every scenario try/finally-closes its app, so a failed assertion never leaks an Electron process.
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
+import type { TaskStatus } from "../../src/shared/types";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,6 +71,19 @@ export function addRetainedWorktree(repoDir: string, branch: string): string {
     return path;
 }
 
+// Give a target repo a REAL bare `origin` remote with main + integration/ralph pushed. Promote fetches
+// origin/<targetBranch>, so without an origin the promote path throws at the fetch; with it (and integration
+// == main) it reaches the clean `nothing-to-promote` outcome — exercising the whole M6-③ promote path over
+// real git while pushing NOTHING to the target. Returns the bare origin dir. Forward-slashed remote URL so
+// git can't misread a Windows backslash path.
+export function makeOrigin(repoDir: string): string {
+    const origin = tmp("origin");
+    git(origin, ["init", "--bare", "-b", "main"]);
+    git(repoDir, ["remote", "add", "origin", origin.replace(/\\/g, "/")]);
+    git(repoDir, ["push", "origin", "main", "integration/ralph"]);
+    return origin;
+}
+
 // Seed helm.db via the sqlite3 CLI (piped over stdin) — ABI-independent: the vitest driver process sits on
 // the Electron ABI and cannot load better-sqlite3, so the CLI is the only way in. Prepends the base schema;
 // the app's real migrate() carries it to head on boot. A bad statement makes sqlite3 exit non-zero →
@@ -92,7 +106,11 @@ export function seededProject(name = "AcceptProj"): { repo: string; projectId: s
 // A project + one needs-human task owning a REAL retained worktree. Boot-reconcile leaves retained
 // worktrees alone, so the fixture survives boot unchanged (title visible, worktree present).
 export interface SeededBoard { repo: string; projectId: string; taskId: string; branch: string; worktreePath: string; title: string; seed: string[]; }
-export function seededNeedsHumanBoard(name = "AcceptProj", title = "Seeded needs-human task"): SeededBoard {
+// A project + one task in a RETAINING state (needs-human by default, or handed-off) that OWNS a real
+// retained worktree. Boot-reconcile leaves retaining worktrees alone, so the fixture survives boot
+// unchanged (title visible, worktree present). status must be a retaining state — the scheduler never
+// auto-starts needs-human/handed-off, so no fixture here ever spawns a real claude.
+export function seededNeedsHumanBoard(name = "AcceptProj", title = "Seeded needs-human task", status: TaskStatus = "needs-human"): SeededBoard {
     const repo = tmp("repo");
     makeTargetRepo(repo);
     const projectId = randomUUID();
@@ -101,9 +119,36 @@ export function seededNeedsHumanBoard(name = "AcceptProj", title = "Seeded needs
     const worktreePath = addRetainedWorktree(repo, branch);
     const seed = [
         seedProjectSql({ id: projectId, name, repoPath: repo }),
-        seedTaskSql({ id: taskId, projectId, title, status: "needs-human", branchName: branch, worktreePath, createdAt: Date.now() }),
+        seedTaskSql({ id: taskId, projectId, title, status, branchName: branch, worktreePath, createdAt: Date.now() }),
     ];
     return { repo, projectId, taskId, branch, worktreePath, title, seed };
+}
+
+// A project + one MERGED task — terminal (the scheduler never starts it) and worktree-less (a merged task's
+// worktree was reaped). Renders in the `merged` lane; opening it shows the M3 observability detail rebuilt
+// from DB rows (empty feed, but every section renders). No worktree ⇒ boot-reconcile has nothing to prune.
+export interface SeededMerged { repo: string; projectId: string; taskId: string; title: string; seed: string[]; }
+export function seededMergedBoard(name = "AcceptProj", title = "Seeded merged task"): SeededMerged {
+    const repo = tmp("repo");
+    makeTargetRepo(repo);
+    const projectId = randomUUID();
+    const taskId = randomUUID();
+    const seed = [
+        seedProjectSql({ id: projectId, name, repoPath: repo }),
+        seedTaskSql({ id: taskId, projectId, title, status: "merged", branchName: `ralph/task-${taskId}`, worktreePath: null, createdAt: Date.now() }),
+    ];
+    return { repo, projectId, taskId, title, seed };
+}
+
+// A project whose repo has a real bare origin (integration == main). Enough to click Promote and reach the
+// clean `nothing-to-promote` outcome through the REAL promote path (fetch origin, count commits beyond the
+// target) — proving the M6-③ Promote UI wiring end to end without pushing anything to the target.
+export function seededPromotableProject(name = "PromoteProj"): { repo: string; origin: string; projectId: string; seed: string[] } {
+    const repo = tmp("repo");
+    makeTargetRepo(repo);
+    const origin = makeOrigin(repo);
+    const projectId = randomUUID();
+    return { repo, origin, projectId, seed: [seedProjectSql({ id: projectId, name, repoPath: repo })] };
 }
 
 export interface LaunchedHelm {
