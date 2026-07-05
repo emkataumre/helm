@@ -21,7 +21,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BASE_SCHEMA_SQL, retainedWorktreePath } from "./seed";
+import { randomUUID } from "node:crypto";
+import { BASE_SCHEMA_SQL, retainedWorktreePath, seedProjectSql, seedTaskSql } from "./seed";
 
 const repoRoot = join(import.meta.dirname, "..", "..");
 const ARTIFACTS = join(repoRoot, "tests", "accept", "artifacts"); // recorded .webm evidence (gitignored)
@@ -78,6 +79,33 @@ export function seedDb(userDataDir: string, statements: string[]): void {
     execFileSync("sqlite3", [join(userDataDir, "helm.db")], { input: sql, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 }
 
+// ── Fixture builders (shared across scenarios) ─────────────────────────────────────────────────────
+
+// A project only (a real target repo) — enough to render the `+ <name>` free-terminal button.
+export function seededProject(name = "AcceptProj"): { repo: string; projectId: string; seed: string[] } {
+    const repo = tmp("repo");
+    makeTargetRepo(repo);
+    const projectId = randomUUID();
+    return { repo, projectId, seed: [seedProjectSql({ id: projectId, name, repoPath: repo })] };
+}
+
+// A project + one needs-human task owning a REAL retained worktree. Boot-reconcile leaves retained
+// worktrees alone, so the fixture survives boot unchanged (title visible, worktree present).
+export interface SeededBoard { repo: string; projectId: string; taskId: string; branch: string; worktreePath: string; title: string; seed: string[]; }
+export function seededNeedsHumanBoard(name = "AcceptProj", title = "Seeded needs-human task"): SeededBoard {
+    const repo = tmp("repo");
+    makeTargetRepo(repo);
+    const projectId = randomUUID();
+    const taskId = randomUUID();
+    const branch = `ralph/task-${taskId}`;
+    const worktreePath = addRetainedWorktree(repo, branch);
+    const seed = [
+        seedProjectSql({ id: projectId, name, repoPath: repo }),
+        seedTaskSql({ id: taskId, projectId, title, status: "needs-human", branchName: branch, worktreePath, createdAt: Date.now() }),
+    ];
+    return { repo, projectId, taskId, branch, worktreePath, title, seed };
+}
+
 export interface LaunchedHelm {
     app: ElectronApplication;
     page: Page;
@@ -107,19 +135,44 @@ export async function launchHelm(opts: { seed?: string[] } = {}): Promise<Launch
     const helmType = await page.evaluate(() => typeof window.helm);
     if (helmType !== "object") throw new Error(`window.helm not exposed (got ${helmType}) — preload bridge missing`);
 
+    // Just close the app — do NOT explicitly ptyKill sessions here. app.close() force-terminates Electron
+    // and its job object reaps the child pwsh (verified leak-free), so there's nothing to dispose. Keeping
+    // scenario-initiated kills to the minimum each scenario actually asserts (close-tab / abandon) is good
+    // hygiene, not a correctness fix — the machine-wide "terminal randomly dies" gun was node-pty's
+    // OS-conpty kill firing a delayed process.kill() at a recycled PID; it's fixed at the source in
+    // nodePtyFactory.ts (useConptyDll: true → no agent fork, no 5s fallback). See kill.accept.ts.
     const close = async () => { try { await app.close(); } catch { /* best-effort teardown */ } };
     return { app, page, userData, close };
 }
 
-// Poll `fn` until it returns truthy or the timeout elapses; throws a labelled error on timeout (a loud FAIL,
-// never a hang that reads as a skip). Used for the async settling the real app does (PTY boot, reap, etc.).
-export async function until<T>(fn: () => Promise<T> | T, opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {}): Promise<T> {
+// ── PTY assertion helpers over window.helm (the structured agent handle; no xterm DOM scraping) ─────
+export const normPath = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+export const ptyList = (page: Page) => page.evaluate(() => window.helm.ptyList());
+// Subscribe (once) to pty:data for a session and (re)attach so main streams it — the replay-then-live
+// buffer lands in a page-global keyed by id. Re-attaching after a reset captures exactly the scrollback
+// replay (how a tab-switch remount re-paints history).
+export async function collect(page: Page, sid: string): Promise<void> {
+    await page.evaluate((id) => {
+        const w = window as unknown as { __bufs?: Record<string, string>; __subs?: Record<string, () => void> };
+        w.__bufs ??= {}; w.__subs ??= {};
+        w.__bufs[id] = "";
+        w.__subs[id] ??= window.helm.onPtyData((eid, chunk) => { const b = w.__bufs!; if (b[eid] != null) b[eid] += chunk; });
+        return window.helm.ptyAttach(id);
+    }, sid);
+}
+export const readBuf = (page: Page, sid: string) =>
+    page.evaluate((id) => (window as unknown as { __bufs?: Record<string, string> }).__bufs?.[id] ?? "", sid);
+
+// Poll `fn` until it returns truthy or the timeout elapses; returns the (non-nullable) truthy value, or
+// throws a labelled error on timeout (a loud FAIL, never a hang that reads as a skip). Used for the async
+// settling the real app does (PTY boot, reap, etc.).
+export async function until<T>(fn: () => Promise<T> | T, opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {}): Promise<NonNullable<T>> {
     const timeoutMs = opts.timeoutMs ?? 15_000;
     const intervalMs = opts.intervalMs ?? 200;
     const deadline = Date.now() + timeoutMs;
     let last: unknown;
     for (;;) {
-        try { const v = await fn(); if (v) return v; last = v; }
+        try { const v = await fn(); if (v) return v as NonNullable<T>; last = v; }
         catch (e) { last = e; }
         if (Date.now() > deadline) throw new Error(`until(${opts.label ?? "condition"}) timed out after ${timeoutMs}ms; last=${JSON.stringify(last)}`);
         await new Promise((r) => setTimeout(r, intervalMs));
