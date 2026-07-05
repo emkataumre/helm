@@ -71,6 +71,13 @@ const STEPS: Array<(db: Db) => void> = [
     (db) => {
         db.exec(`ALTER TABLE projects ADD COLUMN promotionMode TEXT NOT NULL DEFAULT 'pr'`);
     },
+    // Step 7 — M9 dependency edges: a JSON array of the task ids this task waits on (nullable; NULL/absent
+    // = []). A child branches off the integration tip when it STARTS, so the scheduler must not start it
+    // until every parent has MERGED. "blocked" is DERIVED at read time from these edges + parent statuses —
+    // no new TaskStatus, the state machine is untouched. tasks.ts parses defensively (bad JSON → []).
+    (db) => {
+        db.exec(`ALTER TABLE tasks ADD COLUMN dependsOn TEXT`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.

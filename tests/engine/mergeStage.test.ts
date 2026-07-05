@@ -12,7 +12,7 @@ const PROJECT: Project = {
     setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr",
 };
 const TASK: Task = {
-    id: "abc", projectId: "p1", title: "T", intent: "do", acceptance: ["x"], status: "running", scopeHint: null,
+    id: "abc", projectId: "p1", title: "T", intent: "do", acceptance: ["x"], status: "running", scopeHint: null, dependsOn: [],
     branchName: "ralph/task-abc", worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0,
 };
 

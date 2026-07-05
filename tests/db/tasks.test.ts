@@ -24,3 +24,16 @@ it("round-trips the handed-off status (the M5 drop-in pause state)", () => {
     expect(getTask(db, t.id)?.status).toBe("handed-off");
     db.close();
 });
+
+// M9: dependency edges. An absent list defaults to [] on both insert-return and read; a provided list
+// round-trips through JSON. Empty = stored NULL, read back as [] (byte-identical to a Phase-1 task).
+it("round-trips dependsOn edges; an absent list defaults to []", () => {
+    const db = openDb(":memory:");
+    const a = insertTask(db, { projectId: "p1", title: "A", intent: "x", acceptance: ["x"] });
+    expect(a.dependsOn).toEqual([]);                        // absent on input → [] on the returned task
+    expect(getTask(db, a.id)?.dependsOn).toEqual([]);       // …and on read (stored NULL → [])
+    const b = insertTask(db, { projectId: "p1", title: "B", intent: "x", acceptance: ["x"], dependsOn: [a.id] });
+    expect(b.dependsOn).toEqual([a.id]);
+    expect(getTask(db, b.id)?.dependsOn).toEqual([a.id]);   // persisted + round-trips through JSON
+    db.close();
+});

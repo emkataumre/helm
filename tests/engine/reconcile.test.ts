@@ -9,7 +9,7 @@ import type { Task } from "../../src/shared/types";
 function mkTask(over: Partial<Task> = {}): Task {
     return {
         id: "t1", projectId: "p1", title: "T", intent: "", acceptance: ["x"], status: "running",
-        scopeHint: null, branchName: "ralph/task-t1", worktreePath: "/repo/.helm/worktrees/ralph-task-t1",
+        scopeHint: null, dependsOn: [], branchName: "ralph/task-t1", worktreePath: "/repo/.helm/worktrees/ralph-task-t1",
         diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0, ...over,
     };
 }

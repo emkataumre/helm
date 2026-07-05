@@ -36,6 +36,8 @@ export interface Task {
     acceptance: string[];      // executable proof commands (stored now; run from M2)
     status: TaskStatus;
     scopeHint: string | null;  // per-task (spec §3/§10) — re-enables the /goal no-out-of-scope clause
+    dependsOn: string[];       // M9 — task ids this task waits on; absent/NULL = []. A child branches off
+                               // integration at START, so the scheduler holds it until every parent MERGES.
     branchName: string | null;
     worktreePath: string | null;
     diffstat: string | null;
@@ -215,6 +217,7 @@ export interface NewTaskInput {
     intent: string;
     acceptance: string[];
     scopeHint?: string | null;
+    dependsOn?: string[]; // M9 dependency edges (absent → stored NULL / read back as [])
 }
 // The editable per-project config columns (the project-config form patches these).
 export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode">>;

@@ -16,7 +16,7 @@ import type { Task, TaskStatus } from "../../../src/shared/types";
 export const wt = (name: string): string => `/repo/.helm/worktrees/${name}`;
 
 export const mkTask = (id: string, status: TaskStatus, over: Partial<Task> = {}): Task => ({
-    id, projectId: "p1", title: id, intent: "", acceptance: ["x"], status, scopeHint: null,
+    id, projectId: "p1", title: id, intent: "", acceptance: ["x"], status, scopeHint: null, dependsOn: [],
     branchName: `ralph/task-${id}`, worktreePath: wt(`ralph-task-${id}`), diffstat: null, failureReason: null,
     createdAt: 0, updatedAt: 0, ...over,
 });

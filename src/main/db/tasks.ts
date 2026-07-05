@@ -3,10 +3,20 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db";
 import type { Task, NewTaskInput } from "../../shared/types";
 
-interface Row extends Omit<Task, "acceptance"> { acceptance: string; }
+interface Row extends Omit<Task, "acceptance" | "dependsOn"> { acceptance: string; dependsOn: string | null; }
+
+// A guarded JSON.parse for the dependsOn column: NULL/absent/garbage all collapse to [] (a corrupt edge
+// list must never throw on read — a task with no *valid* parents is simply unblocked), keeping only strings.
+function parseDependsOn(raw: string | null): string[] {
+    if (!raw) return [];
+    try {
+        const v: unknown = JSON.parse(raw);
+        return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+    } catch { return []; }
+}
 
 function toTask(row: Row): Task {
-    return { ...row, acceptance: JSON.parse(row.acceptance) as string[] };
+    return { ...row, acceptance: JSON.parse(row.acceptance) as string[], dependsOn: parseDependsOn(row.dependsOn) };
 }
 
 export function insertTask(db: Db, input: NewTaskInput): Task {
@@ -19,13 +29,14 @@ export function insertTask(db: Db, input: NewTaskInput): Task {
         acceptance: input.acceptance,
         status: "queued",
         scopeHint: input.scopeHint ?? null,
+        dependsOn: input.dependsOn ?? [],
         branchName: null, worktreePath: null, diffstat: null, failureReason: null,
         createdAt: now, updatedAt: now,
     };
     db.prepare(
-        `INSERT INTO tasks (id,projectId,title,intent,acceptance,status,scopeHint,branchName,worktreePath,diffstat,failureReason,createdAt,updatedAt)
-         VALUES (@id,@projectId,@title,@intent,@acceptance,@status,@scopeHint,@branchName,@worktreePath,@diffstat,@failureReason,@createdAt,@updatedAt)`,
-    ).run({ ...t, acceptance: JSON.stringify(t.acceptance) });
+        `INSERT INTO tasks (id,projectId,title,intent,acceptance,status,scopeHint,dependsOn,branchName,worktreePath,diffstat,failureReason,createdAt,updatedAt)
+         VALUES (@id,@projectId,@title,@intent,@acceptance,@status,@scopeHint,@dependsOn,@branchName,@worktreePath,@diffstat,@failureReason,@createdAt,@updatedAt)`,
+    ).run({ ...t, acceptance: JSON.stringify(t.acceptance), dependsOn: t.dependsOn.length ? JSON.stringify(t.dependsOn) : null });
     return t;
 }
 
