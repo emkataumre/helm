@@ -455,6 +455,10 @@ function NewTaskForm({ projects, tasks, onDone }: { projects: Project[]; tasks: 
                             scopeHint: f.scopeHint.trim() || null,
                             dependsOn: deps,
                         });
+                        // Clear the form after a successful create — otherwise the just-made task lingers in
+                        // the depends-on picker (and the fields stay populated for an accidental re-submit).
+                        setF({ projectId: "", title: "", intent: "", acceptance: "", scopeHint: "" });
+                        setDeps([]);
                         onDone();
                     }}
                 >Create</button>
