@@ -8,7 +8,7 @@ import type { Task, TaskStatus } from "../../src/shared/types";
 
 const mkTask = (id: string, dependsOn: string[]): Task => ({
     id, projectId: "p", title: id, intent: "", acceptance: ["x"], status: "queued", scopeHint: null,
-    dependsOn, branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0,
+    dependsOn, planId: null, branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0,
 });
 
 describe("depsSatisfied — the blocked-until-all-parents-merged gate", () => {

@@ -35,7 +35,7 @@ export const mkProject = (concurrencyCap: number | null): Project => ({
     stallTimeoutMin: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr",
 });
 const mkTask = (id: string, createdAt: number, dependsOn: string[], status: TaskStatus): Task => ({
-    id, projectId: "p", title: id, intent: "", acceptance: ["x"], status, scopeHint: null, dependsOn,
+    id, projectId: "p", title: id, intent: "", acceptance: ["x"], status, scopeHint: null, dependsOn, planId: null,
     branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt, updatedAt: createdAt,
 });
 

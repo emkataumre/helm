@@ -30,6 +30,7 @@ export function insertTask(db: Db, input: NewTaskInput): Task {
         status: "queued",
         scopeHint: input.scopeHint ?? null,
         dependsOn: input.dependsOn ?? [],
+        planId: null, // hand-made via the New-task form; an approved plan's tasks go through insertPlanTask
         branchName: null, worktreePath: null, diffstat: null, failureReason: null,
         createdAt: now, updatedAt: now,
     };

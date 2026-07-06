@@ -38,6 +38,7 @@ export interface Task {
     scopeHint: string | null;  // per-task (spec §3/§10) — re-enables the /goal no-out-of-scope clause
     dependsOn: string[];       // M9 — task ids this task waits on; absent/NULL = []. A child branches off
                                // integration at START, so the scheduler holds it until every parent MERGES.
+    planId: string | null;     // M10 — the plan this task was born from (approve stamps it); NULL = hand-made.
     branchName: string | null;
     worktreePath: string | null;
     diffstat: string | null;
@@ -60,6 +61,17 @@ export interface TaskListItem extends Task {
     resumable: boolean;
     blocked: boolean;
     waitingOn: WaitingOn[];
+}
+
+// M10 — the Plan entity: the grouping layer above tasks and the durable home for the PRD text (copied in
+// at approve, so it survives the transient .helm/plan/ dir being cleared). One active plan per project;
+// tasks born from an approve carry its id in Task.planId (a hand-made task's planId is NULL).
+export interface Plan {
+    id: string;
+    projectId: string;
+    title: string;
+    prdText: string;
+    createdAt: number;
 }
 
 export interface Iteration {

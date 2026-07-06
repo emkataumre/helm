@@ -60,15 +60,16 @@ export function getProject(db: Db, id: string): Project | undefined {
     return db.prepare("SELECT * FROM projects WHERE id = ?").get(id) as Project | undefined;
 }
 
-// Delete a project and everything beneath it — its tasks and those tasks' iterations — atomically.
-// The tables carry no FK constraints (so no ON DELETE CASCADE); the cascade is therefore explicit and
-// wrapped in a transaction, so a mid-delete crash can never leave orphaned tasks/iterations pointing at a
+// Delete a project and everything beneath it — its tasks, those tasks' iterations, and (M10) its plans —
+// atomically. The tables carry no FK constraints (so no ON DELETE CASCADE); the cascade is therefore
+// explicit and wrapped in a transaction, so a mid-delete crash can never leave orphaned rows pointing at a
 // project that's already gone. Strictly scoped to this id — a second project's rows are never touched —
 // and a harmless no-op (0 rows) for an unknown id. The projects:delete ipc notifies the board after.
 export function deleteProject(db: Db, id: string): void {
     db.transaction(() => {
         db.prepare("DELETE FROM iterations WHERE taskId IN (SELECT id FROM tasks WHERE projectId = ?)").run(id);
         db.prepare("DELETE FROM tasks WHERE projectId = ?").run(id);
+        db.prepare("DELETE FROM plans WHERE projectId = ?").run(id);
         db.prepare("DELETE FROM projects WHERE id = ?").run(id);
     })();
 }

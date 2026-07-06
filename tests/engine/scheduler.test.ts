@@ -9,7 +9,7 @@ import type { Project, Task, TaskStatus } from "../../src/shared/types";
 const flush = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
 
 const mkTask = (id: string, projectId: string, createdAt: number): Task => ({
-    id, projectId, title: id, intent: "", acceptance: ["x"], status: "queued", scopeHint: null, dependsOn: [],
+    id, projectId, title: id, intent: "", acceptance: ["x"], status: "queued", scopeHint: null, dependsOn: [], planId: null,
     branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt, updatedAt: createdAt,
 });
 const mkProject = (id: string, concurrencyCap: number | null): Project => ({

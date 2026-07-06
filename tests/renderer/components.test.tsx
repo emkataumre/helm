@@ -26,7 +26,7 @@ const iv = (index: number, output: number, costUsd = 0): IterationView =>
     ({ index, verdict: "green", tokens: { input: 0, output, cacheRead: 0, cacheCreation: 0, costUsd }, durationMs: 100, sessionId: "s", commitSha: "c" });
 
 const task = (over: Partial<Task> = {}): Task =>
-    ({ id: "t", projectId: "p", title: "Build it", intent: "", acceptance: ["x"], status: "running", scopeHint: null, dependsOn: [], branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0, ...over });
+    ({ id: "t", projectId: "p", title: "Build it", intent: "", acceptance: ["x"], status: "running", scopeHint: null, dependsOn: [], planId: null, branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0, ...over });
 
 describe("verifyAttrs", () => {
     it("builds data-verify-* keys, stringifies values, drops null/undefined", () => {

@@ -78,6 +78,19 @@ const STEPS: Array<(db: Db) => void> = [
     (db) => {
         db.exec(`ALTER TABLE tasks ADD COLUMN dependsOn TEXT`);
     },
+    // Step 8 — M10 plan ingestion: the `plans` grouping entity (the PRD's durable home — the .helm/plan/
+    // dir is transient and cleared at approve) + a nullable tasks.planId (NULL = hand-made; a Phase-1 row
+    // is untouched). Every task an approve produces is stamped with its plan's id. New table, so a fresh
+    // CREATE; the ALTER adds one nullable column (the M9 dependsOn precedent for a tasks-table ALTER).
+    (db) => {
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS plans (
+                id TEXT PRIMARY KEY, projectId TEXT NOT NULL, title TEXT NOT NULL,
+                prdText TEXT NOT NULL, createdAt INTEGER NOT NULL
+            );
+        `);
+        db.exec(`ALTER TABLE tasks ADD COLUMN planId TEXT`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.
