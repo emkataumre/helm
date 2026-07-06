@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { openDb } from "../../src/main/db/db";
 import { insertProject, deleteProject } from "../../src/main/db/projects";
 import { insertPlan, listPlans, getPlan } from "../../src/main/db/plans";
-import { insertTask } from "../../src/main/db/tasks";
+import { insertTask, insertPlanTask, getTask } from "../../src/main/db/tasks";
 
 const mkProject = (db: ReturnType<typeof openDb>, name = "P") =>
     insertProject(db, { name, repoPath: "/r", targetBranch: "main", checkCommand: "npm test" });
@@ -38,6 +38,18 @@ describe("db/plans", () => {
         const project = mkProject(db);
         const task = insertTask(db, { projectId: project.id, title: "t", intent: "i", acceptance: ["x"] });
         expect(task.planId).toBeNull();
+        db.close();
+    });
+
+    it("insertPlanTask stamps planId + resolved dependsOn ids + queued, at the pre-assigned id", () => {
+        const db = openDb(":memory:");
+        const project = mkProject(db);
+        const plan = insertPlan(db, { projectId: project.id, title: "p", prdText: "x" });
+        const parent = insertPlanTask(db, { id: "id-parent", projectId: project.id, planId: plan.id, title: "P", intent: "i", acceptance: ["npm run check"], scopeHint: null, dependsOn: [] });
+        const child = insertPlanTask(db, { id: "id-child", projectId: project.id, planId: plan.id, title: "C", intent: "i", acceptance: ["npm run build"], scopeHint: "src/**", dependsOn: [parent.id] });
+        expect(getTask(db, "id-parent")).toMatchObject({ id: "id-parent", planId: plan.id, status: "queued", dependsOn: [] });
+        expect(getTask(db, "id-child")).toMatchObject({ id: "id-child", planId: plan.id, status: "queued", dependsOn: ["id-parent"], scopeHint: "src/**" });
+        expect(child.acceptance).toEqual(["npm run build"]);
         db.close();
     });
 

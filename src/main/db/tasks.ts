@@ -41,6 +41,24 @@ export function insertTask(db: Db, input: NewTaskInput): Task {
     return t;
 }
 
+// M10 approve path: insert one task born from an approved plan. Unlike insertTask (hand-made, id generated
+// here, planId NULL), the id is PRE-ASSIGNED by planApproval (so a sibling's dependsOn could resolve to it),
+// planId is stamped, and dependsOn already holds real task ids. status is "queued" like every fresh task; the
+// M9 merged-gate then holds a child until its parents merge. The INSERT includes the planId column.
+export function insertPlanTask(db: Db, spec: { id: string; projectId: string; planId: string; title: string; intent: string; acceptance: string[]; scopeHint: string | null; dependsOn: string[] }): Task {
+    const now = Date.now();
+    const t: Task = {
+        id: spec.id, projectId: spec.projectId, title: spec.title, intent: spec.intent, acceptance: spec.acceptance,
+        status: "queued", scopeHint: spec.scopeHint, dependsOn: spec.dependsOn, planId: spec.planId,
+        branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: now, updatedAt: now,
+    };
+    db.prepare(
+        `INSERT INTO tasks (id,projectId,title,intent,acceptance,status,scopeHint,dependsOn,planId,branchName,worktreePath,diffstat,failureReason,createdAt,updatedAt)
+         VALUES (@id,@projectId,@title,@intent,@acceptance,@status,@scopeHint,@dependsOn,@planId,@branchName,@worktreePath,@diffstat,@failureReason,@createdAt,@updatedAt)`,
+    ).run({ ...t, acceptance: JSON.stringify(t.acceptance), dependsOn: t.dependsOn.length ? JSON.stringify(t.dependsOn) : null });
+    return t;
+}
+
 export function getTask(db: Db, id: string): Task | undefined {
     const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as Row | undefined;
     return row ? toTask(row) : undefined;

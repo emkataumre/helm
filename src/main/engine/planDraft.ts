@@ -120,6 +120,70 @@ function findCycle(tasks: PlanDraftTask[]): string[] | null {
     return found;
 }
 
+// ── Approve planner (pure) ─────────────────────────────────────────────────────────────────────────
+// The pure planner-of-the-approve (the reconcile pure-planner/thin-executor idiom): topologically sort the
+// draft's tasks (parents first) and resolve each dependsOn SLUG to the real id its parent was assigned. genId
+// is injected (one call per task) so this is deterministic + unit-testable; the ipc executor passes randomUUID.
+// Because the order is parent-first, a child's parent id is always already assigned when its edges resolve.
+export interface PlanInsert {
+    id: string;
+    slug: string;
+    title: string;
+    intent: string;
+    acceptance: string[];
+    scopeHint: string | null;
+    dependsOn: string[]; // resolved real ids (parents), in draft order
+}
+
+export function planApproval(draft: PlanDraft, genId: () => string): PlanInsert[] {
+    const order = topoSort(draft.tasks);
+    const slugToId = new Map<string, string>();
+    const inserts: PlanInsert[] = [];
+    for (const t of order) {
+        const id = genId();
+        slugToId.set(t.slug, id);
+        inserts.push({
+            id, slug: t.slug, title: t.title, intent: t.intent, acceptance: t.acceptance, scopeHint: t.scopeHint,
+            // Parents come first in topo order, so every valid edge resolves; an unresolved slug (only reachable
+            // via a cycle that bypassed parse) is dropped rather than emitting a dangling id.
+            dependsOn: t.dependsOn.map((s) => slugToId.get(s)).filter((x): x is string => x != null),
+        });
+    }
+    return inserts;
+}
+
+// Kahn's algorithm, ties broken by draft order (stable + deterministic). A residual cycle (should be impossible
+// post-parse) falls back to appending the unordered remainder in draft order — planApproval never hangs.
+function topoSort(tasks: PlanDraftTask[]): PlanDraftTask[] {
+    const bySlug = new Map(tasks.map((t) => [t.slug, t]));
+    const parents = new Map<string, string[]>();
+    const indeg = new Map<string, number>();
+    const children = new Map<string, string[]>();
+    for (const t of tasks) { children.set(t.slug, []); }
+    for (const t of tasks) {
+        const ps = t.dependsOn.filter((d) => bySlug.has(d));
+        parents.set(t.slug, ps);
+        indeg.set(t.slug, ps.length);
+    }
+    for (const t of tasks) for (const p of parents.get(t.slug)!) children.get(p)!.push(t.slug);
+
+    const queue = tasks.filter((t) => indeg.get(t.slug) === 0).map((t) => t.slug);
+    const out: PlanDraftTask[] = [];
+    const seen = new Set<string>();
+    while (queue.length) {
+        const s = queue.shift()!;
+        if (seen.has(s)) continue;
+        seen.add(s);
+        out.push(bySlug.get(s)!);
+        for (const c of children.get(s) ?? []) {
+            indeg.set(c, (indeg.get(c) ?? 0) - 1);
+            if (indeg.get(c) === 0) queue.push(c);
+        }
+    }
+    for (const t of tasks) if (!seen.has(t.slug)) out.push(t); // cycle fallback
+    return out;
+}
+
 // ── Static pre-flight ────────────────────────────────────────────────────────────────────────────
 export interface PreflightCtx { npmScripts: string[]; fileExists: (p: string) => boolean; }
 

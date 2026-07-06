@@ -114,6 +114,13 @@ export interface PlanRailState {
     verdicts: PreflightVerdict[];
 }
 
+// What approvePlan returns. On ok: how many tasks were queued + any non-blocking warnings (e.g. no prd.md, so
+// an empty PRD was stored). On failure: the parse errors (re-validated from disk — the renderer's copy is never
+// trusted), which the pane lists verbatim. A parse-invalid draft never produces rows.
+export type ApprovePlanResult =
+    | { ok: true; count: number; warnings: string[] }
+    | { ok: false; errors: string[] };
+
 export interface Iteration {
     id: string;
     taskId: string;
@@ -338,4 +345,8 @@ export interface HelmApi {
     // onPlanChanged pushes the live rail state (per project) as the session writes prd.md/tasks.json.
     openPlanner: (projectId: string) => Promise<{ session: PtySession; state: PlanRailState } | null>;
     onPlanChanged: (cb: (projectId: string, state: PlanRailState) => void) => void;
+    // Approve the active plan: re-read + re-validate from disk (never the renderer's copy), then in ONE
+    // transaction insert the plan (PRD copied) + its tasks in topological order, resolving slug edges to real
+    // ids, and clear .helm/plan/. Returns queued count + warnings, or the parse errors on a still-invalid draft.
+    approvePlan: (projectId: string) => Promise<ApprovePlanResult>;
 }

@@ -2,10 +2,12 @@
 import { ipcMain, Notification, type BrowserWindow } from "electron";
 import { app } from "electron";
 import { join } from "node:path";
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
 import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject, deleteProject } from "./db/projects";
-import { insertTask, listTasks, getTask, updateTask, setDependsOn } from "./db/tasks";
+import { insertPlan } from "./db/plans";
+import { insertTask, insertPlanTask, listTasks, getTask, updateTask, setDependsOn } from "./db/tasks";
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "./engine/worktree";
 import { reconcile, isUnderWorktreeDir } from "./engine/reconcile";
@@ -16,7 +18,7 @@ import { runPromoteStage, finalizePromotion, type PromoteStageDeps, type Finaliz
 import { runAcceptance } from "./engine/acceptance";
 import { ensureRalphExcluded, ensureHelmExcluded, writeRalphFiles } from "./engine/ralph";
 import { watchPlanDir, readPlanFiles, buildPlanRailState } from "./engine/planWatcher";
-import type { PreflightCtx } from "./engine/planDraft";
+import { parsePlanDraft, planApproval, type PreflightCtx } from "./engine/planDraft";
 import { runCheck } from "./engine/check";
 import { run } from "./engine/exec";
 import { spawnAgent } from "./engine/spawn";
@@ -34,7 +36,7 @@ import { launchTerminal, buildDropinArgv } from "./engine/terminalLaunch";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
 import { createPtyManager } from "./engine/ptyManager";
 import { nodePtyFactory } from "./engine/nodePtyFactory";
-import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession, PlanRailState } from "../shared/types";
+import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession, PlanRailState, ApprovePlanResult } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
@@ -64,6 +66,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
         return { npmScripts, fileExists: (p) => existsSync(join(repoPath, p)) };
     };
     const readPlanRailState = (repoPath: string): PlanRailState => buildPlanRailState(readPlanFiles(planDirFor(repoPath)), planCtx(repoPath));
+    // Empty the transient drop dir (keep the dir itself so the watcher's fs.watch handle stays valid).
+    const clearPlanDir = (dir: string): void => {
+        try { for (const name of readdirSync(dir)) rmSync(join(dir, name), { recursive: true, force: true }); }
+        catch { /* dir gone / unreadable — nothing to clear */ }
+    };
 
     // Forward-declared so startTask can close over the scheduler it itself is driven by (the merge
     // mutex lives on the scheduler, shared across a project's task loops).
@@ -378,6 +385,38 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
         else session = ptyManager.create({ cwd: project.repoPath, argv: ["pwsh.exe", "-NoExit", "-Command", "claude"], kind: "planner", title: `${project.name} — plan`, projectId });
 
         return { session, state: readPlanRailState(project.repoPath) };
+    });
+
+    // Approve the active plan: re-read + re-validate from disk (never the renderer's copy — it can be stale or
+    // spoofed). Any parse failure → structured rejection, NO rows. Otherwise, in ONE transaction: insertPlan
+    // (PRD text copied; missing prd.md → stored "" + a warn, so approve isn't wedged) then the tasks in
+    // topological order, resolving slug edges to the real ids (the M9 column). After commit: clear the drop
+    // dir (rows are now durable), refresh the board, kick the scheduler (honours pause). The just-queued tasks
+    // then flow through the merged-gate exactly like hand-made ones.
+    ipcMain.handle("plans:approve", (_e, projectId: string): ApprovePlanResult => {
+        const project = getProject(db, projectId);
+        if (!project) return { ok: false, errors: [`unknown project ${projectId}`] };
+        const dir = planDirFor(project.repoPath);
+        const files = readPlanFiles(dir);
+        if (files.tasksJson == null) return { ok: false, errors: ["no tasks.json in .helm/plan/ to approve"] };
+        const parsed = parsePlanDraft(files.tasksJson);
+        if (!parsed.ok) return { ok: false, errors: parsed.errors };
+
+        const warnings: string[] = [];
+        const prdText = files.prdText ?? "";
+        if (files.prdText == null) warnings.push("no prd.md in .helm/plan/ — stored an empty PRD for this plan");
+
+        const inserts = planApproval(parsed.draft, () => randomUUID());
+        db.transaction(() => {
+            const plan = insertPlan(db, { projectId, title: parsed.draft.planTitle, prdText });
+            for (const ins of inserts) insertPlanTask(db, { ...ins, projectId, planId: plan.id });
+        })();
+
+        clearPlanDir(dir);
+        getWindow()?.webContents.send("plan:changed", projectId, readPlanRailState(project.repoPath));
+        notify();
+        scheduler.kick();
+        return { ok: true, count: inserts.length, warnings };
     });
 
     // ── M6 ① boot reconcile (spec §4 "process death is cheap") ────────────────────────────────────

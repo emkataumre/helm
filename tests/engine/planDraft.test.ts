@@ -2,7 +2,8 @@
 // + slug + acyclic checks over raw tasks.json; staticPreflight flags hallucinated commands against a supplied
 // npmScripts list + fileExists probe. Both fully unit-tested here (the plan's TDD unit).
 import { describe, it, expect } from "vitest";
-import { parsePlanDraft, staticPreflight } from "../../src/main/engine/planDraft";
+import { parsePlanDraft, staticPreflight, planApproval } from "../../src/main/engine/planDraft";
+import type { PlanDraft } from "../../src/shared/types";
 
 // A minimal well-formed tasks.json (one task, one acceptance command, no edges).
 const valid = () => JSON.stringify({
@@ -159,5 +160,66 @@ describe("staticPreflight", () => {
         const v = staticPreflight(r.draft, ctx);
         expect(v).toHaveLength(3);
         expect(v.filter((x) => x.level === "warn").map((x) => x.command)).toEqual(["npm run nope"]);
+    });
+});
+
+describe("planApproval — topo sort + slug→id resolution", () => {
+    const parse = (tasks: unknown[]): PlanDraft => {
+        const r = parsePlanDraft(JSON.stringify({ planTitle: "p", tasks }));
+        if (!r.ok) throw new Error("bad fixture: " + r.errors.join("; "));
+        return r.draft;
+    };
+    // A deterministic id generator: id-1, id-2, … one per task, in call order.
+    const gen = () => { let n = 0; return () => `id-${++n}`; };
+
+    it("emits one insert per task, assigning a fresh id, preserving fields", () => {
+        const draft = parse([{ slug: "t1", title: "T", intent: "build", acceptance: ["npm run check"], scopeHint: "src/**" }]);
+        const inserts = planApproval(draft, gen());
+        expect(inserts).toHaveLength(1);
+        expect(inserts[0]).toMatchObject({ id: "id-1", slug: "t1", title: "T", intent: "build", acceptance: ["npm run check"], scopeHint: "src/**", dependsOn: [] });
+    });
+
+    it("orders a child after its parent and resolves the edge slug to the parent's id", () => {
+        const draft = parse([
+            { slug: "t1", title: "A", intent: "i", acceptance: ["x"] },
+            { slug: "t2", title: "B", intent: "i", acceptance: ["x"], dependsOn: ["t1"] },
+        ]);
+        const inserts = planApproval(draft, gen());
+        expect(inserts.map((i) => i.slug)).toEqual(["t1", "t2"]);
+        const [t1, t2] = inserts;
+        expect(t2.dependsOn).toEqual([t1.id]);
+    });
+
+    it("reorders parent-first even when the draft lists the child first", () => {
+        const draft = parse([
+            { slug: "child", title: "C", intent: "i", acceptance: ["x"], dependsOn: ["parent"] },
+            { slug: "parent", title: "P", intent: "i", acceptance: ["x"] },
+        ]);
+        const inserts = planApproval(draft, gen());
+        expect(inserts.map((i) => i.slug)).toEqual(["parent", "child"]);
+        expect(inserts[1].dependsOn).toEqual([inserts[0].id]);
+    });
+
+    it("resolves a diamond (t4 waits on t2+t3, both on t1) with every edge pointing at a real id", () => {
+        const draft = parse([
+            { slug: "t1", title: "1", intent: "i", acceptance: ["x"] },
+            { slug: "t2", title: "2", intent: "i", acceptance: ["x"], dependsOn: ["t1"] },
+            { slug: "t3", title: "3", intent: "i", acceptance: ["x"], dependsOn: ["t1"] },
+            { slug: "t4", title: "4", intent: "i", acceptance: ["x"], dependsOn: ["t2", "t3"] },
+        ]);
+        const inserts = planApproval(draft, gen());
+        const order = inserts.map((i) => i.slug);
+        expect(order[0]).toBe("t1");
+        expect(order.at(-1)).toBe("t4");
+        const idOf = Object.fromEntries(inserts.map((i) => [i.slug, i.id]));
+        // Every emitted edge points at a real sibling id, and appears earlier in the list (a valid topo order).
+        inserts.forEach((ins, idx) => {
+            for (const dep of ins.dependsOn) {
+                const parentIdx = inserts.findIndex((x) => x.id === dep);
+                expect(parentIdx).toBeGreaterThanOrEqual(0);
+                expect(parentIdx).toBeLessThan(idx);
+            }
+        });
+        expect(inserts.find((i) => i.slug === "t4")!.dependsOn.sort()).toEqual([idOf.t2, idOf.t3].sort());
     });
 });

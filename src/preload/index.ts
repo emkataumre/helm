@@ -35,5 +35,6 @@ const api: HelmApi = {
     // M10 plan ingestion.
     openPlanner: (projectId) => ipcRenderer.invoke("plans:openPlanner", projectId),
     onPlanChanged: (cb) => { ipcRenderer.on("plan:changed", (_e, projectId: string, state) => cb(projectId, state)); },
+    approvePlan: (projectId) => ipcRenderer.invoke("plans:approve", projectId),
 };
 contextBridge.exposeInMainWorld("helm", api);
