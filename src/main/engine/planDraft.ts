@@ -152,6 +152,17 @@ export function planApproval(draft: PlanDraft, genId: () => string): PlanInsert[
     return inserts;
 }
 
+// The approve decision core (pure, thin-executor idiom): parse tasks.json from disk, and ONLY on success
+// produce the plan + its topo-ordered, id-resolved inserts. A parse failure yields NO inserts — the ipc
+// executor's DB transaction never runs, so a parse-invalid draft can never produce rows (approve-only-valid).
+// prdText is passed through (missing → "" so approve isn't wedged; the ipc surfaces the warn).
+export interface ApprovalPlan { planTitle: string; prdText: string; inserts: PlanInsert[]; }
+export function approveFromTasksJson(tasksJson: string, prdText: string | null, genId: () => string): { ok: true; plan: ApprovalPlan } | { ok: false; errors: string[] } {
+    const parsed = parsePlanDraft(tasksJson);
+    if (!parsed.ok) return { ok: false, errors: parsed.errors };
+    return { ok: true, plan: { planTitle: parsed.draft.planTitle, prdText: prdText ?? "", inserts: planApproval(parsed.draft, genId) } };
+}
+
 // Kahn's algorithm, ties broken by draft order (stable + deterministic). A residual cycle (should be impossible
 // post-parse) falls back to appending the unordered remainder in draft order — planApproval never hangs.
 function topoSort(tasks: PlanDraftTask[]): PlanDraftTask[] {

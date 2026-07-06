@@ -18,7 +18,7 @@ import { runPromoteStage, finalizePromotion, type PromoteStageDeps, type Finaliz
 import { runAcceptance } from "./engine/acceptance";
 import { ensureRalphExcluded, ensureHelmExcluded, writeRalphFiles } from "./engine/ralph";
 import { watchPlanDir, readPlanFiles, buildPlanRailState } from "./engine/planWatcher";
-import { parsePlanDraft, planApproval, type PreflightCtx } from "./engine/planDraft";
+import { approveFromTasksJson, type PreflightCtx } from "./engine/planDraft";
 import { runCheck } from "./engine/check";
 import { run } from "./engine/exec";
 import { spawnAgent } from "./engine/spawn";
@@ -399,24 +399,21 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
         const dir = planDirFor(project.repoPath);
         const files = readPlanFiles(dir);
         if (files.tasksJson == null) return { ok: false, errors: ["no tasks.json in .helm/plan/ to approve"] };
-        const parsed = parsePlanDraft(files.tasksJson);
-        if (!parsed.ok) return { ok: false, errors: parsed.errors };
 
-        const warnings: string[] = [];
-        const prdText = files.prdText ?? "";
-        if (files.prdText == null) warnings.push("no prd.md in .helm/plan/ — stored an empty PRD for this plan");
+        const approved = approveFromTasksJson(files.tasksJson, files.prdText, () => randomUUID());
+        if (!approved.ok) return { ok: false, errors: approved.errors }; // parse-invalid → NO rows
 
-        const inserts = planApproval(parsed.draft, () => randomUUID());
+        const warnings = files.prdText == null ? ["no prd.md in .helm/plan/ — stored an empty PRD for this plan"] : [];
         db.transaction(() => {
-            const plan = insertPlan(db, { projectId, title: parsed.draft.planTitle, prdText });
-            for (const ins of inserts) insertPlanTask(db, { ...ins, projectId, planId: plan.id });
+            const plan = insertPlan(db, { projectId, title: approved.plan.planTitle, prdText: approved.plan.prdText });
+            for (const ins of approved.plan.inserts) insertPlanTask(db, { ...ins, projectId, planId: plan.id });
         })();
 
         clearPlanDir(dir);
         getWindow()?.webContents.send("plan:changed", projectId, readPlanRailState(project.repoPath));
         notify();
         scheduler.kick();
-        return { ok: true, count: inserts.length, warnings };
+        return { ok: true, count: approved.plan.inserts.length, warnings };
     });
 
     // ── M6 ① boot reconcile (spec §4 "process death is cheap") ────────────────────────────────────

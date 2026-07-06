@@ -16,8 +16,9 @@ import { HandbackActions } from "../../src/renderer/components/HandbackActions";
 import { PromoteResultPanel } from "../../src/renderer/components/PromoteResultPanel";
 import { TerminalPane } from "../../src/renderer/components/TerminalPane";
 import { TerminalTabs } from "../../src/renderer/components/TerminalTabs";
+import { PlanRail, PlanStageTracker, PlanDraftCards } from "../../src/renderer/components/PlanRail";
 import { parseProgress } from "../../src/renderer/progress";
-import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse, PtySession, PtySessionInfo } from "../../src/shared/types";
+import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState } from "../../src/shared/types";
 
 const schedState = (over: Partial<SchedulerState> = {}): SchedulerState =>
     ({ paused: false, perProject: [{ projectId: "p1", running: 2, cap: 3 }], ...over });
@@ -363,5 +364,61 @@ describe("ProgressPanel contract", () => {
     it("reports unavailable when there is no progress file", () => {
         const html = renderToStaticMarkup(<ProgressPanel progress={null} />);
         expect(html).toContain('data-verify-available="false"');
+    });
+});
+
+describe("PlanRail contract (M10 planner side rail)", () => {
+    const validParse: PlanRailState["parse"] = { ok: true, draft: { planTitle: "p", tasks: [
+        { slug: "t1", title: "Foundation", intent: "build the thing", acceptance: ["npm run check", "npm run verify:trays"], scopeHint: null, dependsOn: [] },
+        { slug: "t2", title: "Rail", intent: "render it", acceptance: ["npm run check"], scopeHint: null, dependsOn: ["t1"] },
+    ] } };
+    const verdicts: PlanRailState["verdicts"] = [
+        { taskSlug: "t1", command: "npm run check", level: "ok" },
+        { taskSlug: "t1", command: "npm run verify:trays", level: "warn", reason: "no npm script \"verify:trays\"", suggestion: "verify:tray" },
+        { taskSlug: "t2", command: "npm run check", level: "ok" },
+    ];
+    const validRail: PlanRailState = { stage: "tasks", prdText: "# PRD\nbody", parse: validParse, verdicts };
+    const invalidRail: PlanRailState = { stage: "tasks", prdText: null, parse: { ok: false, errors: ["planTitle must be a non-empty string"] }, verdicts: [] };
+
+    it("PlanStageTracker stamps the stage and marks exactly the active step (◂ now)", () => {
+        const html = renderToStaticMarkup(<PlanStageTracker stage="prd" />);
+        expect(html).toContain('data-verify-unit="PlanStageTracker"');
+        expect(html).toContain('data-verify-stage="prd"');
+        expect(html).toContain("PRD drafted ◂ now"); // the active step, readable off the DOM
+        expect(html).not.toContain("Tasks drafted ◂ now"); // a later, inactive step is not marked
+    });
+
+    it("PlanDraftCards (valid) stamps task + warn counts and shows the ⚠ + did-you-mean", () => {
+        const html = renderToStaticMarkup(<PlanDraftCards parse={validParse} verdicts={verdicts} />);
+        expect(html).toContain('data-verify-unit="PlanDraftCards"');
+        expect(html).toContain('data-verify-state="valid"');
+        expect(html).toContain('data-verify-tasks="2"');
+        expect(html).toContain('data-verify-warns="1"');
+        expect(html).toContain("⚠");
+        expect(html).toContain("did you mean");
+        expect(html).toContain("verify:tray");        // the suggested script
+        expect(html).toContain("depends on: t1");      // the edge by slug
+    });
+
+    it("PlanDraftCards (invalid) stamps state=invalid + error count and lists the errors verbatim", () => {
+        const html = renderToStaticMarkup(<PlanDraftCards parse={invalidRail.parse} verdicts={[]} />);
+        expect(html).toContain('data-verify-state="invalid"');
+        expect(html).toContain('data-verify-errors="1"');
+        expect(html).toContain("planTitle must be a non-empty string");
+    });
+
+    it("PlanRail ENABLES Approve for a valid non-empty draft (can-approve=true)", () => {
+        const html = renderToStaticMarkup(<PlanRail state={validRail} onApprove={() => {}} />);
+        expect(html).toContain('data-verify-unit="PlanRail"');
+        expect(html).toContain('data-verify-can-approve="true"');
+        expect(html).toContain('data-verify-tasks="2"');
+        expect(html).toContain("Approve"); // the button; not disabled
+        expect(html).not.toContain('disabled=""');
+    });
+
+    it("PROBE: PlanRail DISABLES Approve while the draft is parse-invalid (can-approve=false)", () => {
+        const html = renderToStaticMarkup(<PlanRail state={invalidRail} onApprove={() => {}} />);
+        expect(html).toContain('data-verify-can-approve="false"');
+        expect(html).toContain('disabled=""'); // approve blocked while invalid
     });
 });
