@@ -102,6 +102,18 @@ export interface PreflightVerdict {
     suggestion?: string;  // did-you-mean: the closest existing npm script (npm-run warns only)
 }
 
+// The live side-rail state main pushes to the renderer on every .helm/plan/ change (plan:changed). `stage`
+// is derived PURELY from which files exist (conversing = neither; prd = prd.md only; tasks = tasks.json
+// present, even if malformed). `parse` is null until tasks.json lands; `verdicts` are the static pre-flight
+// (only when parse.ok). One active plan per project, so one rail state per project.
+export type PlanStage = "conversing" | "prd" | "tasks";
+export interface PlanRailState {
+    stage: PlanStage;
+    prdText: string | null;
+    parse: { ok: true; draft: PlanDraft } | { ok: false; errors: string[] } | null;
+    verdicts: PreflightVerdict[];
+}
+
 export interface Iteration {
     id: string;
     taskId: string;
@@ -321,4 +333,9 @@ export interface HelmApi {
     onPtyExit: (cb: (id: string, code: number) => void) => () => void;
     onTasksChanged: (cb: () => void) => void;
     onSnapshotChanged: (cb: (taskId: string) => void) => void;
+    // M10 plan ingestion. openPlanner ensures .helm/plan/ + the git-exclude, starts the live watcher, and
+    // creates/reuses the HUMAN planner PTY (kind "planner"); returns that session + the initial rail state.
+    // onPlanChanged pushes the live rail state (per project) as the session writes prd.md/tasks.json.
+    openPlanner: (projectId: string) => Promise<{ session: PtySession; state: PlanRailState } | null>;
+    onPlanChanged: (cb: (projectId: string, state: PlanRailState) => void) => void;
 }

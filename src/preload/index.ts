@@ -32,5 +32,8 @@ const api: HelmApi = {
     onPtyExit: (cb) => { const h = (_e: unknown, id: string, code: number) => cb(id, code); ipcRenderer.on("pty:exit", h); return () => { ipcRenderer.removeListener("pty:exit", h); }; },
     onTasksChanged: (cb) => { ipcRenderer.on("tasks:changed", () => cb()); },
     onSnapshotChanged: (cb) => { ipcRenderer.on("snapshot:changed", (_e, taskId: string) => cb(taskId)); },
+    // M10 plan ingestion.
+    openPlanner: (projectId) => ipcRenderer.invoke("plans:openPlanner", projectId),
+    onPlanChanged: (cb) => { ipcRenderer.on("plan:changed", (_e, projectId: string, state) => cb(projectId, state)); },
 };
 contextBridge.exposeInMainWorld("helm", api);

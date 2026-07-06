@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureRalphExcluded, writeRalphFiles } from "../../src/main/engine/ralph";
+import { ensureRalphExcluded, ensureHelmExcluded, writeRalphFiles } from "../../src/main/engine/ralph";
 
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "helm-ralph-")); });
@@ -17,6 +17,16 @@ describe("ensureRalphExcluded", () => {
         ensureRalphExcluded(root);
         const body = readFileSync(join(root, ".git", "info", "exclude"), "utf8");
         expect(body.split(/\r?\n/).filter((l) => l.trim() === ".ralph/").length).toBe(1);
+    });
+});
+
+describe("ensureHelmExcluded", () => {
+    it("adds .helm/ to .git/info/exclude exactly once (idempotent), tolerant of a missing file", () => {
+        mkdirSync(join(root, ".git", "info"), { recursive: true }); // no exclude file yet
+        ensureHelmExcluded(root);
+        ensureHelmExcluded(root);
+        const body = readFileSync(join(root, ".git", "info", "exclude"), "utf8");
+        expect(body.split(/\r?\n/).filter((l) => l.trim() === ".helm/").length).toBe(1);
     });
 });
 

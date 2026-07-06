@@ -2,7 +2,7 @@
 import { ipcMain, Notification, type BrowserWindow } from "electron";
 import { app } from "electron";
 import { join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject, deleteProject } from "./db/projects";
 import { insertTask, listTasks, getTask, updateTask, setDependsOn } from "./db/tasks";
@@ -14,7 +14,9 @@ import { commitAll, squashMergeInto, diffStat, headSha, advanceBranch, fetchRemo
 import { runMergeStage, type MergeStageDeps } from "./engine/mergeStage";
 import { runPromoteStage, finalizePromotion, type PromoteStageDeps, type FinalizeDeps } from "./engine/promote";
 import { runAcceptance } from "./engine/acceptance";
-import { ensureRalphExcluded, writeRalphFiles } from "./engine/ralph";
+import { ensureRalphExcluded, ensureHelmExcluded, writeRalphFiles } from "./engine/ralph";
+import { watchPlanDir, readPlanFiles, buildPlanRailState } from "./engine/planWatcher";
+import type { PreflightCtx } from "./engine/planDraft";
 import { runCheck } from "./engine/check";
 import { run } from "./engine/exec";
 import { spawnAgent } from "./engine/spawn";
@@ -32,7 +34,7 @@ import { launchTerminal, buildDropinArgv } from "./engine/terminalLaunch";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
 import { createPtyManager } from "./engine/ptyManager";
 import { nodePtyFactory } from "./engine/nodePtyFactory";
-import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession } from "../shared/types";
+import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession, PlanRailState } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
@@ -49,6 +51,19 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
     // (disposePtys, returned to index.ts) — a window-hide must NOT kill them (main-process residency).
     const ptyManager = createPtyManager(nodePtyFactory);
     ptyManager.onExit((id, code) => getWindow()?.webContents.send("pty:exit", id, code));
+
+    // M10 plan ingestion: one live .helm/plan/ watcher per project (dispose fns), started lazily by
+    // plans:openPlanner and torn down on Quit. The rail-state ctx reads package.json scripts + a fileExists
+    // probe FRESH from the repo each fire (staticPreflight is a pure fn of that ctx).
+    const planWatchers = new Map<string, () => void>();
+    const planDirFor = (repoPath: string) => join(repoPath, ".helm", "plan");
+    const planCtx = (repoPath: string): PreflightCtx => {
+        let npmScripts: string[] = [];
+        try { npmScripts = Object.keys((JSON.parse(readFileSync(join(repoPath, "package.json"), "utf8")) as { scripts?: Record<string, string> }).scripts ?? {}); }
+        catch { /* no package.json / unreadable → no scripts to match against */ }
+        return { npmScripts, fileExists: (p) => existsSync(join(repoPath, p)) };
+    };
+    const readPlanRailState = (repoPath: string): PlanRailState => buildPlanRailState(readPlanFiles(planDirFor(repoPath)), planCtx(repoPath));
 
     // Forward-declared so startTask can close over the scheduler it itself is driven by (the merge
     // mutex lives on the scheduler, shared across a project's task loops).
@@ -339,6 +354,32 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
     ipcMain.handle("pty:attach", (_e, id: string) => { ptyManager.attach(id, (chunk) => getWindow()?.webContents.send("pty:data", id, chunk)); });
     ipcMain.handle("pty:detach", (_e, id: string) => { ptyManager.detach(id); });
 
+    // ── M10 plan ingestion (spec §3) ──────────────────────────────────────────────────────────────
+    // Open (or reuse) a project's planner: ensure the .helm/plan/ drop dir + git-exclude .helm/, start the
+    // live watcher (pushes plan:changed as prd.md/tasks.json land), and create-or-reuse the HUMAN planner
+    // PTY (kind "planner", cwd repoPath, a resilient `pwsh -NoExit` wrapping `claude`, default permission
+    // mode — NOT through spawn.ts). Returns that session + the initial rail state so the view renders at once.
+    ipcMain.handle("plans:openPlanner", (_e, projectId: string): { session: PtySession; state: PlanRailState } | null => {
+        const project = getProject(db, projectId);
+        if (!project) return null;
+        const dir = planDirFor(project.repoPath);
+        mkdirSync(dir, { recursive: true });
+        ensureHelmExcluded(project.repoPath);
+
+        if (!planWatchers.has(projectId)) {
+            planWatchers.set(projectId, watchPlanDir(dir, () => {
+                getWindow()?.webContents.send("plan:changed", projectId, readPlanRailState(project.repoPath));
+            }));
+        }
+
+        const alive = ptyManager.list().find((s) => s.kind === "planner" && s.projectId === projectId && s.alive);
+        let session: PtySession;
+        if (alive) { const { alive: _a, ...meta } = alive; session = meta; }
+        else session = ptyManager.create({ cwd: project.repoPath, argv: ["pwsh.exe", "-NoExit", "-Command", "claude"], kind: "planner", title: `${project.name} — plan`, projectId });
+
+        return { session, state: readPlanRailState(project.repoPath) };
+    });
+
     // ── M6 ① boot reconcile (spec §4 "process death is cheap") ────────────────────────────────────
     // Close out the interrupted turn's still-open iteration: mark it FAILED, and — critically — leave
     // sessionId NULL (the M5 resume-guard: a crash-killed turn persisted no resumable claude session, so
@@ -440,7 +481,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
         return () => clearInterval(id);
     }
 
-    // Handed to index.ts's before-quit: a real Quit kills every live PTY session (no orphan pwsh/conhost).
-    // A window-hide (M6-④ tray) must NOT call this — sessions keep running in the main process.
-    return { disposePtys: () => ptyManager.disposeAll() };
+    // Handed to index.ts's before-quit: a real Quit kills every live PTY session (no orphan pwsh/conhost)
+    // and closes every plan watcher (M10). A window-hide (M6-④ tray) must NOT call this — sessions + watchers
+    // keep running in the main process.
+    return { disposePtys: () => { for (const dispose of planWatchers.values()) dispose(); planWatchers.clear(); ptyManager.disposeAll(); } };
 }
