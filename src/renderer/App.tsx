@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession, PtySessionInfo } from "../shared/types";
+import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState } from "../shared/types";
+import { PlanRail } from "./components/PlanRail";
 import { TokenReadout } from "./components/TokenReadout";
 import { IterationHistory } from "./components/IterationHistory";
 import { ActivityFeed } from "./components/ActivityFeed";
@@ -39,6 +40,12 @@ export function App() {
     const [terms, setTerms] = useState<PtySessionInfo[]>([]);
     const [activeTerm, setActiveTerm] = useState<string | null>(null);
     const [termOpen, setTermOpen] = useState(true);
+    // M10 planner: the open planner view (one project at a time) + the live rail state per project (pushed via
+    // onPlanChanged as the session writes .helm/plan/). The planner PTY lives in its OWN dedicated view (a
+    // TerminalPane beside the rail), never in the bottom terminal host — so "planner"-kind sessions are filtered
+    // out of `terms`.
+    const [planner, setPlanner] = useState<{ projectId: string; session: PtySession } | null>(null);
+    const [railStates, setRailStates] = useState<Record<string, PlanRailState>>({});
 
     // Open/focus a session as a tab (a Drop-in return or a [+ terminal] create). upsertTab is idempotent,
     // so re-opening a live session just re-focuses it.
@@ -55,6 +62,22 @@ export function App() {
         window.helm.ptyCreate({ cwd: t.worktreePath, argv: FREE_SHELL_ARGV, kind: "free", title: `${t.title} — shell`, taskId: t.id, projectId: t.projectId }).then(showTerm);
     }, [showTerm]);
 
+    // M10: open (or reuse) a project's planner. openPlanner ensures the drop dir + watcher and returns the
+    // planner PTY session + the current rail state; we seed the rail and switch to the dedicated planner view.
+    const openPlanner = useCallback((p: Project) => {
+        window.helm.openPlanner(p.id).then((r) => {
+            if (!r) return;
+            setRailStates((m) => ({ ...m, [p.id]: r.state }));
+            setPlanner({ projectId: p.id, session: r.session });
+        });
+    }, []);
+    // Approve → the engine re-validates from disk, births the rows, clears the dir. On success, route back to
+    // the board (the tasks now sit queued/blocked). A parse-invalid draft can't reach here — the button is
+    // disabled — but if it somehow does, the rail already shows the errors, so we just stay put.
+    const approvePlan = useCallback((projectId: string) => {
+        window.helm.approvePlan(projectId).then((r) => { if (r.ok) { setPlanner(null); refresh(); } });
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
     const refresh = useCallback(async () => {
         setProjects(await window.helm.listProjects());
         setTasks(await window.helm.listTasks());
@@ -63,8 +86,12 @@ export function App() {
 
     useEffect(() => {
         refresh(); refreshSched();
-        window.helm.ptyList().then(setTerms); // repopulate the tab strip on (re)mount — sessions live in main
+        // Repopulate the bottom tab strip on (re)mount — sessions live in main. Planner-kind sessions have
+        // their own dedicated view, so they never join the bottom host.
+        window.helm.ptyList().then((all) => setTerms(all.filter((s) => s.kind !== "planner")));
         window.helm.onTasksChanged(() => { refresh(); refreshSched(); });
+        // M10: the live plan rail — subscribe ONCE (app-singleton), stash the latest state per project.
+        window.helm.onPlanChanged((projectId, state) => setRailStates((m) => ({ ...m, [projectId]: state })));
         window.helm.onSnapshotChanged(async (taskId) => {
             const snap = await window.helm.getVerifyState(taskId);
             if (snap?.currentIteration) setLive((m) => ({ ...m, [taskId]: snap.currentIteration!.latestActivity }));
@@ -102,6 +129,14 @@ export function App() {
 
             {selectedTask ? (
                 <TaskDetail task={selectedTask} onClose={() => setSelected(null)} onAction={refresh} />
+            ) : planner ? (
+                <PlannerView
+                    projectName={names[planner.projectId] ?? planner.projectId}
+                    session={planner.session}
+                    state={railStates[planner.projectId]}
+                    onClose={() => setPlanner(null)}
+                    onApprove={() => approvePlan(planner.projectId)}
+                />
             ) : (
                 <>
                     <RegisterProjectForm onDone={refresh} />
@@ -127,6 +162,15 @@ export function App() {
                             <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, textTransform: "uppercase", color: "#788C5D" }}>Terminals (free shell in repo)</span>
                             {projects.map((p) => (
                                 <button key={p.id} onClick={() => newProjectTerminal(p)} title={`Open a pwsh shell in ${p.repoPath}`}>+ {p.name}</button>
+                            ))}
+                        </div>
+                    ) : null}
+
+                    {projects.length > 0 ? (
+                        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                            <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, textTransform: "uppercase", color: "#788C5D" }}>Plan (embedded session → draft tasks)</span>
+                            {projects.map((p) => (
+                                <button key={p.id} onClick={() => openPlanner(p)} title={`Open the planner for ${p.name} (an embedded claude session + live side rail)`}>Plan: {p.name}</button>
                             ))}
                         </div>
                     ) : null}
@@ -208,6 +252,33 @@ function TerminalHost({ terms, activeId, open, onFocus, onClose, onToggleOpen }:
                 ) : null}
             </div>
         </>
+    );
+}
+
+// M10 planner view: the grill's chosen shape — the embedded human session (a TerminalPane over the planner
+// PTY) on the left, the live side rail on the right. The rail materializes the PRD + draft cards + verdicts as
+// the session writes .helm/plan/; Approve queues the tasks and routes back to the board. Keyed by session id so
+// switching projects remounts the pane (re-attach + scrollback replay).
+function PlannerView({ projectName, session, state, onClose, onApprove }: {
+    projectName: string;
+    session: PtySession;
+    state: PlanRailState | undefined;
+    onClose: () => void;
+    onApprove: () => void;
+}) {
+    return (
+        <div style={{ display: "grid", gap: 14 }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <button onClick={onClose}>← board</button>
+                <h2 style={{ fontFamily: "ui-serif, Georgia, serif", margin: 0 }}>Plan — {projectName}</h2>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }}>
+                <div style={{ height: 520, minHeight: 0 }}>
+                    <TerminalPane key={session.id} session={session} />
+                </div>
+                {state ? <PlanRail state={state} onApprove={onApprove} /> : <div style={{ color: "#888" }}>Loading plan…</div>}
+            </div>
+        </div>
     );
 }
 
