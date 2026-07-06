@@ -74,6 +74,34 @@ export interface Plan {
     createdAt: number;
 }
 
+// ── M10 plan drafts (the .helm/plan/tasks.json seam — spec §3/§6) ─────────────────────────────────
+// A PlanDraft is the PARSED, validated in-memory shape of tasks.json — it lives file-side only (the DB never
+// holds drafts; rows are born at approve). Shared so the renderer's side rail renders it and the verify slice
+// asserts on it. `dependsOn` here is SIBLING SLUGS (unique within the file); approve resolves them to real ids.
+export interface PlanDraftTask {
+    slug: string;              // unique within the file; the edge-graph node id
+    title: string;
+    intent: string;            // prose directive — what to build (the §6 intent)
+    acceptance: string[];      // mandatory, non-empty, separately-runnable commands (the §6 mantra)
+    scopeHint: string | null;  // optional per-task scope clause
+    dependsOn: string[];       // sibling slugs this task waits on (resolved to ids at approve)
+}
+export interface PlanDraft {
+    planTitle: string;
+    tasks: PlanDraftTask[];
+}
+
+// One static pre-flight judgement of ONE acceptance command of ONE task. `warn` never blocks approve by
+// itself (a task may legitimately create its own verify script — the grill's nuance); only PARSE failures
+// block. `suggestion` is a cheap did-you-mean (closest npm script) when a `npm run X` names an unknown script.
+export interface PreflightVerdict {
+    taskSlug: string;
+    command: string;
+    level: "ok" | "warn";
+    reason?: string;      // why it warns, human-readable
+    suggestion?: string;  // did-you-mean: the closest existing npm script (npm-run warns only)
+}
+
 export interface Iteration {
     id: string;
     taskId: string;
