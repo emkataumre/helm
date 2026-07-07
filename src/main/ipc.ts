@@ -37,14 +37,24 @@ import { launchTerminal, buildDropinArgv } from "./engine/terminalLaunch";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
 import { createPtyManager } from "./engine/ptyManager";
 import { nodePtyFactory } from "./engine/nodePtyFactory";
+import { deriveTrayCounts, formatTrayTooltip } from "./engine/trayCounts";
 import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession, PlanRailState, ApprovePlanResult, PreflightRunResult, ApproveOptions } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
-export function registerIpc(getWindow: () => BrowserWindow | null): { disposePtys: () => void } {
+// M12 tray fleet counts: index.ts passes setTrayTooltip so the SAME tasks:changed seam that nudges the
+// renderer also refreshes the tray's aggregate-count tooltip. Kept a plain string callback (Electron's Tray
+// stays in index.ts); default no-op so a caller without a tray (e.g. a test) is unaffected.
+export function registerIpc(
+    getWindow: () => BrowserWindow | null,
+    setTrayTooltip: (tooltip: string) => void = () => {},
+): { disposePtys: () => void } {
     const db = openDb(join(app.getPath("userData"), "helm.db"));
     const logsDir = join(app.getPath("userData"), "logs");
-    const notify = () => getWindow()?.webContents.send("tasks:changed");
+    // Derive the tray tooltip from the live board via the PURE trayCounts module, then hand the string to
+    // index.ts. listTasks is the same read tasks:list uses; refreshed on every notify (board mutation).
+    const refreshTray = () => setTrayTooltip(formatTrayTooltip(deriveTrayCounts(listTasks(db))));
+    const notify = () => { getWindow()?.webContents.send("tasks:changed"); refreshTray(); };
     // One live EngineSnapshot per active task; each dispatch nudges the renderer's detail view.
     const snapshots = createSnapshotStore((taskId) => getWindow()?.webContents.send("snapshot:changed", taskId));
 
@@ -576,6 +586,10 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
         }, CHECKIN_POLL_MS);
         return () => clearInterval(id);
     }
+
+    // M12: set the tray tooltip once at startup so it reflects the persisted board immediately (before any
+    // mutation). Every later board change refreshes it via notify() → refreshTray().
+    refreshTray();
 
     // Handed to index.ts's before-quit: a real Quit kills every live PTY session (no orphan pwsh/conhost)
     // and closes every plan watcher (M10). A window-hide (M6-④ tray) must NOT call this — sessions + watchers

@@ -48,6 +48,8 @@ function showWindow(): void {
 
 function createTray(): void {
     tray = new Tray(nativeImage.createFromPath(join(import.meta.dirname, "../../build/tray-icon.png")));
+    // Initial tooltip; overwritten at once by registerIpc's startup refresh with the live fleet counts
+    // (M12), then on every board change via the tasks:changed seam.
     tray.setToolTip("Helm — engine running");
     tray.setContextMenu(Menu.buildFromTemplate([
         { label: "Show Helm", click: showWindow },
@@ -57,8 +59,11 @@ function createTray(): void {
 }
 
 app.whenReady().then(() => {
-    ({ disposePtys } = registerIpc(() => mainWindow));
+    // Tray BEFORE registerIpc: registerIpc's startup refresh (and every later tasks:changed) sets the tray
+    // tooltip via the callback, so the tray must already exist. Tray stays strictly here — ipc.ts hands us a
+    // ready-made string derived by the pure trayCounts module (no Electron in that module).
     createTray();
+    ({ disposePtys } = registerIpc(() => mainWindow, (tooltip) => tray?.setToolTip(tooltip)));
     createWindow();
 });
 
