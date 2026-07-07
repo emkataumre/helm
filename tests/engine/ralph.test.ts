@@ -31,17 +31,19 @@ describe("ensureHelmExcluded", () => {
 });
 
 describe("writeRalphFiles", () => {
-    it("seeds both files, then never clobbers an agent-updated progress.md", () => {
+    it("seeds all three files, then never clobbers an agent-updated progress.md", () => {
         const wt = join(root, "wt");
         mkdirSync(wt, { recursive: true });
-        writeRalphFiles(wt, { instructions: "RITUAL", progress: "SEED" });
+        writeRalphFiles(wt, { instructions: "RITUAL", progress: "SEED", task: "DIRECTIVE" });
         expect(readFileSync(join(wt, ".ralph", "INSTRUCTIONS.md"), "utf8")).toBe("RITUAL");
         expect(readFileSync(join(wt, ".ralph", "progress.md"), "utf8")).toBe("SEED");
+        expect(readFileSync(join(wt, ".ralph", "TASK.md"), "utf8")).toBe("DIRECTIVE");
 
         // agent edits progress; a later seed must NOT overwrite it
         writeFileSync(join(wt, ".ralph", "progress.md"), "AGENT EDITED");
-        writeRalphFiles(wt, { instructions: "RITUAL", progress: "SEED" });
+        writeRalphFiles(wt, { instructions: "RITUAL", progress: "SEED", task: "DIRECTIVE" });
         expect(readFileSync(join(wt, ".ralph", "progress.md"), "utf8")).toBe("AGENT EDITED");
         expect(existsSync(join(wt, ".ralph", "INSTRUCTIONS.md"))).toBe(true);
+        expect(existsSync(join(wt, ".ralph", "TASK.md"))).toBe(true);
     });
 });

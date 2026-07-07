@@ -2,7 +2,7 @@
 import type { Project, Task, TaskStatus, IterationVerdict, SnapshotEvent, TokenTotals } from "../../shared/types";
 import type { LoopConfig } from "./loopConfig";
 import type { MergeStageResult } from "./mergeStage";
-import { buildGoalPrompt, buildInstructions, seedProgress } from "./prompt";
+import { buildGoalPrompt, buildInstructions, buildTaskDirective, seedProgress } from "./prompt";
 
 // Re-export so the reducer, the loop, and the M2 verify slice (which imports it from here) share
 // the single definition now living in shared/types.ts.
@@ -14,7 +14,7 @@ export interface RunTaskDeps {
     createWorktree: (repo: string, from: string, branch: string, worktreeDir: string) => Promise<string>;
     removeWorktree: (repo: string, path: string, branch: string, keepBranch: boolean) => Promise<void>;
     ensureRalphExcluded: (repo: string) => void;
-    writeRalphFiles: (worktreePath: string, files: { instructions: string; progress: string }) => void;
+    writeRalphFiles: (worktreePath: string, files: { instructions: string; progress: string; task: string }) => void;
     runSetup: (worktreePath: string, command: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }>;
     spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number; iterationIndex?: number; onEvent?: (e: SnapshotEvent) => void; signal?: AbortSignal }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean; usage: TokenTotals; durationMs: number | null }>;
     commitAll: (repo: string, message: string) => Promise<void>;
@@ -162,7 +162,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     // re-running setup is wasted work (and could fail on a half-edited tree).
     if (!resume) {
         d.ensureRalphExcluded(project.repoPath);
-        d.writeRalphFiles(worktreePath, { instructions: buildInstructions(), progress: seedProgress(task) });
+        d.writeRalphFiles(worktreePath, { instructions: buildInstructions(), progress: seedProgress(task), task: buildTaskDirective(task) });
 
         // Install deps into the fresh worktree once, before any iteration. A broken setup is a config
         // error the agent can't fix, so fail fast (no spawn) — the same early-terminal shape as the

@@ -27,13 +27,16 @@ export function ensureHelmExcluded(repoPath: string): void {
     ensureExcluded(repoPath, ".helm/");
 }
 
-// Seed the two .ralph files write-if-absent: INSTRUCTIONS is static, progress is owned by the
-// agent after seeding, so a cold iteration never clobbers the running notes (and it's crash-safe).
-export function writeRalphFiles(worktreePath: string, files: { instructions: string; progress: string }): void {
+// Seed the three .ralph files write-if-absent: INSTRUCTIONS and TASK are static, progress is owned
+// by the agent after seeding, so a cold iteration never clobbers the running notes (and it's
+// crash-safe). TASK.md carries the full directive the -p prompt can no longer hold (PROMPT_BUDGET).
+export function writeRalphFiles(worktreePath: string, files: { instructions: string; progress: string; task: string }): void {
     const dir = join(worktreePath, ".ralph");
     mkdirSync(dir, { recursive: true });
     const instr = join(dir, "INSTRUCTIONS.md");
     const prog = join(dir, "progress.md");
+    const taskFile = join(dir, "TASK.md");
     if (!existsSync(instr)) writeFileSync(instr, files.instructions);
     if (!existsSync(prog)) writeFileSync(prog, files.progress);
+    if (!existsSync(taskFile)) writeFileSync(taskFile, files.task);
 }

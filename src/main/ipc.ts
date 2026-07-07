@@ -11,7 +11,7 @@ import { insertTask, insertPlanTask, listTasks, getTask, updateTask, setDependsO
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "./engine/worktree";
 import { reconcile, isUnderWorktreeDir } from "./engine/reconcile";
-import { buildInstructions, seedProgress } from "./engine/prompt";
+import { buildInstructions, buildTaskDirective, seedProgress } from "./engine/prompt";
 import { commitAll, squashMergeInto, diffStat, headSha, advanceBranch, fetchRemote, countCommitsBeyond, mergeNoFf, pushBranch, revParse } from "./engine/merge";
 import { runMergeStage, type MergeStageDeps } from "./engine/mergeStage";
 import { runPromoteStage, finalizePromotion, type PromoteStageDeps, type FinalizeDeps } from "./engine/promote";
@@ -520,7 +520,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
                     const path = worktreePathFor(project.repoPath, project.worktreeDir, action.branch);
                     await addWorktreeForBranch(project.repoPath, path, action.branch);
                     ensureRalphExcluded(project.repoPath);
-                    writeRalphFiles(path, { instructions: buildInstructions(), progress: seedProgress(task) });
+                    writeRalphFiles(path, { instructions: buildInstructions(), progress: seedProgress(task), task: buildTaskDirective(task) });
                     if (project.setupCommand) await runSetup(path, project.setupCommand, config.checkTimeoutMs);
                     updateTask(db, action.taskId, { worktreePath: path, status: "queued" });
                     break;
