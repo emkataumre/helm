@@ -52,7 +52,9 @@ export function makeTargetRepo(dir: string): void {
         scripts: {
             check: 'node -e "process.exit(0)"',           // always green (Layer-A)
             "verify:content": 'node -e "process.exit(0)"', // a content-style gate
-            "verify:fail": 'node -e "process.exit(1)"',    // deliberately red
+            "verify:fail": 'node -e "process.exit(1)"',    // deliberately red (silent)
+            // M11 pre-flight: a legit gate that's RED before any work AND prints — an ok-red with an evidence tail.
+            "verify:red": "node -e \"console.error('preflight red: gate not yet satisfied'); process.exit(1)\"",
         },
     };
     writeFileSync(join(dir, "package.json"), JSON.stringify(pkg, null, 2));

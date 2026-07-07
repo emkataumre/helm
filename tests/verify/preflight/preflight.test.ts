@@ -161,3 +161,86 @@ describe("verify/preflight Task 1: the pure approve-decision core (acks by comma
         expect(approvalPermitted(reportWith([okRed("a")]), [])).toBe(true);
     });
 });
+
+// ── Task 4: the full verify slice (surface / invariants / fixtures / runner) — the CI matrix ────────────
+import { runPreflightFixture, runAll, type Verdict } from "./runner";
+import { PREFLIGHT_INVARIANTS, runPreflightInvariants } from "./invariants";
+import { PREFLIGHT_FIXTURES } from "./fixtures";
+import { runScenario, mixedAllAcked, throwsMidRun, type PreflightRecording } from "./surface";
+
+const failed = (r: PreflightRecording) => runPreflightInvariants(r).filter((c) => !c.ok).map((c) => c.name);
+
+describe("verify/preflight: the CI matrix over every fixture", () => {
+    it.each(PREFLIGHT_FIXTURES.map((f) => [f.id, f] as const))("fixture %s → PASS (observed and right)", async (_id, fixture) => {
+        expect<Verdict>((await runPreflightFixture(fixture)).verdict).toBe("PASS");
+    });
+
+    it("declares at least one probe (no all-happy-path replay)", () => {
+        expect(PREFLIGHT_FIXTURES.some((f) => f.probe)).toBe(true);
+    });
+
+    it("declares a must-FAIL probe for EACH of the four invariants", () => {
+        const probed = new Set(PREFLIGHT_FIXTURES.filter((f) => f.probe).map((f) => (f as { mustFail: string }).mustFail));
+        expect([...probed].sort()).toEqual(PREFLIGHT_INVARIANTS.map((i) => i.name).sort());
+    });
+
+    it("runAll reports a verdict for every fixture, all PASS, none BLOCKED", async () => {
+        const results = await runAll();
+        expect(results).toHaveLength(PREFLIGHT_FIXTURES.length);
+        expect(results.every((r) => r.verdict === "PASS")).toBe(true);
+        expect(results.some((r) => r.verdict === "BLOCKED")).toBe(false);
+    });
+
+    it("the evaluated invariant set equals the declared set", async () => {
+        const rec = await runScenario(mixedAllAcked());
+        expect(runPreflightInvariants(rec).map((r) => r.name).sort()).toEqual(PREFLIGHT_INVARIANTS.map((i) => i.name).sort());
+    });
+});
+
+describe("verify/preflight: the recording is the REAL stage's behaviour", () => {
+    it("mixed run (all warns acked): faithful verdicts, worktree cleaned, approval permitted, no ref touched", async () => {
+        const rec = await runScenario(mixedAllAcked());
+        expect(rec.ops).toEqual(["rev-parse", "create-worktree", "run:npm run verify:x", "run:npm run check", "run:npm run verify:nope", "remove-worktree"]);
+        expect(rec.verdicts.map((v) => v.level)).toEqual(["ok-red", "warn-already-green", "warn-missing"]);
+        expect(rec.worktreeCreated && rec.worktreeRemoved).toBe(true);
+        expect(rec.approved).toBe(true);
+        expect(failed(rec)).toEqual([]);
+    });
+
+    it("a scripted mid-run throw still cleans up the throwaway (created ∧ removed), invariants hold", async () => {
+        const rec = await runScenario(throwsMidRun());
+        expect(rec.threw).toBe(true);
+        expect(rec.worktreeCreated && rec.worktreeRemoved).toBe(true);
+        expect(failed(rec)).toEqual([]);
+    });
+});
+
+describe("verify/preflight: negative controls — each broken recording FAILS its named invariant", () => {
+    it("a ref-advancing op FAILS preflight-never-advances-refs", () => {
+        const fx = PREFLIGHT_FIXTURES.find((f) => f.id === "advances-a-ref");
+        expect(fx?.probe && failed(fx.recording)).toContain("preflight-never-advances-refs");
+    });
+    it("an exit-0 classified ok-red FAILS verdict-classification-faithful", () => {
+        const fx = PREFLIGHT_FIXTURES.find((f) => f.id === "green-classified-red");
+        expect(fx?.probe && failed(fx.recording)).toContain("verdict-classification-faithful");
+    });
+    it("a missing-script classified ok-red FAILS verdict-classification-faithful", () => {
+        const fx = PREFLIGHT_FIXTURES.find((f) => f.id === "missing-classified-red");
+        expect(fx?.probe && failed(fx.recording)).toContain("verdict-classification-faithful");
+    });
+    it("approving with an unacked warn FAILS approve-requires-acks", () => {
+        const fx = PREFLIGHT_FIXTURES.find((f) => f.id === "approved-with-unacked-warn");
+        expect(fx?.probe && failed(fx.recording)).toContain("approve-requires-acks");
+    });
+    it("a leaked worktree FAILS worktree-always-cleaned", () => {
+        const fx = PREFLIGHT_FIXTURES.find((f) => f.id === "leaked-worktree");
+        expect(fx?.probe && failed(fx.recording)).toContain("worktree-always-cleaned");
+    });
+
+    it("a verifier that throws becomes a FAIL, never a silent pass", () => {
+        const garbage = null as unknown as PreflightRecording; // property access throws inside predicates
+        const results = runPreflightInvariants(garbage);
+        expect(results.every((r) => typeof r.ok === "boolean")).toBe(true);
+        expect(results.some((r) => !r.ok)).toBe(true);
+    });
+});
