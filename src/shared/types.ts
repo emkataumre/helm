@@ -121,6 +121,40 @@ export type ApprovePlanResult =
     | { ok: true; count: number; warnings: string[] }
     | { ok: false; errors: string[] };
 
+// ── M11 dynamic pre-flight (spec §3/§6) ───────────────────────────────────────────────────────────
+// The DYNAMIC verdict for ONE deduped acceptance command, run once in a throwaway worktree off the
+// integration tip (static pre-flight only reads names; this executes). Three levels the approve grill fixed:
+//  · "ok-red"             — non-zero exit WITH real output: the EXPECTED good case (TDD-red — the proof fails
+//                           before any work exists, so it can actually gate the task). Never needs an ack.
+//  · "warn-already-green" — exit 0 BEFORE any work: the gate passes pre-work, so it can't prove the task (the
+//                           fake-green lesson, at the plan layer). Needs an explicit ack.
+//  · "warn-missing"       — the command couldn't run (spawn failure / shell not-found / npm missing-script,
+//                           disambiguated by cross-checking M10's static verdict): the task MAY create it.
+//                           Needs an explicit ack; carries the static reason/did-you-mean when it has one.
+export type PreflightLevel = "ok-red" | "warn-already-green" | "warn-missing";
+export interface PreflightCommandVerdict {
+    command: string;
+    taskSlugs: string[];       // every task whose acceptance references this (deduped) command
+    level: PreflightLevel;
+    exitCode: number | null;   // the command's exit code; null = never spawned (a setup/spawn failure)
+    tail: string;              // a short evidence tail of the command's output
+    reason?: string;           // warn-missing: the static reason (e.g. no npm script "X")
+    suggestion?: string;       // warn-missing: the did-you-mean carried over from the static verdict
+}
+export interface PreflightReport {
+    ran: boolean;              // false only if the run short-circuited (parse-invalid — never reaches here)
+    verdicts: PreflightCommandVerdict[];
+    warnCount: number;         // verdicts needing an ack (warn-*); Confirm unlocks only when all are acked
+}
+// plans:preflight re-reads + re-validates from disk before running; a still-invalid draft yields errors
+// (parse-FAILs hard-block, exactly like approve), never a half-built report.
+export type PreflightRunResult =
+    | { ok: true; report: PreflightReport }
+    | { ok: false; errors: string[] };
+// Approve's second phase carries the human's acks (by command string) + the explicit Skip escape. The ipc
+// re-runs pre-flight from disk and re-asserts every warn is acked — the renderer's report is never trusted.
+export interface ApproveOptions { acks?: string[]; skipPreflight?: boolean }
+
 export interface Iteration {
     id: string;
     taskId: string;
