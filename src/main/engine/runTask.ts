@@ -16,7 +16,9 @@ export interface RunTaskDeps {
     ensureRalphExcluded: (repo: string) => void;
     writeRalphFiles: (worktreePath: string, files: { instructions: string; progress: string }) => void;
     runSetup: (worktreePath: string, command: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }>;
-    spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number; iterationIndex?: number; onEvent?: (e: SnapshotEvent) => void; signal?: AbortSignal }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean; usage: TokenTotals; durationMs: number | null }>;
+    // deniedCommands is OPTIONAL (absent = []): the structured permission_denials keys off the result event.
+    // Optional keeps every existing spawn fake (which omits it) valid; only the deny fail-fast breaker reads it.
+    spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number; iterationIndex?: number; onEvent?: (e: SnapshotEvent) => void; signal?: AbortSignal }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean; usage: TokenTotals; durationMs: number | null; deniedCommands?: string[] }>;
     commitAll: (repo: string, message: string) => Promise<void>;
     headSha: (repo: string) => Promise<string>;
     runCheck: (worktreePath: string, checkCommand: string, timeoutMs: number) => Promise<{ green: boolean; timedOut: boolean; output: string }>;
@@ -45,6 +47,9 @@ export interface IterationOutcome {
     sessionId: string | null;
     usage: TokenTotals;   // this iteration's token totals (from spawn's result event)
     durationMs: number | null;
+    // M12 deny fail-fast: the normalized permission_denials keys this iteration's spawn reported (absent = []).
+    // The loop streaks these across CONSECUTIVE iterations to escalate a hard wall to needs-human early.
+    deniedCommands?: string[];
 }
 
 const TAIL = 1500;
@@ -67,7 +72,7 @@ export async function runIteration(
         onEvent: (e) => d.emit?.(e),
         signal: d.signal, // M5: a drop-in hard-kills this session via the existing killTree
     });
-    const base = { usage: agent.usage, durationMs: agent.durationMs, sessionId: agent.sessionId };
+    const base = { usage: agent.usage, durationMs: agent.durationMs, sessionId: agent.sessionId, deniedCommands: agent.deniedCommands ?? [] };
     await d.commitAll(ctx.worktreePath, `ralph: iter ${ctx.index} — ${task.title}`);
     const commitSha = await d.headSha(ctx.worktreePath);
 
@@ -177,6 +182,9 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     let lastGateSummary = ""; // one-liner from the most recent failing gate — folded into the terminal reason
     let prevSha = await d.headSha(worktreePath); // baseSha — the worktree tip before any iteration
     let noProgress = 0;
+    // M12 deny fail-fast: per-key streak of CONSECUTIVE iterations whose spawn reported that permissions.deny
+    // key. Reaching denyWallK escalates a hard wall to needs-human early (before burning the full cap).
+    const denyStreak = new Map<string, number>();
 
     // The drop-in checkpoint: commit the (already-committed) partial work and hand off. commitAll
     // no-ops on a clean tree, so this is free when runIteration already committed the killed session.
@@ -223,10 +231,30 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
 
         priorFailure = o.gateOutput;
         lastGateSummary = o.gateSummary;
+
+        // M12 deny fail-fast: update the per-key consecutive-iteration deny streak. A key NOT reported this
+        // (non-green) iteration resets (the agent adapted around the wall); a key reported increments. At
+        // denyWallK consecutive hits, escalate to needs-human — checked BEFORE the no-progress breaker so the
+        // specific deny reason wins when both would fire this iteration. Commit activity does NOT suppress it
+        // (an agent committing junk around a wall is still walled).
+        const denied = o.deniedCommands ?? [];
+        const deniedSet = new Set(denied);
+        for (const key of [...denyStreak.keys()]) if (!deniedSet.has(key)) denyStreak.delete(key);
+        for (const key of denied) {
+            const n = (denyStreak.get(key) ?? 0) + 1;
+            denyStreak.set(key, n);
+            if (n >= config.denyWallK) {
+                return terminate("needs-human", `deny wall: "${key}" denied on ${n} consecutive iterations`, true);
+            }
+        }
+
         noProgress = o.commitSha === prevSha ? noProgress + 1 : 0;
         prevSha = o.commitSha;
         if (noProgress >= config.noProgressK) {
-            return terminate("needs-human", `no progress for ${config.noProgressK} iterations${lastGateSummary ? ` — last gate: ${lastGateSummary}` : ""}`, true);
+            // Courtesy: if the latest iteration was also blocked by a wall (that just hadn't reached denyWallK
+            // yet), fold the denied command(s) into the no-progress reason so the card names the real blocker.
+            const denyNote = denied.length ? ` — denied: ${denied.join(", ")}` : "";
+            return terminate("needs-human", `no progress for ${config.noProgressK} iterations${lastGateSummary ? ` — last gate: ${lastGateSummary}` : ""}${denyNote}`, true);
         }
     }
     return terminate("needs-human", `iteration cap reached (${config.iterationCap})${lastGateSummary ? ` — last gate: ${lastGateSummary}` : ""}`, true);

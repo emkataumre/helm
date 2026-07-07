@@ -22,6 +22,10 @@ export interface SpawnResult {
     usage: TokenTotals;                 // cumulative session totals from the result event (Task 1 spike)
     durationMs: number | null;
     aborted?: boolean;                  // M5: the run was killed by a drop-in (informational; loop reads signal.aborted)
+    // M12 deny fail-fast: the STRUCTURED permission_denials off the result event, normalized to one key per
+    // denial (tool_name + ":" + command). The loop streaks these to escalate a wall to needs-human early.
+    // Read only the structured array — never the mirrored user/tool_result error text (the string-match trap).
+    deniedCommands: string[];
 }
 
 // The shape of the stream-json events we read (confirmed by the build-time spike, Task 1).
@@ -40,6 +44,17 @@ interface StreamEvent {
         cache_read_input_tokens?: number;
         cache_creation_input_tokens?: number;
     };
+    // The terminal result event's STRUCTURED permission-denial records (M12). Use this array, never the
+    // mirrored error text: e.g. [{ tool_name: "Bash", tool_input: { command: "git push origin main" } }].
+    permission_denials?: Array<{ tool_name?: string; tool_use_id?: string; tool_input?: { command?: string } & Record<string, unknown> }>;
+}
+
+// Normalize one structured denial → a stable streak key: the tool plus its command (when Bash-shaped)
+// or the whole serialized input otherwise. Two iterations blocked on the same wall produce the same key.
+function denialKey(d: { tool_name?: string; tool_input?: { command?: string } & Record<string, unknown> }): string {
+    const input = d.tool_input;
+    const detail = input && typeof input.command === "string" ? input.command : JSON.stringify(input ?? {});
+    return `${d.tool_name ?? "unknown"}:${detail}`;
 }
 
 // THE single chokepoint for launching Claude. M6 swaps the `claude` invocation for
@@ -58,6 +73,7 @@ export async function spawnAgent(
     const assistantText: string[] = [];
     const usage: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0 };
     let durationMs: number | null = null;
+    let deniedCommands: string[] = [];
 
     const onLine = (line: string) => {
         opts.logSink?.(line); // every raw line, parseable or not — the durable archive
@@ -91,6 +107,10 @@ export async function spawnAgent(
             }
             if (typeof evt.total_cost_usd === "number") usage.costUsd = evt.total_cost_usd;
             if (typeof evt.duration_ms === "number") durationMs = evt.duration_ms;
+            // The structured wall: one normalized key per denial (deduped — a key can appear once per iteration).
+            if (Array.isArray(evt.permission_denials)) {
+                deniedCommands = [...new Set(evt.permission_denials.map(denialKey))];
+            }
             opts.onEvent?.({ type: "usage", index, tokens: { ...usage }, durationMs: durationMs ?? undefined, sessionId: parsedSessionId ?? sessionId });
         }
     };
@@ -116,5 +136,6 @@ export async function spawnAgent(
         usage,
         durationMs,
         aborted: res.aborted === true,
+        deniedCommands,
     };
 }
