@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState } from "../shared/types";
+import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState, PreflightReport } from "../shared/types";
 import { PlanRail } from "./components/PlanRail";
 import { TokenReadout } from "./components/TokenReadout";
 import { IterationHistory } from "./components/IterationHistory";
@@ -71,13 +71,6 @@ export function App() {
             setPlanner({ projectId: p.id, session: r.session });
         });
     }, []);
-    // Approve → the engine re-validates from disk, births the rows, clears the dir. On success, route back to
-    // the board (the tasks now sit queued/blocked). A parse-invalid draft can't reach here — the button is
-    // disabled — but if it somehow does, the rail already shows the errors, so we just stay put.
-    const approvePlan = useCallback((projectId: string) => {
-        window.helm.approvePlan(projectId).then((r) => { if (r.ok) { setPlanner(null); refresh(); } });
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
     const refresh = useCallback(async () => {
         setProjects(await window.helm.listProjects());
         setTasks(await window.helm.listTasks());
@@ -131,11 +124,12 @@ export function App() {
                 <TaskDetail task={selectedTask} onClose={() => setSelected(null)} onAction={refresh} />
             ) : planner ? (
                 <PlannerView
+                    projectId={planner.projectId}
                     projectName={names[planner.projectId] ?? planner.projectId}
                     session={planner.session}
                     state={railStates[planner.projectId]}
                     onClose={() => setPlanner(null)}
-                    onApprove={() => approvePlan(planner.projectId)}
+                    onApproved={() => { setPlanner(null); refresh(); }}
                 />
             ) : (
                 <>
@@ -255,28 +249,61 @@ function TerminalHost({ terms, activeId, open, onFocus, onClose, onToggleOpen }:
     );
 }
 
-// M10 planner view: the grill's chosen shape — the embedded human session (a TerminalPane over the planner
-// PTY) on the left, the live side rail on the right. The rail materializes the PRD + draft cards + verdicts as
-// the session writes .helm/plan/; Approve queues the tasks and routes back to the board. Keyed by session id so
+// M10/M11 planner view: the embedded human session (a TerminalPane over the planner PTY) on the left, the live
+// side rail on the right. The rail materializes the PRD + draft cards as the session writes .helm/plan/; M11
+// makes approve TWO-PHASE — [Run pre-flight] executes each acceptance command in a throwaway worktree, the
+// verdict panel lands, every ⚠ needs an ack, then [Confirm → queue]. This view owns the phase/ack state; a
+// plan:changed (the draft edited) resets it (a stale report can't be confirmed). Keyed by session id so
 // switching projects remounts the pane (re-attach + scrollback replay).
-function PlannerView({ projectName, session, state, onClose, onApprove }: {
+function PlannerView({ projectId, projectName, session, state, onClose, onApproved }: {
+    projectId: string;
     projectName: string;
     session: PtySession;
     state: PlanRailState | undefined;
     onClose: () => void;
-    onApprove: () => void;
+    onApproved: () => void;
 }) {
+    const [preflight, setPreflight] = useState<PreflightReport | "loading" | null>(null);
+    const [acks, setAcks] = useState<string[]>([]);
+    const [error, setError] = useState<string | null>(null);
+
+    // Any plan:changed (a fresh rail-state object per fire) means the draft may have changed — reset the gate so
+    // a stale report/ack set can't be confirmed. The human re-runs pre-flight against the new draft.
+    useEffect(() => { setPreflight(null); setAcks([]); setError(null); }, [state]);
+
+    const runPreflight = async () => {
+        setPreflight("loading"); setError(null);
+        const r = await window.helm.preflightPlan(projectId);
+        if (r.ok) setPreflight(r.report);
+        else { setPreflight(null); setError(r.errors.join(" · ")); }
+    };
+    const toggleAck = (command: string) => setAcks((a) => (a.includes(command) ? a.filter((c) => c !== command) : [...a, command]));
+    const confirm = async () => {
+        const r = await window.helm.approvePlan(projectId, { acks, skipPreflight: false });
+        if (r.ok) onApproved(); else setError(r.errors.join(" · "));
+    };
+    const skip = async () => {
+        const r = await window.helm.approvePlan(projectId, { skipPreflight: true });
+        if (r.ok) onApproved(); else setError(r.errors.join(" · "));
+    };
+
     return (
         <div style={{ display: "grid", gap: 14 }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <button onClick={onClose}>← board</button>
                 <h2 style={{ fontFamily: "ui-serif, Georgia, serif", margin: 0 }}>Plan — {projectName}</h2>
             </div>
+            {error ? <div style={{ color: "#b00", fontSize: 13 }}>{error}</div> : null}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }}>
                 <div style={{ height: 520, minHeight: 0 }}>
                     <TerminalPane key={session.id} session={session} />
                 </div>
-                {state ? <PlanRail state={state} onApprove={onApprove} /> : <div style={{ color: "#888" }}>Loading plan…</div>}
+                {state ? (
+                    <PlanRail
+                        state={state} preflight={preflight} acks={acks}
+                        onRunPreflight={runPreflight} onSkip={skip} onToggleAck={toggleAck} onConfirm={confirm}
+                    />
+                ) : <div style={{ color: "#888" }}>Loading plan…</div>}
             </div>
         </div>
     );

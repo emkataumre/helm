@@ -379,8 +379,14 @@ export interface HelmApi {
     // onPlanChanged pushes the live rail state (per project) as the session writes prd.md/tasks.json.
     openPlanner: (projectId: string) => Promise<{ session: PtySession; state: PlanRailState } | null>;
     onPlanChanged: (cb: (projectId: string, state: PlanRailState) => void) => void;
+    // M11 dynamic pre-flight: re-read + re-validate from disk, then EXECUTE each acceptance command once in a
+    // throwaway worktree off the integration tip and classify it. Errors on a still-invalid draft (never a
+    // half-built report). Runs nothing to completion — read-only validation; advances/pushes no ref.
+    preflightPlan: (projectId: string) => Promise<PreflightRunResult>;
     // Approve the active plan: re-read + re-validate from disk (never the renderer's copy), then in ONE
     // transaction insert the plan (PRD copied) + its tasks in topological order, resolving slug edges to real
     // ids, and clear .helm/plan/. Returns queued count + warnings, or the parse errors on a still-invalid draft.
-    approvePlan: (projectId: string) => Promise<ApprovePlanResult>;
+    // M11: opts carry the human's per-command acks + the explicit Skip escape — unless skipped, approve RE-RUNS
+    // pre-flight from disk and re-asserts every warn is acked (the renderer's report is never trusted).
+    approvePlan: (projectId: string, opts?: ApproveOptions) => Promise<ApprovePlanResult>;
 }

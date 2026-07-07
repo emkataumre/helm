@@ -54,22 +54,25 @@ describe("plan", () => {
             writeFileSync(join(planDir, "prd.md"), "# Accept PRD\n\nA small 2-task feature with one dependency edge.\n");
             await page.getByText(/PRD drafted[^A-Za-z]*now/).waitFor({ state: "visible", timeout: 30_000 });
 
-            // A MALFORMED tasks.json flips the stage to Tasks but keeps Approve DISABLED, listing the parse error.
+            // A MALFORMED tasks.json flips the stage to Tasks but keeps the approve controls DISABLED, listing
+            // the parse error. M11: the primary is now [Run pre-flight]; the explicit [Skip pre-flight] escape
+            // is what this agent-free drop-seam test uses (running pre-flight would execute the throwaway commands
+            // — that's preflight.accept.ts's job). Both are disabled while parse-invalid.
             writeFileSync(join(planDir, "tasks.json"), invalidTasksJson);
             await page.getByText(/Tasks drafted[^A-Za-z]*now/).waitFor({ state: "visible", timeout: 30_000 });
-            const approve = page.getByRole("button", { name: /Approve/ });
-            await until(async () => (await approve.isDisabled()) ? true : null, { label: "approve disabled while parse-invalid" });
+            const skip = page.getByRole("button", { name: "Skip pre-flight", exact: true });
+            await until(async () => (await skip.isDisabled()) ? true : null, { label: "skip disabled while parse-invalid" });
             await page.getByText(/acceptance/).waitFor({ state: "visible", timeout: 15_000 }); // the verbatim parse error
 
-            // Fix the file → the draft cards render with the ⚠ + did-you-mean, and Approve ENABLES.
+            // Fix the file → the draft cards render with the ⚠ + did-you-mean, and the approve controls ENABLE.
             writeFileSync(join(planDir, "tasks.json"), validTasksJson);
             await page.getByText(/did you mean/).waitFor({ state: "visible", timeout: 30_000 });
             await page.getByText("verify:content", { exact: false }).first().waitFor({ state: "visible", timeout: 15_000 });
             await page.getByText("depends on: t1-parent").waitFor({ state: "visible", timeout: 15_000 });
-            await until(async () => (await approve.isDisabled()) ? null : true, { label: "approve enabled once valid" });
+            await until(async () => (await skip.isDisabled()) ? null : true, { label: "skip enabled once valid" });
 
-            // Approve → rows are born; the view routes back to the board.
-            await approve.click();
+            // Skip pre-flight → the engine re-validates from disk, rows are born; the view routes back to the board.
+            await skip.click();
             const tasks = await until(async () => { const ts = await listTasks(page); return ts.length === 2 ? ts : null; }, { label: "2 tasks queued after approve" });
 
             // window.helm (machine-readable): both queued + planId-stamped (same plan); the edge resolved to the

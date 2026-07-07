@@ -16,9 +16,9 @@ import { HandbackActions } from "../../src/renderer/components/HandbackActions";
 import { PromoteResultPanel } from "../../src/renderer/components/PromoteResultPanel";
 import { TerminalPane } from "../../src/renderer/components/TerminalPane";
 import { TerminalTabs } from "../../src/renderer/components/TerminalTabs";
-import { PlanRail, PlanStageTracker, PlanDraftCards } from "../../src/renderer/components/PlanRail";
+import { PlanRail, PlanStageTracker, PlanDraftCards, PreflightVerdictPanel } from "../../src/renderer/components/PlanRail";
 import { parseProgress } from "../../src/renderer/progress";
-import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState } from "../../src/shared/types";
+import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState, PlanDraft, PreflightReport } from "../../src/shared/types";
 
 const schedState = (over: Partial<SchedulerState> = {}): SchedulerState =>
     ({ paused: false, perProject: [{ projectId: "p1", running: 2, cap: 3 }], ...over });
@@ -407,18 +407,76 @@ describe("PlanRail contract (M10 planner side rail)", () => {
         expect(html).toContain("planTitle must be a non-empty string");
     });
 
-    it("PlanRail ENABLES Approve for a valid non-empty draft (can-approve=true)", () => {
-        const html = renderToStaticMarkup(<PlanRail state={validRail} onApprove={() => {}} />);
-        expect(html).toContain('data-verify-unit="PlanRail"');
-        expect(html).toContain('data-verify-can-approve="true"');
-        expect(html).toContain('data-verify-tasks="2"');
-        expect(html).toContain("Approve"); // the button; not disabled
-        expect(html).not.toContain('disabled=""');
+    const noop = () => {};
+    const railProps = (over: Partial<Parameters<typeof PlanRail>[0]> = {}) => ({
+        preflight: null as PreflightReport | "loading" | null, acks: [] as string[],
+        onRunPreflight: noop, onSkip: noop, onToggleAck: noop, onConfirm: noop, ...over,
     });
 
-    it("PROBE: PlanRail DISABLES Approve while the draft is parse-invalid (can-approve=false)", () => {
-        const html = renderToStaticMarkup(<PlanRail state={invalidRail} onApprove={() => {}} />);
+    it("PlanRail (phase=pending) offers Run pre-flight, ENABLED for a valid non-empty draft", () => {
+        const html = renderToStaticMarkup(<PlanRail state={validRail} {...railProps()} />);
+        expect(html).toContain('data-verify-unit="PlanRail"');
+        expect(html).toContain('data-verify-can-approve="true"');
+        expect(html).toContain('data-verify-phase="pending"');
+        expect(html).toContain('data-verify-tasks="2"');
+        expect(html).toContain("Run pre-flight");
+        expect(html).toContain("Skip pre-flight"); // the explicit escape stays available
+    });
+
+    it("PROBE: PlanRail DISABLES Run pre-flight while the draft is parse-invalid", () => {
+        const html = renderToStaticMarkup(<PlanRail state={invalidRail} {...railProps()} />);
         expect(html).toContain('data-verify-can-approve="false"');
-        expect(html).toContain('disabled=""'); // approve blocked while invalid
+        expect(html).toContain('disabled=""'); // run pre-flight + skip both blocked while invalid
+    });
+
+    it("PlanRail (phase=ready) swaps to Confirm, DISABLED while a warn is unacked", () => {
+        const report: PreflightReport = { ran: true, warnCount: 2, verdicts: [
+            { command: "npm run check", taskSlugs: ["t1", "t2"], level: "warn-already-green", exitCode: 0, tail: "ok" },
+            { command: "npm run verify:trays", taskSlugs: ["t1"], level: "warn-missing", exitCode: 1, tail: "missing", suggestion: "verify:tray" },
+        ] };
+        const disabled = renderToStaticMarkup(<PlanRail state={validRail} {...railProps({ preflight: report })} />);
+        expect(disabled).toContain('data-verify-phase="ready"');
+        expect(disabled).toContain("Confirm"); // the button swapped from Run pre-flight
+        expect(disabled).toContain('disabled=""'); // Confirm blocked while warns unacked
+
+        const enabled = renderToStaticMarkup(<PlanRail state={validRail} {...railProps({ preflight: report, acks: ["npm run check", "npm run verify:trays"] })} />);
+        expect(enabled).toContain("Confirm");
+        expect(enabled).not.toContain('disabled=""'); // both warns acked → Confirm unlocks
+    });
+});
+
+describe("PreflightVerdictPanel contract (M11 dynamic verdict gate)", () => {
+    const draft: PlanDraft = { planTitle: "p", tasks: [
+        { slug: "t1", title: "Foundation", intent: "i", acceptance: ["npm run verify:fail", "npm run check", "npm run verify:trays"], scopeHint: null, dependsOn: [] },
+    ] };
+    const report: PreflightReport = { ran: true, warnCount: 2, verdicts: [
+        { command: "npm run verify:fail", taskSlugs: ["t1"], level: "ok-red", exitCode: 1, tail: "1 test failed: expected true" },
+        { command: "npm run check", taskSlugs: ["t1"], level: "warn-already-green", exitCode: 0, tail: "all green" },
+        { command: "npm run verify:trays", taskSlugs: ["t1"], level: "warn-missing", exitCode: 1, tail: "Missing script", suggestion: "verify:tray" },
+    ] };
+
+    it("stamps verdict/warn/acked counts and renders all three flavors with their evidence", () => {
+        const html = renderToStaticMarkup(<PreflightVerdictPanel draft={draft} report={report} acks={["npm run check"]} onToggleAck={() => {}} />);
+        expect(html).toContain('data-verify-unit="PreflightVerdictPanel"');
+        expect(html).toContain('data-verify-verdicts="3"');
+        expect(html).toContain('data-verify-warns="2"');
+        expect(html).toContain('data-verify-acked="1"');
+        expect(html).toContain('data-verify-can-confirm="false"'); // one warn (verify:trays) still unacked
+        expect(html).toContain("red (expected)");   // ok-red flavor
+        expect(html).toContain("already green");     // warn-already-green flavor
+        expect(html).toContain("missing");           // warn-missing flavor
+        expect(html).toContain("did you mean");       // the static did-you-mean carried over
+        expect(html).toContain("verify:tray");        // the suggested script
+        expect(html).toContain("expected true");      // the ok-red evidence tail
+    });
+
+    it("PROBE: can-confirm is false while any warn is unacked; true once every warn is acked", () => {
+        const none = renderToStaticMarkup(<PreflightVerdictPanel draft={draft} report={report} acks={[]} onToggleAck={() => {}} />);
+        expect(none).toContain('data-verify-acked="0"');
+        expect(none).toContain('data-verify-can-confirm="false"');
+
+        const all = renderToStaticMarkup(<PreflightVerdictPanel draft={draft} report={report} acks={["npm run check", "npm run verify:trays"]} onToggleAck={() => {}} />);
+        expect(all).toContain('data-verify-acked="2"');
+        expect(all).toContain('data-verify-can-confirm="true"');
     });
 });

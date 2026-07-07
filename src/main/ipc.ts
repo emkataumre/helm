@@ -18,7 +18,8 @@ import { runPromoteStage, finalizePromotion, type PromoteStageDeps, type Finaliz
 import { runAcceptance } from "./engine/acceptance";
 import { ensureRalphExcluded, ensureHelmExcluded, writeRalphFiles } from "./engine/ralph";
 import { watchPlanDir, readPlanFiles, buildPlanRailState } from "./engine/planWatcher";
-import { approveFromTasksJson, type PreflightCtx } from "./engine/planDraft";
+import { approveFromTasksJson, parsePlanDraft, staticPreflight, type PreflightCtx } from "./engine/planDraft";
+import { runPreflight, unackedWarnCommands, type PreflightDeps } from "./engine/preflight";
 import { runCheck } from "./engine/check";
 import { run } from "./engine/exec";
 import { spawnAgent } from "./engine/spawn";
@@ -36,7 +37,7 @@ import { launchTerminal, buildDropinArgv } from "./engine/terminalLaunch";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
 import { createPtyManager } from "./engine/ptyManager";
 import { nodePtyFactory } from "./engine/nodePtyFactory";
-import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession, PlanRailState, ApprovePlanResult } from "../shared/types";
+import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession, PlanRailState, ApprovePlanResult, PreflightRunResult, ApproveOptions } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
@@ -112,6 +113,19 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
         runCheck: (wt, cmd, t) => runCheck(wt, cmd, t),
         runAcceptance: (wt, cmds, t) => runAcceptance(wt, cmds, t),
         removeWorktree, headSha, diffStat,
+        checkTimeoutMs: config.checkTimeoutMs,
+    });
+
+    // M11 pre-flight deps: a throwaway worktree off the integration tip, runSetup, one-shot command runner
+    // (shell true, like acceptance), always-cleanup. NOTE the surface has NO advanceBranch/pushBranch — the
+    // stage physically cannot advance a ref (the structural never-advance). Uses the RAW removeWorktree (no PTY
+    // can be cwd'd in a pre-flight throwaway, exactly like the merge/promote throwaways).
+    const buildPreflightDeps = (config: LoopConfig): PreflightDeps => ({
+        revParse, createWorktree, runSetup, removeWorktree,
+        runCommand: async (wt, cmd, t) => {
+            const r = await run(cmd, [], { cwd: wt, timeoutMs: t, shell: true });
+            return { code: r.code, timedOut: r.timedOut, output: `${r.stdout}\n${r.stderr}`.trim() };
+        },
         checkTimeoutMs: config.checkTimeoutMs,
     });
 
@@ -387,13 +401,30 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
         return { session, state: readPlanRailState(project.repoPath) };
     });
 
+    // M11 dynamic pre-flight (phase 1 of the two-phase approve): re-read + re-validate from disk, then EXECUTE
+    // each acceptance command once in a throwaway worktree off the integration tip and classify it. A still-
+    // invalid draft yields the parse errors (hard-block, exactly like approve). NO merge mutex — pre-flight is
+    // read-only validation off whatever tip it sees; racing a merge is harmless (validated one merge old at worst).
+    ipcMain.handle("plans:preflight", async (_e, projectId: string): Promise<PreflightRunResult> => {
+        const project = getProject(db, projectId);
+        if (!project) return { ok: false, errors: [`unknown project ${projectId}`] };
+        const files = readPlanFiles(planDirFor(project.repoPath));
+        if (files.tasksJson == null) return { ok: false, errors: ["no tasks.json in .helm/plan/ to pre-flight"] };
+        const parsed = parsePlanDraft(files.tasksJson);
+        if (!parsed.ok) return { ok: false, errors: parsed.errors };
+        const staticV = staticPreflight(parsed.draft, planCtx(project.repoPath));
+        const report = await runPreflight(project, parsed.draft, staticV, buildPreflightDeps(resolveLoopConfig(project)));
+        return { ok: true, report };
+    });
+
     // Approve the active plan: re-read + re-validate from disk (never the renderer's copy — it can be stale or
-    // spoofed). Any parse failure → structured rejection, NO rows. Otherwise, in ONE transaction: insertPlan
-    // (PRD text copied; missing prd.md → stored "" + a warn, so approve isn't wedged) then the tasks in
-    // topological order, resolving slug edges to the real ids (the M9 column). After commit: clear the drop
-    // dir (rows are now durable), refresh the board, kick the scheduler (honours pause). The just-queued tasks
-    // then flow through the merged-gate exactly like hand-made ones.
-    ipcMain.handle("plans:approve", (_e, projectId: string): ApprovePlanResult => {
+    // spoofed). Any parse failure → structured rejection, NO rows. Then the M11 gate: unless the human explicitly
+    // Skipped pre-flight, RE-RUN pre-flight from disk and re-assert every warn is acked (the renderer's report is
+    // never trusted). Only past the gate, in ONE transaction: insertPlan (PRD text copied; missing prd.md →
+    // stored "" + a warn, so approve isn't wedged) then the tasks in topological order, resolving slug edges to
+    // the real ids (the M9 column). After commit: clear the drop dir (rows are now durable), refresh the board,
+    // kick the scheduler (honours pause). The just-queued tasks then flow through the merged-gate like hand-made ones.
+    ipcMain.handle("plans:approve", async (_e, projectId: string, opts?: ApproveOptions): Promise<ApprovePlanResult> => {
         const project = getProject(db, projectId);
         if (!project) return { ok: false, errors: [`unknown project ${projectId}`] };
         const dir = planDirFor(project.repoPath);
@@ -402,6 +433,18 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
 
         const approved = approveFromTasksJson(files.tasksJson, files.prdText, () => randomUUID());
         if (!approved.ok) return { ok: false, errors: approved.errors }; // parse-invalid → NO rows
+
+        // The ack gate. Skip is an explicit human escape (a hurry stays in control); otherwise re-run pre-flight
+        // on the SAME (just-parsed) draft and require every warn command to be in the acks. Parse-FAILs already bailed.
+        if (!opts?.skipPreflight) {
+            const parsed = parsePlanDraft(files.tasksJson);
+            if (parsed.ok) {
+                const staticV = staticPreflight(parsed.draft, planCtx(project.repoPath));
+                const report = await runPreflight(project, parsed.draft, staticV, buildPreflightDeps(resolveLoopConfig(project)));
+                const unacked = unackedWarnCommands(report, opts?.acks ?? []);
+                if (unacked.length) return { ok: false, errors: [`pre-flight has ${unacked.length} unacknowledged warning(s) — acknowledge each or Skip pre-flight:`, ...unacked] };
+            }
+        }
 
         const warnings = files.prdText == null ? ["no prd.md in .helm/plan/ — stored an empty PRD for this plan"] : [];
         db.transaction(() => {
