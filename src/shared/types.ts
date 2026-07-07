@@ -383,6 +383,10 @@ export interface HelmApi {
     // throwaway worktree off the integration tip and classify it. Errors on a still-invalid draft (never a
     // half-built report). Runs nothing to completion — read-only validation; advances/pushes no ref.
     preflightPlan: (projectId: string) => Promise<PreflightRunResult>;
+    // M11 plan views: the plans of a project (newest first) + one plan by id (the board plan badge/filter +
+    // the plan-detail view; member tasks are joined renderer-side off the existing tasks list by planId).
+    listPlans: (projectId: string) => Promise<Plan[]>;
+    getPlan: (planId: string) => Promise<Plan | null>;
     // Approve the active plan: re-read + re-validate from disk (never the renderer's copy), then in ONE
     // transaction insert the plan (PRD copied) + its tasks in topological order, resolving slug edges to real
     // ids, and clear .helm/plan/. Returns queued count + warnings, or the parse errors on a still-invalid draft.

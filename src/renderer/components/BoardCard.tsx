@@ -11,13 +11,14 @@ import { verifyAttrs } from "./verifyAttrs";
 // (`resumable`) — a killed/not-yet-completed iteration has nothing to resume; Start fresh always works.
 // The deliberate hand-back trio lives in TaskDetail (HandbackActions). M9: a queued+blocked card renders
 // its waiting-on parents (WAITING = in flight vs STUCK = needs-human/abandoned + Clear dependencies).
-export function BoardCard({ task, liveActivity, paused, resumable, blocked, waitingOn, onClick, onRun, onDropIn, onStartFresh, onAbandon, onNewTerminal, onClearDeps }: {
+export function BoardCard({ task, liveActivity, paused, resumable, blocked, waitingOn, planTitle, onClick, onRun, onDropIn, onStartFresh, onAbandon, onNewTerminal, onClearDeps, onOpenPlan }: {
     task: Task;
     liveActivity?: string;
     paused?: boolean;
     resumable?: boolean;
     blocked?: boolean;
     waitingOn?: WaitingOn[];
+    planTitle?: string; // M11: the plan this task was born from (a badge → its detail view); absent = hand-made
     onClick?: () => void;
     onRun?: () => void;
     onDropIn?: () => void;
@@ -25,6 +26,7 @@ export function BoardCard({ task, liveActivity, paused, resumable, blocked, wait
     onAbandon?: () => void;
     onNewTerminal?: () => void;
     onClearDeps?: () => void;
+    onOpenPlan?: () => void;
 }) {
     const running = task.status === "running";
     const canDropIn = task.status === "running" || task.status === "needs-human";
@@ -44,11 +46,18 @@ export function BoardCard({ task, liveActivity, paused, resumable, blocked, wait
     return (
         <div
             className="board-card"
-            {...verifyAttrs({ unit: "BoardCard", status: task.status, id: task.id, dropin: canDropIn, resumable: canResume, blocked: isBlocked, "waiting-on": waitingTitles || null })}
+            {...verifyAttrs({ unit: "BoardCard", status: task.status, id: task.id, dropin: canDropIn, resumable: canResume, blocked: isBlocked, "waiting-on": waitingTitles || null, plan: planTitle || null })}
             onClick={onClick}
             style={{ border: "1px solid #ccc", borderRadius: 8, padding: 10, marginBottom: 8, cursor: onClick ? "pointer" : "default" }}
         >
             <div><b>{task.title}</b> {task.diffstat ? <code style={{ fontSize: 11 }}>{task.diffstat}</code> : null}</div>
+            {planTitle ? (
+                <button
+                    onClick={click(onOpenPlan)}
+                    title={`Part of plan "${planTitle}" — open its detail`}
+                    style={{ marginTop: 4, fontSize: 11, fontFamily: "ui-monospace, monospace", color: "#788C5D", background: "#F0EEE6", border: "1px solid #E3DACC", borderRadius: 6, padding: "1px 6px", cursor: onOpenPlan ? "pointer" : "default" }}
+                >plan: {planTitle}</button>
+            ) : null}
             {running && liveActivity ? <div style={{ fontSize: 12, color: "#788C5D", marginTop: 4 }}>{liveActivity}</div> : null}
             {task.failureReason ? <div style={{ fontSize: 12, color: "#b00", marginTop: 4 }}>{task.failureReason}</div> : null}
             {isBlocked ? (

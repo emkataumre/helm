@@ -36,6 +36,8 @@ const api: HelmApi = {
     openPlanner: (projectId) => ipcRenderer.invoke("plans:openPlanner", projectId),
     onPlanChanged: (cb) => { ipcRenderer.on("plan:changed", (_e, projectId: string, state) => cb(projectId, state)); },
     preflightPlan: (projectId) => ipcRenderer.invoke("plans:preflight", projectId),
+    listPlans: (projectId) => ipcRenderer.invoke("plans:list", projectId),
+    getPlan: (planId) => ipcRenderer.invoke("plans:get", planId),
     approvePlan: (projectId, opts) => ipcRenderer.invoke("plans:approve", projectId, opts),
 };
 contextBridge.exposeInMainWorld("helm", api);

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
-import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState, PreflightReport } from "../shared/types";
+import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState, PreflightReport, Plan } from "../shared/types";
 import { PlanRail } from "./components/PlanRail";
+import { PlanDetail } from "./components/PlanDetail";
 import { TokenReadout } from "./components/TokenReadout";
 import { IterationHistory } from "./components/IterationHistory";
 import { ActivityFeed } from "./components/ActivityFeed";
@@ -27,8 +28,11 @@ const numOrNull = (s: string): number | null => (s.trim() === "" ? null : Number
 export function App() {
     const [projects, setProjects] = useState<Project[]>([]);
     const [tasks, setTasks] = useState<TaskListItem[]>([]);
+    const [plans, setPlans] = useState<Plan[]>([]); // M11: every project's plans (for the badge + filter + detail)
     const [filter, setFilter] = useState<string>("");
+    const [planFilter, setPlanFilter] = useState<string>(""); // M11: narrow the board to one plan's tasks
     const [selected, setSelected] = useState<string | null>(null);
+    const [selectedPlan, setSelectedPlan] = useState<string | null>(null); // M11: the open plan-detail view
     const [live, setLive] = useState<Record<string, string>>({});
     const [sched, setSched] = useState<SchedulerState | null>(null);
     // M6-③: the last Promote and its result (null until the human clicks Promote on a project).
@@ -72,8 +76,12 @@ export function App() {
         });
     }, []);
     const refresh = useCallback(async () => {
-        setProjects(await window.helm.listProjects());
+        const ps = await window.helm.listProjects();
+        setProjects(ps);
         setTasks(await window.helm.listTasks());
+        // M11: every project's plans, flattened (newest-first per project). Joined to tasks renderer-side by planId.
+        const perProject = await Promise.all(ps.map((p) => window.helm.listPlans(p.id)));
+        setPlans(perProject.flat());
     }, []);
     const refreshSched = useCallback(async () => { setSched(await window.helm.getSchedulerState()); }, []);
 
@@ -111,10 +119,15 @@ export function App() {
     };
 
     const selectedTask = selected ? tasks.find((t) => t.id === selected) : undefined;
-    const shown = tasks.filter((t) => !filter || t.projectId === filter);
+    const shown = tasks.filter((t) => (!filter || t.projectId === filter) && (!planFilter || t.planId === planFilter));
     const abandoned = shown.filter((t) => t.status === "abandoned");
     const queuedByProject = tasks.reduce<Record<string, number>>((m, t) => { if (t.status === "queued") m[t.projectId] = (m[t.projectId] ?? 0) + 1; return m; }, {});
     const names = Object.fromEntries(projects.map((p) => [p.id, p.name]));
+    // M11 plan joins: id→title (the board badge) + the open plan-detail object with its member tasks.
+    const planTitles = Object.fromEntries(plans.map((p) => [p.id, p.title]));
+    const planOptions = plans.filter((p) => !filter || p.projectId === filter);
+    const selectedPlanObj = selectedPlan ? plans.find((p) => p.id === selectedPlan) : undefined;
+    const planMembers = selectedPlan ? tasks.filter((t) => t.planId === selectedPlan) : [];
 
     return (
         <div style={{ fontFamily: "system-ui", padding: 20, display: "grid", gap: 20, maxWidth: 1120, margin: "0 auto" }}>
@@ -130,6 +143,13 @@ export function App() {
                     state={railStates[planner.projectId]}
                     onClose={() => setPlanner(null)}
                     onApproved={() => { setPlanner(null); refresh(); }}
+                />
+            ) : selectedPlanObj ? (
+                <PlanDetail
+                    plan={selectedPlanObj}
+                    tasks={planMembers}
+                    onClose={() => setSelectedPlan(null)}
+                    onSelectTask={(id) => { setSelectedPlan(null); setSelected(id); }}
                 />
             ) : (
                 <>
@@ -169,13 +189,21 @@ export function App() {
                         </div>
                     ) : null}
 
-                    <div>
+                    <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
                         <label>Project filter:{" "}
-                            <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+                            <select value={filter} onChange={(e) => { setFilter(e.target.value); setPlanFilter(""); }}>
                                 <option value="">all projects</option>
                                 {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                             </select>
                         </label>
+                        {planOptions.length > 0 ? (
+                            <label>Plan filter:{" "}
+                                <select value={planFilter} onChange={(e) => setPlanFilter(e.target.value)}>
+                                    <option value="">all plans</option>
+                                    {planOptions.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
+                                </select>
+                            </label>
+                        ) : null}
                     </div>
 
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
@@ -186,6 +214,7 @@ export function App() {
                                     <BoardCard
                                         key={t.id} task={t} liveActivity={live[t.id]} paused={paused} resumable={t.resumable}
                                         blocked={t.blocked} waitingOn={t.waitingOn}
+                                        planTitle={t.planId ? planTitles[t.planId] : undefined}
                                         onClick={() => setSelected(t.id)}
                                         onRun={() => { window.helm.startNow(t.id); }}
                                         onDropIn={() => { window.helm.dropIn(t.id).then((s) => { refresh(); if (s) showTerm(s); }); }}
@@ -193,6 +222,7 @@ export function App() {
                                         onAbandon={() => { window.helm.abandon(t.id).then(refresh); }}
                                         onNewTerminal={() => newTaskTerminal(t)}
                                         onClearDeps={() => { window.helm.setDependsOn(t.id, []).then(refresh); }}
+                                        onOpenPlan={() => { if (t.planId) setSelectedPlan(t.planId); }}
                                     />
                                 ))}
                             </div>

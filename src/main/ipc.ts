@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
 import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject, deleteProject } from "./db/projects";
-import { insertPlan } from "./db/plans";
+import { insertPlan, listPlans, getPlan } from "./db/plans";
 import { insertTask, insertPlanTask, listTasks, getTask, updateTask, setDependsOn } from "./db/tasks";
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "./engine/worktree";
@@ -400,6 +400,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
 
         return { session, state: readPlanRailState(project.repoPath) };
     });
+
+    // M11 plan views (reads): the two joins the board's plan badge + plan-detail need. db/plans.ts already
+    // holds the fns; these just surface them (getPlan → null so the renderer's `| null` handle is honoured).
+    ipcMain.handle("plans:list", (_e, projectId: string) => listPlans(db, projectId));
+    ipcMain.handle("plans:get", (_e, planId: string) => getPlan(db, planId) ?? null);
 
     // M11 dynamic pre-flight (phase 1 of the two-phase approve): re-read + re-validate from disk, then EXECUTE
     // each acceptance command once in a throwaway worktree off the integration tip and classify it. A still-

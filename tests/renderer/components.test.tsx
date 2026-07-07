@@ -17,8 +17,9 @@ import { PromoteResultPanel } from "../../src/renderer/components/PromoteResultP
 import { TerminalPane } from "../../src/renderer/components/TerminalPane";
 import { TerminalTabs } from "../../src/renderer/components/TerminalTabs";
 import { PlanRail, PlanStageTracker, PlanDraftCards, PreflightVerdictPanel } from "../../src/renderer/components/PlanRail";
+import { PlanDetail } from "../../src/renderer/components/PlanDetail";
 import { parseProgress } from "../../src/renderer/progress";
-import type { IterationView, TokenTotals, ActivityEntry, Task, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState, PlanDraft, PreflightReport } from "../../src/shared/types";
+import type { IterationView, TokenTotals, ActivityEntry, Task, TaskListItem, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState, PlanDraft, PreflightReport, Plan } from "../../src/shared/types";
 
 const schedState = (over: Partial<SchedulerState> = {}): SchedulerState =>
     ({ paused: false, perProject: [{ projectId: "p1", running: 2, cap: 3 }], ...over });
@@ -478,5 +479,38 @@ describe("PreflightVerdictPanel contract (M11 dynamic verdict gate)", () => {
         const all = renderToStaticMarkup(<PreflightVerdictPanel draft={draft} report={report} acks={["npm run check", "npm run verify:trays"]} onToggleAck={() => {}} />);
         expect(all).toContain('data-verify-acked="2"');
         expect(all).toContain('data-verify-can-confirm="true"');
+    });
+});
+
+describe("M11 plan views: BoardCard badge + PlanDetail progress", () => {
+    const tli = (over: Partial<TaskListItem> = {}): TaskListItem =>
+        ({ ...task(), resumable: false, blocked: false, waitingOn: [], ...over });
+    const plan: Plan = { id: "pl1", projectId: "p", title: "Rail feature", prdText: "# PRD\nbuild the rail", createdAt: 0 };
+
+    it("BoardCard renders a plan badge only when the task carries a plan (title), stamped in data-verify", () => {
+        const withPlan = renderToStaticMarkup(<BoardCard task={task({ planId: "pl1" })} planTitle="Rail feature" onOpenPlan={() => {}} />);
+        expect(withPlan).toContain('data-verify-plan="Rail feature"');
+        expect(withPlan).toContain("plan: Rail feature");
+        const handMade = renderToStaticMarkup(<BoardCard task={task({ planId: null })} />);
+        expect(handMade).not.toContain("data-verify-plan"); // no badge for a hand-made task
+    });
+
+    it("PlanDetail stamps N/M merged progress and lists member tasks with their statuses", () => {
+        const members = [tli({ id: "a", title: "Foundation", status: "merged" }), tli({ id: "b", title: "Rail", status: "running" })];
+        const html = renderToStaticMarkup(<PlanDetail plan={plan} tasks={members} onClose={() => {}} />);
+        expect(html).toContain('data-verify-unit="PlanDetail"');
+        expect(html).toContain('data-verify-tasks="2"');
+        expect(html).toContain('data-verify-merged="1"');
+        expect(html).toContain('data-verify-progress="1/2"');
+        expect(html).toContain("build the rail"); // the stored PRD text is rendered
+        expect(html).toContain("Foundation");
+        expect(html).toContain("Rail");
+    });
+
+    it("PROBE: PlanDetail progress reflects ZERO merged when no member has merged (not a happy-path 1/1)", () => {
+        const members = [tli({ id: "a", status: "queued" }), tli({ id: "b", status: "needs-human" })];
+        const html = renderToStaticMarkup(<PlanDetail plan={plan} tasks={members} onClose={() => {}} />);
+        expect(html).toContain('data-verify-merged="0"');
+        expect(html).toContain('data-verify-progress="0/2"');
     });
 });
