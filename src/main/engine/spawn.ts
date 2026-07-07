@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { run, type ExecFn } from "./exec";
 import type { SnapshotEvent, TokenTotals } from "../../shared/types";
+import type { JailSpec } from "./jail";
 
 export interface SpawnOptions {
     model?: string;
@@ -13,6 +14,7 @@ export interface SpawnOptions {
     logSink?: (line: string) => void;   // called for EVERY raw line (the durable per-iteration log)
     signal?: AbortSignal;               // M5 drop-in: hard-kill this in-flight session on demand
     settings?: string;                  // M6-② per-spawn --settings JSON (never-push deny + autoMode.environment)
+    jail?: JailSpec;                    // M13: present → this spawn runs `docker run … claude …` (jail mode); absent → host `claude` (byte-identical to today). Wired in Task 4.
 }
 export interface SpawnResult {
     ok: boolean;
