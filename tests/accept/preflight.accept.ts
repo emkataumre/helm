@@ -40,6 +40,11 @@ describe("preflight", () => {
     it("Run pre-flight classifies all three flavours; Confirm gates on acks; approve queues; no throwaway leaks", async () => {
         const { repo, projectId, seed } = seededProject("PreflightProj");
         void projectId;
+        // THE FRESH-PROJECT REGRESSION (found in M10 manual acceptance): a just-registered project has NO
+        // integration branch (the engine only creates it when the first task runs) and pre-flight hung forever.
+        // The harness's makeTargetRepo pre-creates it — kinder than reality — so delete it: this scenario now
+        // runs pre-flight against the real fresh state, and passing proves the ensure-branch fix end to end.
+        git(repo, ["branch", "-D", "integration/ralph"]);
         const planDir = join(repo, ".helm", "plan");
         const helm = await launchHelm({ seed });
         const { page } = helm;
@@ -92,6 +97,11 @@ describe("preflight", () => {
             // NO helm/preflight-* throwaway worktree OR branch remains — both pre-flight runs cleaned up (fs + git).
             expect(git(repo, ["worktree", "list", "--porcelain"])).not.toMatch(/helm\/preflight-/);
             expect(git(repo, ["branch", "--list", "helm/preflight-*"]).trim()).toBe("");
+
+            // The fresh-project fix's visible footprint: pre-flight CREATED integration/ralph (off main) rather
+            // than hanging on its absence — the branch exists now, at exactly the tip the first task will use.
+            expect(git(repo, ["branch", "--list", "integration/ralph"]).trim()).not.toBe("");
+            expect(git(repo, ["rev-parse", "integration/ralph"]).trim()).toBe(git(repo, ["rev-parse", "main"]).trim());
         } finally {
             await helm.close();
         }

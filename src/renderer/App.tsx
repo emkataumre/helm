@@ -301,20 +301,30 @@ function PlannerView({ projectId, projectName, session, state, onClose, onApprov
     // a stale report/ack set can't be confirmed. The human re-runs pre-flight against the new draft.
     useEffect(() => { setPreflight(null); setAcks([]); setError(null); }, [state]);
 
+    // Belt over the ipc's structured errors: a REJECTED invoke (the M10-acceptance finding — it left this
+    // stuck on "loading" with every button disabled) lands in the error strip, never a wedged gate.
     const runPreflight = async () => {
         setPreflight("loading"); setError(null);
-        const r = await window.helm.preflightPlan(projectId);
-        if (r.ok) setPreflight(r.report);
-        else { setPreflight(null); setError(r.errors.join(" · ")); }
+        try {
+            const r = await window.helm.preflightPlan(projectId);
+            if (r.ok) setPreflight(r.report);
+            else { setPreflight(null); setError(r.errors.join(" · ")); }
+        } catch (err) {
+            setPreflight(null); setError(`pre-flight failed: ${(err as Error)?.message ?? String(err)}`);
+        }
     };
     const toggleAck = (command: string) => setAcks((a) => (a.includes(command) ? a.filter((c) => c !== command) : [...a, command]));
     const confirm = async () => {
-        const r = await window.helm.approvePlan(projectId, { acks, skipPreflight: false });
-        if (r.ok) onApproved(); else setError(r.errors.join(" · "));
+        try {
+            const r = await window.helm.approvePlan(projectId, { acks, skipPreflight: false });
+            if (r.ok) onApproved(); else setError(r.errors.join(" · "));
+        } catch (err) { setError(`approve failed: ${(err as Error)?.message ?? String(err)}`); }
     };
     const skip = async () => {
-        const r = await window.helm.approvePlan(projectId, { skipPreflight: true });
-        if (r.ok) onApproved(); else setError(r.errors.join(" · "));
+        try {
+            const r = await window.helm.approvePlan(projectId, { skipPreflight: true });
+            if (r.ok) onApproved(); else setError(r.errors.join(" · "));
+        } catch (err) { setError(`approve failed: ${(err as Error)?.message ?? String(err)}`); }
     };
 
     return (

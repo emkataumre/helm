@@ -10,7 +10,8 @@ export interface InvariantResult { name: string; ok: boolean; detail?: string }
 
 // The ops the stage is ALLOWED to perform — reads + the throwaway-worktree lifecycle + running a command. NOT a
 // ref advance / push (those aren't even in PreflightDeps; this is the recorded belt over the structural braces).
-const ALLOWED_OPS = new Set(["rev-parse", "create-worktree", "setup", "remove-worktree"]);
+// ensure-branch is create-if-absent only (never moves an existing ref) — the fresh-project fix from M10 acceptance.
+const ALLOWED_OPS = new Set(["ensure-branch", "rev-parse", "create-worktree", "setup", "remove-worktree"]);
 const isAllowedOp = (op: string): boolean => ALLOWED_OPS.has(op) || op.startsWith("run:");
 
 // The verdict TABLE, declared here independently of the impl (the ground truth the classification must match):
@@ -24,6 +25,20 @@ function expectedLevel(v: VerdictRecord): string {
 const isWarn = (level: string): boolean => level === "warn-missing" || level === "warn-already-green";
 
 export const PREFLIGHT_INVARIANTS: PreflightInvariant[] = [
+    // The fresh-project guarantee (M10-acceptance finding): pre-flight must CREATE-IF-ABSENT the integration
+    // branch before reading its tip — on a project that never ran a task, integration doesn't exist yet, and a
+    // bare rev-parse throws (which hung the rail on "loading"). ensure-branch must precede the first rev-parse.
+    {
+        name: "integration-ensured-before-read",
+        holds: (r) => {
+            const read = r.ops.indexOf("rev-parse");
+            if (read === -1) return true; // never read a tip → nothing to ensure
+            const ensured = r.ops.indexOf("ensure-branch");
+            if (ensured === -1) return "read the integration tip without ensuring the branch exists (fresh projects hang)";
+            if (ensured > read) return "ensure-branch ran AFTER the tip was read — the fresh-project case still throws";
+            return true;
+        },
+    },
     // THE structural safety property (spec §3, promote-mirrored): pre-flight advances/pushes NOTHING. The recorded
     // git surface is a subset of {rev-parse, create worktree, setup, run command, remove worktree} — no advance,
     // no push, ever. (PreflightDeps has no such seam, so this can only fail if a recording is hand-forged.)

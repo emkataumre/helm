@@ -23,7 +23,9 @@ const draftOf = (...tasks: PlanDraftTask[]): PlanDraft => ({ planTitle: "d", tas
 interface CmdScript { code: number; timedOut?: boolean; output?: string; throws?: boolean }
 
 interface Recorder {
-    ops: string[];                 // ordered op log: create-worktree / setup / run:<cmd> / remove-worktree
+    ops: string[];                 // ordered op log: ensure-branch / create-worktree / setup / run:<cmd> / remove-worktree
+    ensuredBranch: string | null;
+    ensuredFrom: string | null;
     createdBranch: string | null;
     createdFrom: string | null;
     removedKeepBranch: boolean | null;
@@ -31,10 +33,16 @@ interface Recorder {
 }
 
 // Build recording fake deps. `scripts` maps a command → its scripted outcome; `setupOk` controls runSetup.
+// The fake repo is FRESH (integration branch absent — the M10-acceptance reality): revParse throws unless
+// ensureBranch ran first, so every test here structurally proves the ensure-before-read ordering.
 function recorder(scripts: Record<string, CmdScript>, opts: { setupOk?: boolean } = {}): Recorder {
-    const rec: Recorder = { ops: [], createdBranch: null, createdFrom: null, removedKeepBranch: null, deps: null as unknown as PreflightDeps };
+    const rec: Recorder = { ops: [], ensuredBranch: null, ensuredFrom: null, createdBranch: null, createdFrom: null, removedKeepBranch: null, deps: null as unknown as PreflightDeps };
     rec.deps = {
-        revParse: async () => INTEGRATION_SHA,
+        ensureBranch: async (_repo, branch, from) => { rec.ops.push("ensure-branch"); rec.ensuredBranch = branch; rec.ensuredFrom = from; },
+        revParse: async () => {
+            if (rec.ensuredBranch == null) throw new Error("fatal: integration branch does not exist (fresh repo)");
+            return INTEGRATION_SHA;
+        },
         createWorktree: async (_repo, from, branch) => { rec.ops.push("create-worktree"); rec.createdFrom = from; rec.createdBranch = branch; return "/repo/.helm/worktrees/preflight"; },
         runSetup: async () => { rec.ops.push("setup"); return { ok: opts.setupOk !== false, output: opts.setupOk === false ? "setup boom" : "" }; },
         runCommand: async (_wt, command) => {
@@ -79,15 +87,27 @@ describe("verify/preflight Task 1: the verdict classification table (REAL runPre
         expect(rec.createdFrom).toBe("integration/ralph");
         expect(rec.createdBranch).toMatch(/^helm\/preflight-p1-/);
         expect(rec.removedKeepBranch).toBe(false);            // the temp branch is deleted on cleanup
-        expect(rec.ops).toEqual(["create-worktree", "run:npm run check", "remove-worktree"]);
+        expect(rec.ops).toEqual(["ensure-branch", "create-worktree", "run:npm run check", "remove-worktree"]);
+    });
+
+    it("on a FRESH project (no integration branch yet) it creates it off the TARGET before reading its tip", async () => {
+        // The M10-acceptance regression: revParse on a never-ran project threw and the rail hung on "loading".
+        // The recorder's revParse throws unless ensureBranch ran first, so resolving AT ALL proves the ordering.
+        const rec = recorder({ "npm run verify:content": red() });
+        const report = await runPreflight(mkProject(), draftOf(task("t1", ["npm run verify:content"])), [{ taskSlug: "t1", command: "npm run verify:content", level: "ok" }], rec.deps);
+        expect(report.ran).toBe(true);
+        expect(rec.ensuredBranch).toBe("integration/ralph");
+        expect(rec.ensuredFrom).toBe("main");                 // created off exactly the tip the first task will branch from
+        expect(rec.ops[0]).toBe("ensure-branch");
     });
 
     it("PreflightDeps is structurally never-advance — it exposes no advanceBranch / pushBranch seam", () => {
         // A compile-time + shape guard mirroring promote's never-push: the surface the engine hands runPreflight
         // simply cannot advance or push a ref. (If someone adds such a fn to PreflightDeps, this fails loudly.)
+        // ensureBranch is deliberately present: create-if-absent only, it cannot move an existing ref.
         const rec = recorder({});
         expect(Object.keys(rec.deps).sort()).toEqual(
-            ["checkTimeoutMs", "createWorktree", "removeWorktree", "revParse", "runCommand", "runSetup"],
+            ["checkTimeoutMs", "createWorktree", "ensureBranch", "removeWorktree", "revParse", "runCommand", "runSetup"],
         );
     });
 
@@ -179,7 +199,7 @@ describe("verify/preflight: the CI matrix over every fixture", () => {
         expect(PREFLIGHT_FIXTURES.some((f) => f.probe)).toBe(true);
     });
 
-    it("declares a must-FAIL probe for EACH of the four invariants", () => {
+    it("declares a must-FAIL probe for EACH declared invariant", () => {
         const probed = new Set(PREFLIGHT_FIXTURES.filter((f) => f.probe).map((f) => (f as { mustFail: string }).mustFail));
         expect([...probed].sort()).toEqual(PREFLIGHT_INVARIANTS.map((i) => i.name).sort());
     });
@@ -200,7 +220,7 @@ describe("verify/preflight: the CI matrix over every fixture", () => {
 describe("verify/preflight: the recording is the REAL stage's behaviour", () => {
     it("mixed run (all warns acked): faithful verdicts, worktree cleaned, approval permitted, no ref touched", async () => {
         const rec = await runScenario(mixedAllAcked());
-        expect(rec.ops).toEqual(["rev-parse", "create-worktree", "run:npm run verify:x", "run:npm run check", "run:npm run verify:nope", "remove-worktree"]);
+        expect(rec.ops).toEqual(["ensure-branch", "rev-parse", "create-worktree", "run:npm run verify:x", "run:npm run check", "run:npm run verify:nope", "remove-worktree"]);
         expect(rec.verdicts.map((v) => v.level)).toEqual(["ok-red", "warn-already-green", "warn-missing"]);
         expect(rec.worktreeCreated && rec.worktreeRemoved).toBe(true);
         expect(rec.approved).toBe(true);
@@ -235,6 +255,10 @@ describe("verify/preflight: negative controls — each broken recording FAILS it
     it("a leaked worktree FAILS worktree-always-cleaned", () => {
         const fx = PREFLIGHT_FIXTURES.find((f) => f.id === "leaked-worktree");
         expect(fx?.probe && failed(fx.recording)).toContain("worktree-always-cleaned");
+    });
+    it("reading the tip without ensuring the branch FAILS integration-ensured-before-read", () => {
+        const fx = PREFLIGHT_FIXTURES.find((f) => f.id === "reads-tip-without-ensuring");
+        expect(fx?.probe && failed(fx.recording)).toContain("integration-ensured-before-read");
     });
 
     it("a verifier that throws becomes a FAIL, never a silent pass", () => {

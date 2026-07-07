@@ -40,7 +40,7 @@ export interface VerdictRecord { command: string; level: PreflightLevel; code: n
 // The flat recording the invariants read.
 export interface PreflightRecording {
     unit: "preflight";
-    ops: string[];               // ordered git/exec surface: rev-parse / create-worktree / setup / run:<cmd> / remove-worktree
+    ops: string[];               // ordered git/exec surface: ensure-branch / rev-parse / create-worktree / setup / run:<cmd> / remove-worktree
     worktreeCreated: boolean;
     worktreeRemoved: boolean;
     threw: boolean;              // runPreflight rejected mid-run (a scripted throw)
@@ -61,8 +61,15 @@ export async function runScenario(scenario: Scenario): Promise<PreflightRecordin
 
     const ops: string[] = [];
     let worktreeCreated = false, worktreeRemoved = false;
+    // The fake repo starts FRESH (no integration branch — the M10-acceptance reality): revParse throws unless
+    // ensureBranch ran first, so every positive scenario structurally proves the ensure-before-read ordering.
+    let integrationEnsured = false;
     const deps: PreflightDeps = {
-        revParse: async () => { ops.push("rev-parse"); return INTEGRATION_SHA; },
+        ensureBranch: async () => { ops.push("ensure-branch"); integrationEnsured = true; },
+        revParse: async () => {
+            if (!integrationEnsured) throw new Error("fatal: integration branch does not exist (fresh repo)");
+            ops.push("rev-parse"); return INTEGRATION_SHA;
+        },
         createWorktree: async () => { ops.push("create-worktree"); worktreeCreated = true; return "/repo/.helm/worktrees/preflight"; },
         runSetup: async () => { ops.push("setup"); return { ok: scenario.setupOk !== false, output: scenario.setupOk === false ? "setup boom" : "" }; },
         runCommand: async (_wt, command) => {

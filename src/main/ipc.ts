@@ -121,7 +121,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
     // stage physically cannot advance a ref (the structural never-advance). Uses the RAW removeWorktree (no PTY
     // can be cwd'd in a pre-flight throwaway, exactly like the merge/promote throwaways).
     const buildPreflightDeps = (config: LoopConfig): PreflightDeps => ({
-        revParse, createWorktree, runSetup, removeWorktree,
+        ensureBranch, revParse, createWorktree, runSetup, removeWorktree,
         runCommand: async (wt, cmd, t) => {
             const r = await run(cmd, [], { cwd: wt, timeoutMs: t, shell: true });
             return { code: r.code, timedOut: r.timedOut, output: `${r.stdout}\n${r.stderr}`.trim() };
@@ -418,8 +418,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
         const parsed = parsePlanDraft(files.tasksJson);
         if (!parsed.ok) return { ok: false, errors: parsed.errors };
         const staticV = staticPreflight(parsed.draft, planCtx(project.repoPath));
-        const report = await runPreflight(project, parsed.draft, staticV, buildPreflightDeps(resolveLoopConfig(project)));
-        return { ok: true, report };
+        // A thrown pre-flight (bad repo state, git failure) must reach the renderer as a STRUCTURED error, never
+        // an ipc rejection — the M10-acceptance finding: an uncaught rejection left the rail stuck on "loading".
+        try {
+            const report = await runPreflight(project, parsed.draft, staticV, buildPreflightDeps(resolveLoopConfig(project)));
+            return { ok: true, report };
+        } catch (err) {
+            return { ok: false, errors: [`pre-flight failed: ${(err as Error)?.message ?? String(err)}`] };
+        }
     });
 
     // Approve the active plan: re-read + re-validate from disk (never the renderer's copy — it can be stale or
@@ -445,7 +451,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): { disposePty
             const parsed = parsePlanDraft(files.tasksJson);
             if (parsed.ok) {
                 const staticV = staticPreflight(parsed.draft, planCtx(project.repoPath));
-                const report = await runPreflight(project, parsed.draft, staticV, buildPreflightDeps(resolveLoopConfig(project)));
+                let report;
+                try {
+                    report = await runPreflight(project, parsed.draft, staticV, buildPreflightDeps(resolveLoopConfig(project)));
+                } catch (err) {
+                    // Same structured-error rule as plans:preflight: a throw here must not reject the approve ipc.
+                    return { ok: false, errors: [`pre-flight failed: ${(err as Error)?.message ?? String(err)}`] };
+                }
                 const unacked = unackedWarnCommands(report, opts?.acks ?? []);
                 if (unacked.length) return { ok: false, errors: [`pre-flight has ${unacked.length} unacknowledged warning(s) — acknowledge each or Skip pre-flight:`, ...unacked] };
             }

@@ -12,7 +12,10 @@ export type { PreflightReport, PreflightCommandVerdict, PreflightLevel };
 
 // The injected surface: reads + the throwaway-worktree lifecycle + a single-command runner. NO advanceBranch /
 // pushBranch — advancing a ref is structurally impossible here (the never-advance invariant, promote-style).
+// ensureBranch is create-if-absent only (it never moves an existing ref), needed because pre-flight can run on a
+// FRESH project whose integration branch doesn't exist yet — the engine only creates it when the first task runs.
 export interface PreflightDeps {
+    ensureBranch: (repo: string, branch: string, createFrom: string) => Promise<void>;
     revParse: (repo: string, ref: string) => Promise<string>;
     createWorktree: (repo: string, from: string, branch: string, worktreeDir: string) => Promise<string>;
     runSetup: (worktreePath: string, command: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }>;
@@ -53,6 +56,12 @@ export async function runPreflight(project: Project, draft: PlanDraft, staticVer
         if (!slugs) { slugs = []; slugsByCommand.set(command, slugs); order.push(command); }
         if (!slugs.includes(t.slug)) slugs.push(t.slug);
     }
+
+    // A fresh project's integration branch doesn't exist until the first task runs (the M10-acceptance finding:
+    // revParse threw here and the UI hung on "loading"). Create-if-absent off the target tip — exactly the tip
+    // the first task will branch from — so pre-flight validates against the same reality. Never moves an
+    // existing ref (the never-advance invariant holds; ensureBranch is create-only).
+    await deps.ensureBranch(repo, project.integrationBranch, project.targetBranch);
 
     // A UNIQUE throwaway branch off the integration TIP (unique short-sha so a re-run of a moved tip can't
     // collide). The branch is temp — cleanup deletes it (keepBranch false), unlike promote which keeps its branch.

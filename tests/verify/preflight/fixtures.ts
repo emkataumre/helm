@@ -12,7 +12,7 @@ export type PreflightFixture = PositiveFixture | ProbeFixture;
 // verdict, no warns, approved. Each probe clones it and breaks EXACTLY one thing.
 const BASELINE: PreflightRecording = {
     unit: "preflight",
-    ops: ["rev-parse", "create-worktree", "run:npm run verify:a", "remove-worktree"],
+    ops: ["ensure-branch", "rev-parse", "create-worktree", "run:npm run verify:a", "remove-worktree"],
     worktreeCreated: true, worktreeRemoved: true, threw: false,
     verdicts: [{ command: "npm run verify:a", level: "ok-red", code: 1, timedOut: false, staticWarn: false }],
     acks: [], approved: true,
@@ -49,6 +49,12 @@ export const PREFLIGHT_FIXTURES: PreflightFixture[] = [
     // The throwaway worktree was created but never removed. MUST FAIL worktree-always-cleaned.
     {
         id: "leaked-worktree", probe: true, mustFail: "worktree-always-cleaned",
-        recording: { ...BASELINE, worktreeCreated: true, worktreeRemoved: false, ops: ["rev-parse", "create-worktree", "run:npm run verify:a"] },
+        recording: { ...BASELINE, worktreeCreated: true, worktreeRemoved: false, ops: ["ensure-branch", "rev-parse", "create-worktree", "run:npm run verify:a"] },
+    },
+    // The integration tip was read WITHOUT ensuring the branch exists first (the pre-fix behaviour that hung
+    // fresh projects — M10 acceptance). MUST FAIL integration-ensured-before-read.
+    {
+        id: "reads-tip-without-ensuring", probe: true, mustFail: "integration-ensured-before-read",
+        recording: { ...BASELINE, ops: ["rev-parse", "create-worktree", "run:npm run verify:a", "remove-worktree"] },
     },
 ];
