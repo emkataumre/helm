@@ -15,7 +15,7 @@ const mkTask = (id: string, projectId: string, createdAt: number): Task => ({
 const mkProject = (id: string, concurrencyCap: number | null): Project => ({
     id, name: id, repoPath: "/r", integrationBranch: "integration/ralph", targetBranch: "main", branchPrefix: "ralph",
     checkCommand: "c", worktreeDir: ".helm/worktrees", setupCommand: null, iterationCap: null, noProgressK: null,
-    stallTimeoutMin: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr",
+    stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr",
 });
 
 // A harness with a controllable startTask: each started task hangs until the test settles it, and

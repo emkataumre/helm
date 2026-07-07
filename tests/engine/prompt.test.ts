@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { buildGoalPrompt, buildInstructions, buildTaskDirective, seedProgress } from "../../src/main/engine/prompt";
 import type { Project, Task } from "../../src/shared/types";
 
-const project: Project = { id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm test", worktreeDir: ".helm/worktrees", setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr" };
+const project: Project = { id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm test", worktreeDir: ".helm/worktrees", setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr" };
 const task: Task = { id: "abc", projectId: "p1", title: "Add widget", intent: "Build the widget.", acceptance: ["npm run e2e", "node check.js"], status: "queued", scopeHint: null, dependsOn: [], planId: null, branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0 };
 
 describe("buildGoalPrompt", () => {

@@ -21,6 +21,7 @@ export interface Project {
     iterationCap: number | null;     // overrides DEFAULT_LOOP_CONFIG.iterationCap
     noProgressK: number | null;      // overrides DEFAULT_LOOP_CONFIG.noProgressK
     stallTimeoutMin: number | null;  // MINUTES — converted to ms in resolveLoopConfig (the units seam)
+    costCapUsd: number | null;       // M12 per-task USD spend ceiling (NULL = engine default 25; an explicit 0 = spawn nothing)
     model: string | null;            // claude --model for each spawn
     concurrencyCap: number | null;   // M4 scheduler cap (NOT a LoopConfig field); NULL = engine default 3
     terminalCommand: string | null;  // M5 drop-in launch template ({worktree}/{resume}); NULL = engine default
@@ -307,6 +308,7 @@ export interface NewProjectInput {
     iterationCap?: number | null;
     noProgressK?: number | null;
     stallTimeoutMin?: number | null;
+    costCapUsd?: number | null; // M12 USD spend ceiling (absent → stored NULL → engine default)
     model?: string | null;
     concurrencyCap?: number | null;
     terminalCommand?: string | null;
@@ -322,7 +324,7 @@ export interface NewTaskInput {
     dependsOn?: string[]; // M9 dependency edges (absent → stored NULL / read back as [])
 }
 // The editable per-project config columns (the project-config form patches these).
-export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode">>;
+export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode">>;
 // Best-effort registration pre-fill (current git branch → target, package.json → check, lockfile → setup).
 export interface DetectedConfig { targetBranch: string | null; checkCommand: string | null; setupCommand: string | null }
 export interface HelmApi {

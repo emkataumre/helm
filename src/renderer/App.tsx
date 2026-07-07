@@ -429,7 +429,7 @@ function TaskDetail({ task, onClose, onAction }: { task: Task; onClose: () => vo
 }
 
 function RegisterProjectForm({ onDone }: { onDone: () => void }) {
-    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr" });
+    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", costCapUsd: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr" });
     const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
     const detect = async () => {
@@ -442,6 +442,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
             name: f.name, repoPath: f.repoPath, targetBranch: f.targetBranch, checkCommand: f.checkCommand,
             setupCommand: f.setupCommand || null, model: f.model || null,
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
+            costCapUsd: numOrNull(f.costCapUsd),
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
             autoModeEnvironment: f.autoModeEnvironment || null,
             promotionMode: f.promotionMode as "pr" | "direct" | "strict",
@@ -464,6 +465,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
                 {input("iterationCap", "iterationCap (blank = default 8)")}
                 {input("noProgressK", "noProgressK (blank = default 2)")}
                 {input("stallTimeoutMin", "stallTimeoutMin (blank = default 40)")}
+                {input("costCapUsd", "costCapUsd (blank = default 25; 0 = spawn nothing)")}
                 {input("concurrencyCap", "concurrencyCap (blank = default 3)")}
                 {input("model", "model (blank = CLI default)")}
                 {input("terminalCommand", 'terminalCommand (blank = in-app terminal tab; set a template to launch externally, e.g. wt.exe -d "{worktree}" pwsh -NoExit -Command "claude {resume}")')}
@@ -484,7 +486,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
 function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: () => void }) {
     const [id, setId] = useState("");
     const selected = projects.find((p) => p.id === id);
-    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr" });
+    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", costCapUsd: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr" });
 
     useEffect(() => {
         if (!selected) return;
@@ -493,6 +495,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
             iterationCap: selected.iterationCap?.toString() ?? "",
             noProgressK: selected.noProgressK?.toString() ?? "",
             stallTimeoutMin: selected.stallTimeoutMin?.toString() ?? "",
+            costCapUsd: selected.costCapUsd?.toString() ?? "",
             model: selected.model ?? "",
             concurrencyCap: selected.concurrencyCap?.toString() ?? "",
             terminalCommand: selected.terminalCommand ?? "",
@@ -506,6 +509,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
         await window.helm.updateProject(id, {
             setupCommand: f.setupCommand || null, model: f.model || null,
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
+            costCapUsd: numOrNull(f.costCapUsd),
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
             autoModeEnvironment: f.autoModeEnvironment || null,
             promotionMode: f.promotionMode as "pr" | "direct" | "strict",
@@ -536,6 +540,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
                         {input("iterationCap", "iterationCap")}
                         {input("noProgressK", "noProgressK")}
                         {input("stallTimeoutMin", "stallTimeoutMin")}
+                        {input("costCapUsd", "costCapUsd (0 = spawn nothing)")}
                         {input("concurrencyCap", "concurrencyCap")}
                         {input("model", "model")}
                         {input("terminalCommand", "terminalCommand (blank = in-app tab; else external template)")}

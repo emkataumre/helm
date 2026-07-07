@@ -19,7 +19,7 @@ export const VALIDATED_SHA = "feedface0123456789feedface0123456789feed";
 export const mkProject = (promotionMode: Project["promotionMode"], over: Partial<Project> = {}): Project => ({
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main",
     branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees",
-    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null,
+    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null,
     concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode, ...over,
 });
 
