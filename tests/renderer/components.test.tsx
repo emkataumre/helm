@@ -168,6 +168,19 @@ describe("ActivityFeed / IterationHistory / BoardCard contracts", () => {
         expect(html).not.toContain("waiting on");
         expect(html).toContain(">Run<"); // eligible → the manual Run stays
     });
+
+    // M13: a jailed project's cards carry a jail badge + the data-verify-jail contract.
+    it("BoardCard shows a jail badge + stamps data-verify-jail when the project is jailed", () => {
+        const html = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} jailed liveActivity="x" />);
+        expect(html).toContain('data-verify-jail="true"');
+        expect(html).toContain(">jailed<"); // the visible badge
+    });
+
+    it("PROBE: a host-mode card carries NO jail badge and no data-verify-jail (the negative control)", () => {
+        const html = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} liveActivity="x" />);
+        expect(html).not.toContain(">jailed<");
+        expect(html).not.toContain("data-verify-jail"); // jailed falsy → verifyAttrs drops the null key
+    });
 });
 
 describe("HandbackActions contract (the handed-off trio)", () => {

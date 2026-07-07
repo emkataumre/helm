@@ -215,6 +215,7 @@ export function App() {
                                         key={t.id} task={t} liveActivity={live[t.id]} paused={paused} resumable={t.resumable}
                                         blocked={t.blocked} waitingOn={t.waitingOn}
                                         planTitle={t.planId ? planTitles[t.planId] : undefined}
+                                        jailed={projects.some((p) => p.id === t.projectId && !!p.jailImage)}
                                         onClick={() => setSelected(t.id)}
                                         onRun={() => { window.helm.startNow(t.id); }}
                                         onDropIn={() => { window.helm.dropIn(t.id).then((s) => { refresh(); if (s) showTerm(s); }); }}
@@ -232,7 +233,7 @@ export function App() {
                     {abandoned.length > 0 ? (
                         <details>
                             <summary>abandoned ({abandoned.length})</summary>
-                            {abandoned.map((t) => <BoardCard key={t.id} task={t} onClick={() => setSelected(t.id)} />)}
+                            {abandoned.map((t) => <BoardCard key={t.id} task={t} jailed={projects.some((p) => p.id === t.projectId && !!p.jailImage)} onClick={() => setSelected(t.id)} />)}
                         </details>
                     ) : null}
                 </>
@@ -429,7 +430,7 @@ function TaskDetail({ task, onClose, onAction }: { task: Task; onClose: () => vo
 }
 
 function RegisterProjectForm({ onDone }: { onDone: () => void }) {
-    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", costCapUsd: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr" });
+    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", costCapUsd: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr", jailImage: "" });
     const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
     const detect = async () => {
@@ -446,6 +447,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
             autoModeEnvironment: f.autoModeEnvironment || null,
             promotionMode: f.promotionMode as "pr" | "direct" | "strict",
+            jailImage: f.jailImage || null,
         };
         await window.helm.registerProject(input);
         onDone();
@@ -477,6 +479,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
                         <option value="strict">strict — push nothing, hand the full local sequence</option>
                     </select>
                 </label>
+                {input("jailImage", "jailImage (blank = host mode; e.g. helm-jail:latest — run jailed in Docker)")}
                 <button disabled={!f.name || !f.repoPath || !f.checkCommand} onClick={submit}>Register</button>
             </div>
         </details>
@@ -486,7 +489,7 @@ function RegisterProjectForm({ onDone }: { onDone: () => void }) {
 function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: () => void }) {
     const [id, setId] = useState("");
     const selected = projects.find((p) => p.id === id);
-    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", costCapUsd: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr" });
+    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", costCapUsd: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr", jailImage: "" });
 
     useEffect(() => {
         if (!selected) return;
@@ -501,6 +504,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
             terminalCommand: selected.terminalCommand ?? "",
             autoModeEnvironment: selected.autoModeEnvironment ?? "",
             promotionMode: selected.promotionMode,
+            jailImage: selected.jailImage ?? "",
         });
     }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -513,6 +517,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
             autoModeEnvironment: f.autoModeEnvironment || null,
             promotionMode: f.promotionMode as "pr" | "direct" | "strict",
+            jailImage: f.jailImage || null,
         });
         onDone();
     };
@@ -552,6 +557,7 @@ function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: 
                                 <option value="strict">strict</option>
                             </select>
                         </label>
+                        {input("jailImage", "jailImage (blank = host mode; e.g. helm-jail:latest)")}
                         <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
                             <button onClick={save}>Save config</button>
                             <button onClick={remove} style={{ color: "#D97757" }}>Delete project</button>
