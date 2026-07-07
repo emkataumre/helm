@@ -257,9 +257,9 @@ it("migrates an M3-shape DB through to head: adds concurrencyCap + terminalComma
 
     migrate(db);
 
-    // An M3 DB now applies SEVEN remaining steps (M4 concurrencyCap, M5 terminalCommand, M6-② autoModeEnvironment,
-    // M6-③ promotionMode, M9 tasks.dependsOn, M10 plans + tasks.planId, M12 costCapUsd).
-    expect(colNames(db, "projects")).toEqual(expect.arrayContaining(["concurrencyCap", "terminalCommand", "autoModeEnvironment", "promotionMode", "costCapUsd"]));
+    // An M3 DB now applies EIGHT remaining steps (M4 concurrencyCap, M5 terminalCommand, M6-② autoModeEnvironment,
+    // M6-③ promotionMode, M9 tasks.dependsOn, M10 plans + tasks.planId, M12 costCapUsd, M13 jailImage).
+    expect(colNames(db, "projects")).toEqual(expect.arrayContaining(["concurrencyCap", "terminalCommand", "autoModeEnvironment", "promotionMode", "costCapUsd", "jailImage"]));
     expect(colNames(db, "tasks")).toEqual(expect.arrayContaining(["dependsOn", "planId"]));
     const row = db.prepare("SELECT * FROM projects WHERE id = 'p1'").get() as any;
     expect(row.name).toBe("Legacy");          // existing data survived the ALTERs
@@ -267,14 +267,15 @@ it("migrates an M3-shape DB through to head: adds concurrencyCap + terminalComma
     expect(row.terminalCommand).toBeNull();
     expect(row.autoModeEnvironment).toBeNull();
     expect(row.costCapUsd).toBeNull();
+    expect(row.jailImage).toBeNull();
     expect(row.promotionMode).toBe("pr");     // the NOT NULL DEFAULT backfills existing rows
-    expect(db.pragma("user_version", { simple: true })).toBe(before + 7);
+    expect(db.pragma("user_version", { simple: true })).toBe(before + 8);
     db.close();
 });
 
-// An M4-shape DB → migrate applies the remaining SIX steps (M5 terminalCommand + M6-② autoModeEnvironment
-// + M6-③ promotionMode + M9 tasks.dependsOn + M10 plans/planId + M12 costCapUsd), the existing row survives, user_version advances by exactly six.
-it("migrates an M4-shape DB through to head: adds terminalCommand + autoModeEnvironment + promotionMode + dependsOn, advances user_version by six", () => {
+// An M4-shape DB → migrate applies the remaining SEVEN steps (M5 terminalCommand + M6-② autoModeEnvironment
+// + M6-③ promotionMode + M9 tasks.dependsOn + M10 plans/planId + M12 costCapUsd + M13 jailImage), the existing row survives, user_version advances by exactly seven.
+it("migrates an M4-shape DB through to head: adds terminalCommand + autoModeEnvironment + promotionMode + dependsOn, advances user_version by seven", () => {
     const db = m4ShapeDb();
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir)
@@ -292,14 +293,15 @@ it("migrates an M4-shape DB through to head: adds terminalCommand + autoModeEnvi
     expect(row.terminalCommand).toBeNull();      // new nullable columns default to NULL
     expect(row.autoModeEnvironment).toBeNull();
     expect(row.costCapUsd).toBeNull();
+    expect(row.jailImage).toBeNull();
     expect(row.promotionMode).toBe("pr");        // the NOT NULL DEFAULT backfills existing rows
-    expect(db.pragma("user_version", { simple: true })).toBe(before + 6);
+    expect(db.pragma("user_version", { simple: true })).toBe(before + 7);
     db.close();
 });
 
-// An M5-shape DB → migrate applies the remaining FIVE steps (M6-② autoModeEnvironment + M6-③ promotionMode
-// + M9 tasks.dependsOn + M10 plans/planId + M12 costCapUsd), the existing row survives, user_version advances by exactly five.
-it("migrates an M5-shape DB through to head: adds autoModeEnvironment + promotionMode + dependsOn, advances user_version by five", () => {
+// An M5-shape DB → migrate applies the remaining SIX steps (M6-② autoModeEnvironment + M6-③ promotionMode
+// + M9 tasks.dependsOn + M10 plans/planId + M12 costCapUsd + M13 jailImage), the existing row survives, user_version advances by exactly six.
+it("migrates an M5-shape DB through to head: adds autoModeEnvironment + promotionMode + dependsOn, advances user_version by six", () => {
     const db = m5ShapeDb();
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir)
@@ -316,15 +318,16 @@ it("migrates an M5-shape DB through to head: adds autoModeEnvironment + promotio
     expect(row.name).toBe("Legacy");               // existing data survived the ALTER
     expect(row.autoModeEnvironment).toBeNull();    // new nullable column defaults to NULL
     expect(row.costCapUsd).toBeNull();
+    expect(row.jailImage).toBeNull();
     expect(row.promotionMode).toBe("pr");          // the NOT NULL DEFAULT backfills existing rows
-    expect(db.pragma("user_version", { simple: true })).toBe(before + 5);
+    expect(db.pragma("user_version", { simple: true })).toBe(before + 6);
     db.close();
 });
 
-// An M6-②-shape DB → migrate applies FOUR remaining steps (M6-③ promotionMode as NOT NULL DEFAULT 'pr'
-// + M9 tasks.dependsOn + M10 plans/planId + M12 costCapUsd). promotionMode is the first non-nullable config
-// column, so the ALTER must backfill the existing row with 'pr' (SQLite applies the column default to pre-existing rows).
-it("migrates an M6-②-shape DB: adds promotionMode ('pr' backfilled) + dependsOn, advances user_version by four", () => {
+// An M6-②-shape DB → migrate applies FIVE remaining steps (M6-③ promotionMode as NOT NULL DEFAULT 'pr'
+// + M9 tasks.dependsOn + M10 plans/planId + M12 costCapUsd + M13 jailImage). promotionMode is the first
+// non-nullable config column, so the ALTER must backfill the existing row with 'pr' (SQLite applies the column default to pre-existing rows).
+it("migrates an M6-②-shape DB: adds promotionMode ('pr' backfilled) + dependsOn, advances user_version by five", () => {
     const db = m6TwoShapeDb();
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir)
@@ -340,14 +343,14 @@ it("migrates an M6-②-shape DB: adds promotionMode ('pr' backfilled) + dependsO
     const row = db.prepare("SELECT * FROM projects WHERE id = 'p1'").get() as any;
     expect(row.name).toBe("Legacy");           // existing data survived the ALTER
     expect(row.promotionMode).toBe("pr");      // NOT NULL DEFAULT backfills the pre-existing row
-    expect(db.pragma("user_version", { simple: true })).toBe(before + 4);
+    expect(db.pragma("user_version", { simple: true })).toBe(before + 5);
     db.close();
 });
 
-// An M6-③-shape DB (all project config columns present, user_version 7) → migrate applies THREE remaining
-// steps (M9 tasks.dependsOn + M10 plans/planId + M12 costCapUsd). The existing task row survives with dependsOn
-// NULL, and user_version advances by exactly three.
-it("migrates an M6-③-shape DB: adds tasks.dependsOn + plans (NULL on the existing row), advances user_version by three", () => {
+// An M6-③-shape DB (all project config columns present, user_version 7) → migrate applies FOUR remaining
+// steps (M9 tasks.dependsOn + M10 plans/planId + M12 costCapUsd + M13 jailImage). The existing task row survives
+// with dependsOn NULL, and user_version advances by exactly four.
+it("migrates an M6-③-shape DB: adds tasks.dependsOn + plans (NULL on the existing row), advances user_version by four", () => {
     const db = m6ThreeShapeDb();
     db.prepare(
         `INSERT INTO tasks (id,projectId,title,intent,acceptance,status,createdAt,updatedAt)
@@ -363,14 +366,14 @@ it("migrates an M6-③-shape DB: adds tasks.dependsOn + plans (NULL on the exist
     expect(row.title).toBe("Legacy task"); // existing task data survived the ALTER
     expect(row.dependsOn).toBeNull();       // new nullable column defaults to NULL (read back as [])
     expect(row.planId).toBeNull();
-    expect(db.pragma("user_version", { simple: true })).toBe(before + 3);
+    expect(db.pragma("user_version", { simple: true })).toBe(before + 4);
     db.close();
 });
 
-// An M9-shape DB (user_version 8, tasks with dependsOn, no plans/planId) → migrate applies the remaining TWO
-// steps (M10 plans + tasks.planId, M12 costCapUsd). The existing task row survives with planId NULL, plans
-// starts empty, and user_version advances by exactly two.
-it("migrates an M9-shape DB: creates plans + adds tasks.planId (NULL on the existing row) + costCapUsd, advances user_version by two", () => {
+// An M9-shape DB (user_version 8, tasks with dependsOn, no plans/planId) → migrate applies the remaining THREE
+// steps (M10 plans + tasks.planId, M12 costCapUsd, M13 jailImage). The existing task row survives with planId NULL,
+// plans starts empty, and user_version advances by exactly three.
+it("migrates an M9-shape DB: creates plans + adds tasks.planId (NULL on the existing row) + costCapUsd, advances user_version by three", () => {
     const db = m9ShapeDb();
     db.prepare(
         `INSERT INTO tasks (id,projectId,title,intent,acceptance,status,createdAt,updatedAt)
@@ -390,13 +393,13 @@ it("migrates an M9-shape DB: creates plans + adds tasks.planId (NULL on the exis
     expect(row.title).toBe("Legacy task");                   // existing task data survived the ALTER
     expect(row.planId).toBeNull();                           // new nullable column defaults to NULL
     expect(db.prepare("SELECT COUNT(*) AS n FROM plans").get()).toEqual({ n: 0 });
-    expect(db.pragma("user_version", { simple: true })).toBe(before + 2);
+    expect(db.pragma("user_version", { simple: true })).toBe(before + 3);
     db.close();
 });
 
-// The M12 step in isolation: an M10-shape DB (user_version 9, plans + tasks.planId present, WITHOUT the
-// M12 costCapUsd column) → migrate adds the nullable REAL costCapUsd column. The existing project row survives
-// with costCapUsd NULL, and user_version advances by exactly one.
+// An M10-shape DB (user_version 9, plans + tasks.planId present, WITHOUT costCapUsd/jailImage) → migrate applies
+// the remaining TWO steps (M12 costCapUsd + M13 jailImage). The existing project row survives with both NULL, and
+// user_version advances by exactly two.
 function m10ShapeDb(): any {
     const db = new Database(":memory:");
     db.exec(`
@@ -430,7 +433,7 @@ function m10ShapeDb(): any {
     return db;
 }
 
-it("migrates an M10-shape DB: adds costCapUsd (NULL on the existing row), advances user_version by one", () => {
+it("migrates an M10-shape DB: adds costCapUsd + jailImage (NULL on the existing row), advances user_version by two", () => {
     const db = m10ShapeDb();
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir)
@@ -441,10 +444,66 @@ it("migrates an M10-shape DB: adds costCapUsd (NULL on the existing row), advanc
 
     migrate(db);
 
-    expect(colNames(db, "projects")).toContain("costCapUsd"); // the M12 ALTER landed
+    expect(colNames(db, "projects")).toEqual(expect.arrayContaining(["costCapUsd", "jailImage"])); // M12 + M13 ALTERs landed
     const row = db.prepare("SELECT * FROM projects WHERE id = 'p1'").get() as any;
     expect(row.name).toBe("Legacy");    // existing data survived the ALTER
-    expect(row.costCapUsd).toBeNull();  // new nullable column defaults to NULL
+    expect(row.costCapUsd).toBeNull();  // new nullable columns default to NULL
+    expect(row.jailImage).toBeNull();
+    expect(db.pragma("user_version", { simple: true })).toBe(before + 2);
+    db.close();
+});
+
+// The M13 step in isolation: an M12-shape DB (user_version 10, costCapUsd present, WITHOUT the M13 jailImage
+// column) → migrate adds the nullable TEXT jailImage column. The existing project row survives with jailImage
+// NULL (host mode), and user_version advances by exactly one.
+function m12ShapeDb(): any {
+    const db = new Database(":memory:");
+    db.exec(`
+        CREATE TABLE projects (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, repoPath TEXT NOT NULL,
+            integrationBranch TEXT NOT NULL, targetBranch TEXT NOT NULL,
+            branchPrefix TEXT NOT NULL, checkCommand TEXT NOT NULL, worktreeDir TEXT NOT NULL,
+            setupCommand TEXT, iterationCap INTEGER, noProgressK INTEGER, stallTimeoutMin INTEGER, model TEXT,
+            concurrencyCap INTEGER, terminalCommand TEXT, autoModeEnvironment TEXT,
+            promotionMode TEXT NOT NULL DEFAULT 'pr', costCapUsd REAL
+        );
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY, projectId TEXT NOT NULL, title TEXT NOT NULL,
+            intent TEXT NOT NULL, acceptance TEXT NOT NULL, status TEXT NOT NULL,
+            branchName TEXT, worktreePath TEXT, diffstat TEXT, failureReason TEXT,
+            createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, scopeHint TEXT, dependsOn TEXT, planId TEXT
+        );
+        CREATE TABLE iterations (
+            id TEXT PRIMARY KEY, taskId TEXT NOT NULL, idx INTEGER NOT NULL,
+            sessionId TEXT, startedAt INTEGER NOT NULL, endedAt INTEGER,
+            gateVerdict TEXT, commitSha TEXT, outputTail TEXT,
+            inputTokens INTEGER, outputTokens INTEGER, cacheReadTokens INTEGER,
+            cacheCreationTokens INTEGER, costUsd REAL, durationMs INTEGER
+        );
+        CREATE TABLE plans (
+            id TEXT PRIMARY KEY, projectId TEXT NOT NULL, title TEXT NOT NULL,
+            prdText TEXT NOT NULL, createdAt INTEGER NOT NULL
+        );
+    `);
+    db.pragma("user_version = 10");
+    return db;
+}
+
+it("migrates an M12-shape DB: adds jailImage (NULL/host-mode on the existing row), advances user_version by one", () => {
+    const db = m12ShapeDb();
+    db.prepare(
+        `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir)
+         VALUES (?,?,?,?,?,?,?,?)`,
+    ).run("p1", "Legacy", "/repo", "integration/ralph", "main", "ralph", "npm test", ".helm/worktrees");
+    const before = db.pragma("user_version", { simple: true }) as number;
+    expect(before).toBe(10);
+
+    migrate(db);
+
+    expect(colNames(db, "projects")).toContain("jailImage"); // the M13 ALTER landed
+    const row = db.prepare("SELECT * FROM projects WHERE id = 'p1'").get() as any;
+    expect(row.name).toBe("Legacy");   // existing data survived the ALTER
+    expect(row.jailImage).toBeNull();  // new nullable column defaults to NULL (host mode)
     expect(db.pragma("user_version", { simple: true })).toBe(before + 1);
     db.close();
 });

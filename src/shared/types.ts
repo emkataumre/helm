@@ -27,6 +27,7 @@ export interface Project {
     terminalCommand: string | null;  // M5 drop-in launch template ({worktree}/{resume}); NULL = engine default
     autoModeEnvironment: string | null; // M6-② auto-mode trusted-env (spec §10); raw TEXT; NULL = ["$defaults"]
     promotionMode: "pr" | "direct" | "strict"; // M6-③ batch-Promote graduation strategy (spec §13/§3); NOT NULL, default "pr"
+    jailImage: string | null;        // M13 Docker-jail opt-in; NULL = host mode, non-null = jailed spawns with that image
 }
 
 export interface Task {
@@ -314,6 +315,7 @@ export interface NewProjectInput {
     terminalCommand?: string | null;
     autoModeEnvironment?: string | null;
     promotionMode?: "pr" | "direct" | "strict"; // absent → stored 'pr' (the DB default)
+    jailImage?: string | null; // M13 Docker-jail image; absent/blank → stored NULL → host mode
 }
 export interface NewTaskInput {
     projectId: string;
@@ -324,7 +326,7 @@ export interface NewTaskInput {
     dependsOn?: string[]; // M9 dependency edges (absent → stored NULL / read back as [])
 }
 // The editable per-project config columns (the project-config form patches these).
-export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode">>;
+export type ProjectConfigPatch = Partial<Pick<Project, "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode" | "jailImage">>;
 // Best-effort registration pre-fill (current git branch → target, package.json → check, lockfile → setup).
 export interface DetectedConfig { targetBranch: string | null; checkCommand: string | null; setupCommand: string | null }
 export interface HelmApi {

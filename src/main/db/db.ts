@@ -97,6 +97,12 @@ const STEPS: Array<(db: Db) => void> = [
     (db) => {
         db.exec(`ALTER TABLE projects ADD COLUMN costCapUsd REAL`);
     },
+    // Step 10 — M13 per-project Docker-jail opt-in: a nullable image tag. NULL = host mode (spawn exactly
+    // as before — the `terminalCommand` NULL→in-app precedent, semantics-by-null). Non-null → jailed spawns
+    // run `docker run <image> … claude …` through the spawn chokepoint. No per-task override (parked, ledger).
+    (db) => {
+        db.exec(`ALTER TABLE projects ADD COLUMN jailImage TEXT`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.

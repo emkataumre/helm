@@ -43,6 +43,20 @@ it("round-trips an all-NULL-config project (null, never undefined)", () => {
     expect(got.concurrencyCap).toBeNull();
     expect(got.terminalCommand).toBeNull();
     expect(got.autoModeEnvironment).toBeNull();
+    expect(got.jailImage).toBeNull();
+    db.close();
+});
+
+// M13: the Docker-jail image is a per-project nullable TEXT column (NULL = host mode), set on insert
+// (blank trims to NULL via opt(), like model) and patchable like the other config fields.
+it("round-trips a set jailImage, and updateProject patches it", () => {
+    const db = openDb(":memory:");
+    const p = insertProject(db, { name: "Jailed", repoPath: "/r", targetBranch: "main", checkCommand: "c", jailImage: "helm-jail:latest" });
+    expect(getProject(db, p.id)?.jailImage).toBe("helm-jail:latest");
+    updateProject(db, p.id, { jailImage: "helm-jail:custom" });
+    expect(getProject(db, p.id)?.jailImage).toBe("helm-jail:custom");
+    updateProject(db, p.id, { jailImage: null }); // explicit null clears it back to host mode
+    expect(getProject(db, p.id)?.jailImage).toBeNull();
     db.close();
 });
 
