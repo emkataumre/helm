@@ -1,7 +1,11 @@
 // tests/engine/spawn.test.ts
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnAgent } from "../../src/main/engine/spawn";
 import type { ExecFn } from "../../src/main/engine/exec";
+import type { JailSpec } from "../../src/main/engine/jail";
 import type { SnapshotEvent } from "../../src/shared/types";
 
 const INIT = JSON.stringify({ type: "system", subtype: "init", session_id: "sess-xyz" });
@@ -106,5 +110,30 @@ describe("spawnAgent stream-json", () => {
         const exec: ExecFn = async (_cmd, args) => { seenArgs = args ?? []; return { code: 0, stdout: "", stderr: "", timedOut: false }; };
         await spawnAgent("/wt", "/goal x", {}, exec);
         expect(seenArgs).not.toContain("--settings");
+    });
+
+    // ── M13: the jail branch routes the SAME stream through `docker run … claude …` at the chokepoint ─────
+    it("routes to `docker run …` (not `claude`) when opts.jail is present, and writes the env-file", async () => {
+        const envFilePath = join(tmpdir(), `helm-spawn-jail-${Date.now()}.env`);
+        const jail: JailSpec = {
+            image: "helm-jail:latest", taskId: "t1", taskBranch: "ralph/task-t1",
+            exchangeHostPath: "C:/x/t1.git", setupCommand: null,
+            ralph: { instructions: "# i\n", task: "# t\n", progress: "# p\n" }, envFilePath,
+        };
+        let seenCmd = ""; let seenArgs: string[] = [];
+        const exec: ExecFn = async (cmd, args, opts) => { seenCmd = cmd; seenArgs = args ?? []; for (const l of [INIT, RESULT]) opts?.onLine?.(l); return { code: 0, stdout: "", stderr: "", timedOut: false }; };
+        const res = await spawnAgent("/wt", "/goal x", { jail, settings: '{"permissions":{"deny":["Bash(git push:*)"]}}' }, exec);
+        // the chokepoint launched docker, not claude — with the jail plan's argv
+        expect(seenCmd).toBe("docker");
+        expect(seenArgs.slice(0, 4)).toEqual(["run", "--rm", "--name", "helm-jail-task-t1"]);
+        expect(seenArgs).toContain("--dangerously-skip-permissions");
+        expect(seenArgs).not.toContain("--permission-mode"); // host-mode flag gone in jail mode
+        // the stream still parses identically through docker stdout
+        expect(res.ok).toBe(true);
+        expect(res.sessionId).toBe("sess-xyz");
+        // the .ralph env-file was written for --env-file
+        const envFile = readFileSync(envFilePath, "utf8");
+        expect(envFile).toContain("HELM_TASK_BRANCH=ralph/task-t1");
+        expect(envFile).toMatch(/HELM_RALPH_TASK_B64=/);
     });
 });

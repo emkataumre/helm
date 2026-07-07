@@ -24,6 +24,8 @@ import { runCheck } from "./engine/check";
 import { run } from "./engine/exec";
 import { spawnAgent } from "./engine/spawn";
 import { buildSpawnSettings } from "./engine/spawnSettings";
+import { ensureExchange, pushToExchange, fetchFromExchange } from "./engine/exchange";
+import { containerNameFor, JAIL_NAME_PREFIX, type JailSpec } from "./engine/jail";
 import { createLogSink } from "./engine/logSink";
 import { createSnapshotStore } from "./engine/snapshotStore";
 import { snapshotFromRows } from "./engine/verifyState";
@@ -51,6 +53,32 @@ export function registerIpc(
 ): { disposePtys: () => void } {
     const db = openDb(join(app.getPath("userData"), "helm.db"));
     const logsDir = join(app.getPath("userData"), "logs");
+    // M13 jail: the per-task BARE EXCHANGE + env-file live OUTSIDE the target repo (so they never pollute its
+    // git status), under Helm's userData. Bind-mounted into the container as /exchange; reaped with the task.
+    const jailExchangeDir = join(app.getPath("userData"), "jail-exchange");
+    const jailExchangePath = (taskId: string) => join(jailExchangeDir, `${taskId}.git`);
+    const jailEnvFilePath = (taskId: string) => join(jailExchangeDir, `${taskId}.env`);
+    // Reap ONE task's jail resources — the deterministic-named container + per-task volume + bare exchange +
+    // env-file. Best-effort (a host-mode task has none; docker may be absent → `run` resolves non-zero, never
+    // throws). Addressed ONLY by the helm-jail-<taskId> name — process hygiene extends to containers, never a
+    // wider docker sweep. The volume is reaped ONLY here (a terminal teardown) — it's retained across
+    // iterations AND across needs-human/handed-off so a resume reuses the clone + node_modules.
+    const reapJailResources = async (taskId: string): Promise<void> => {
+        const name = containerNameFor(taskId);
+        await run("docker", ["rm", "-f", name]);       // stop+remove if it lingered (a normal run --rm auto-reaps)
+        await run("docker", ["volume", "rm", name]);   // remove the per-task clone volume
+        try { rmSync(jailExchangePath(taskId), { recursive: true, force: true }); } catch { /* gone */ }
+        try { rmSync(jailEnvFilePath(taskId), { force: true }); } catch { /* gone */ }
+    };
+    // Reap any LINGERING helm-jail- container at boot/quit (a crash may leave one; a normal run auto-removes
+    // via --rm). Census STRICTLY by the helm-jail- name prefix — never a wider docker sweep. Skipped entirely
+    // when no project is jailed, so a host-only Helm never invokes docker.
+    const reapOrphanJailContainers = async (): Promise<void> => {
+        if (!listProjects(db).some((p) => p.jailImage)) return;
+        const ps = await run("docker", ["ps", "-aq", "--filter", `name=${JAIL_NAME_PREFIX}`]);
+        const ids = ps.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+        if (ids.length) { await run("docker", ["rm", "-f", ...ids]); console.log(`[helm] reaped ${ids.length} orphan jail container(s)`); }
+    };
     // Derive the tray tooltip from the live board via the PURE trayCounts module, then hand the string to
     // index.ts. listTasks is the same read tasks:list uses; refreshed on every notify (board mutation).
     const refreshTray = () => setTrayTooltip(formatTrayTooltip(deriveTrayCounts(listTasks(db))));
@@ -165,6 +193,20 @@ export function registerIpc(
             ? { worktreePath: task.worktreePath, branch: task.branchName, startIndex: listIterations(db, task.id).length }
             : undefined;
 
+        // M13: build the jail spec at THIS edge (like buildSpawnSettings) when the project opts in, so spawn.ts
+        // stays decoupled from Project. Absent (host mode) → the loop + spawn behave byte-identically to today.
+        // taskBranch MUST equal the loop's branch (the container checks out HELM_TASK_BRANCH; the host pushes it).
+        const branch = resume?.branch ?? `${project.branchPrefix}/task-${task.id}`;
+        const jailSpec: JailSpec | undefined = project.jailImage ? {
+            image: project.jailImage,
+            taskId: task.id,
+            taskBranch: branch,
+            exchangeHostPath: jailExchangePath(task.id),
+            setupCommand: project.setupCommand,
+            ralph: { instructions: buildInstructions(), task: buildTaskDirective(task), progress: seedProgress(task) },
+            envFilePath: jailEnvFilePath(task.id),
+        } : undefined;
+
         const deps: RunTaskDeps = {
             ensureBranch, checkoutBranch, createWorktree, removeWorktree,
             ensureRalphExcluded, writeRalphFiles,
@@ -172,7 +214,9 @@ export function registerIpc(
             // Inject the per-iteration raw-log sink (keyed by taskId + index) AND the per-spawn --settings
             // JSON (M6-② never-push belt + autoMode.environment) at the chokepoint. buildSpawnSettings runs
             // at this ipc edge so spawn.ts stays decoupled from Project (it just forwards the string).
-            spawnAgent: (wt, prompt, opts) => spawnAgent(wt, prompt, { ...opts, logSink: createLogSink(logsDir, task.id, opts.iterationIndex ?? 0), settings: buildSpawnSettings(project) }),
+            // M13: inject the jail spec (undefined in host mode → spawn runs `claude` unchanged; present →
+            // `docker run … claude …`). The chokepoint stays decoupled from Project — it forwards the spec.
+            spawnAgent: (wt, prompt, opts) => spawnAgent(wt, prompt, { ...opts, logSink: createLogSink(logsDir, task.id, opts.iterationIndex ?? 0), settings: buildSpawnSettings(project), jail: jailSpec }),
             commitAll, headSha,
             runCheck: (wt, cmd, t) => runCheck(wt, cmd, t),
             runAcceptance: (wt, cmds, t) => runAcceptance(wt, cmds, t),
@@ -191,6 +235,15 @@ export function registerIpc(
             finishIteration: (id, patch) => { finishIteration(db, id, patch); notify(); },
             emit: (e) => snapshots.dispatch(task.id, e),
             signal: controller.signal, // M5: a drop-in hard-kills the in-flight session
+            // M13 jail mode: wired ONLY when the project opts in. jailSync = the "git as the wall" sync bound to
+            // this task's bare exchange (ensureExchange once, host→exchange before each spawn, exchange→host
+            // after); reapJail tears down the container+volume+exchange on a terminal (merged/abandoned) exit.
+            jailSync: jailSpec ? {
+                prepare: () => ensureExchange(jailSpec.exchangeHostPath),
+                syncIn: (wt, b) => pushToExchange(wt, jailSpec.exchangeHostPath, b),
+                syncOut: (wt, b) => fetchFromExchange(wt, jailSpec.exchangeHostPath, b),
+            } : undefined,
+            reapJail: jailSpec ? reapJailResources : undefined,
             log: (m) => console.log(`[helm] ${m}`),
         };
 
@@ -341,7 +394,12 @@ export function registerIpc(
         const config = resolveLoopConfig(project);
         const taskBranch = task.branchName ?? `${project.branchPrefix}/task-${task.id}`;
         snapshots.dispatch(task.id, { type: "gate", index: 0, label: "merge: waiting" });
-        void verifyAndMerge(project, task, taskBranch, buildHandbackDeps(config)).then(() => notify());
+        // M13: a jailed task that verify-&-merges to `merged` has its worktree removed → reap its jail
+        // resources too (host mode / non-merged → no-op). Gated on jailImage so host tasks never touch docker.
+        void verifyAndMerge(project, task, taskBranch, buildHandbackDeps(config)).then(async (r) => {
+            if (r.outcome === "merged" && project.jailImage) await reapJailResources(task.id);
+            notify();
+        });
     });
 
     // Abandon: reap the retained worktree + branch, flag abandoned.
@@ -353,6 +411,7 @@ export function registerIpc(
         const config = resolveLoopConfig(project);
         const taskBranch = task.branchName ?? `${project.branchPrefix}/task-${task.id}`;
         await abandon(project, task, taskBranch, buildHandbackDeps(config));
+        if (project.jailImage) await reapJailResources(task.id); // M13: reap the jail container+volume+exchange
         notify();
     });
 
@@ -549,6 +608,14 @@ export function registerIpc(
                     // Tolerant — a partially-removed worktree may throw; the postcondition "gone" is what matters.
                     try { await removeWorktree(project.repoPath, action.path, action.branch ?? "", false); }
                     catch (e) { console.log(`[helm] prune skipped for ${action.path}: ${e instanceof Error ? e.message : String(e)}`); }
+                    // M13: if a JAILED task owned this pruned worktree (a crash mid terminal-teardown left it),
+                    // reap its jail resources too — the per-task volume outlives the worktree by design, so the
+                    // loop's terminate is the normal reaper; this is the crash-safety net. Matched by path.
+                    if (project.jailImage) {
+                        const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
+                        const owner = tasks.find((t) => t.worktreePath && norm(t.worktreePath) === norm(action.path));
+                        if (owner) await reapJailResources(owner.id);
+                    }
                     break;
                 }
             }
@@ -566,6 +633,10 @@ export function registerIpc(
             try { await runReconcile(project); }
             catch (e) { console.log(`[helm] reconcile failed for project ${project.id}: ${e instanceof Error ? e.message : String(e)}`); }
         }
+        // M13: reap any lingering helm-jail- container a crash left behind (a normal run auto-removes via --rm).
+        // Best-effort + skipped entirely when no project is jailed, so a host-only Helm never invokes docker.
+        try { await reapOrphanJailContainers(); }
+        catch (e) { console.log(`[helm] jail orphan reap skipped: ${e instanceof Error ? e.message : String(e)}`); }
         scheduler.kick();
     })();
 
@@ -594,5 +665,7 @@ export function registerIpc(
     // Handed to index.ts's before-quit: a real Quit kills every live PTY session (no orphan pwsh/conhost)
     // and closes every plan watcher (M10). A window-hide (M6-④ tray) must NOT call this — sessions + watchers
     // keep running in the main process.
-    return { disposePtys: () => { for (const dispose of planWatchers.values()) dispose(); planWatchers.clear(); ptyManager.disposeAll(); } };
+    // M13: on quit, best-effort fire-and-forget reap of any running jail container (a quit leaves the
+    // daemon-owned container running — the reliable cleanup is the boot reap next launch; this is a courtesy).
+    return { disposePtys: () => { for (const dispose of planWatchers.values()) dispose(); planWatchers.clear(); ptyManager.disposeAll(); void reapOrphanJailContainers().catch(() => {}); } };
 }

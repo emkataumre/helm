@@ -36,6 +36,20 @@ export interface RunTaskDeps {
     // M5 drop-in: an AbortSignal owned by the per-task AbortController registry (ipc.ts). On abort, the
     // in-flight claude is hard-killed (threaded into spawnAgent) and the loop bails to handed-off.
     signal?: AbortSignal;
+    // M13 jail mode: the git-exchange sync around each in-container spawn ("git as the wall"). ALL absent ⇒
+    // host mode (no sync — byte-identical to today). The edge wires these bound to the per-task exchange only
+    // when project.jailImage is set. prepare = ensureExchange (once, idempotent); syncIn = host→exchange
+    // (force) BEFORE the container runs (host authoritative in); syncOut = exchange→host (fetch+hard-reset)
+    // AFTER (container authoritative out). The GATES are untouched — check ∧ acceptance still run on the HOST
+    // worktree these sync into/out of (invariant gates-run-host-side).
+    jailSync?: {
+        prepare: () => Promise<void>;
+        syncIn: (worktreePath: string, branch: string) => Promise<void>;
+        syncOut: (worktreePath: string, branch: string) => Promise<void>;
+    };
+    // M13 jail reap: remove the per-task container + volume + bare exchange on a TERMINAL teardown
+    // (merged/abandoned — where the worktree is also removed). Absent ⇒ host mode / nothing to reap.
+    reapJail?: (taskId: string) => Promise<void>;
     log: (msg: string) => void;
 }
 
@@ -63,8 +77,12 @@ export async function runIteration(
     config: LoopConfig, d: RunTaskDeps,
 ): Promise<IterationOutcome> {
     const prompt = buildGoalPrompt(project, task, ctx.priorFailure);
+    // M13 jail mode: push the host worktree's authoritative pre-iteration state into the bare exchange BEFORE
+    // the agent runs (the container clones the exchange). Host mode → no-op.
+    if (d.jailSync) await d.jailSync.syncIn(ctx.worktreePath, ctx.branch);
     // Forward spawn's translated stream events (assistant/tool-use/usage) into the live snapshot,
-    // stamped with this iteration's index. project.model NULL → undefined (the CLI default).
+    // stamped with this iteration's index. project.model NULL → undefined (the CLI default). In jail mode the
+    // edge injects opts.jail into this spawn, so it runs `docker run … claude …` (the loop stays agnostic).
     const agent = await d.spawnAgent(ctx.worktreePath, prompt, {
         model: project.model ?? undefined,
         idleTimeoutMs: config.stallTimeoutMs,
@@ -72,6 +90,10 @@ export async function runIteration(
         onEvent: (e) => d.emit?.(e),
         signal: d.signal, // M5: a drop-in hard-kills this session via the existing killTree
     });
+    // M13 jail mode: fetch the container's commit back into the host worktree (hard-reset). Host mode → no-op.
+    // After this, commitAll no-ops (clean tree) and headSha reads the CONTAINER's commit; the gates below run
+    // on the host worktree — unchanged.
+    if (d.jailSync) await d.jailSync.syncOut(ctx.worktreePath, ctx.branch);
     const base = { usage: agent.usage, durationMs: agent.durationMs, sessionId: agent.sessionId, deniedCommands: agent.deniedCommands ?? [] };
     await d.commitAll(ctx.worktreePath, `ralph: iter ${ctx.index} — ${task.title}`);
     const commitSha = await d.headSha(ctx.worktreePath);
@@ -152,6 +174,10 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         d.emit?.({ type: "status", status, terminalReason: reason });
         if (status === "merged" || status === "abandoned") {
             await d.removeWorktree(project.repoPath, worktreePath, branch, keepBranch);
+            // M13: a terminal jail task's worktree is gone → reap its container + per-task volume + exchange
+            // (the volume is retained across iterations AND across needs-human/handed-off for resume, so it's
+            // only reaped here, at a terminal teardown). Host mode → no-op.
+            if (d.reapJail) await d.reapJail(task.id);
         }
         d.log(`task ${task.id} ${status}${reason ? `: ${reason}` : ""}`);
         return status;
@@ -177,6 +203,10 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
             if (!setup.ok) return terminate("needs-human", `setup command failed:\n${tail(setup.output)}`, true);
         }
     }
+
+    // M13 jail mode: ensure the per-task bare exchange exists before the first syncIn (idempotent — a resume
+    // after a restart reuses it). Host mode → no-op.
+    if (d.jailSync) await d.jailSync.prepare();
 
     let priorFailure: string | undefined;
     let lastGateSummary = ""; // one-liner from the most recent failing gate — folded into the terminal reason

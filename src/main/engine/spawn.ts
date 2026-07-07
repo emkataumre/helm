@@ -1,8 +1,9 @@
 // src/main/engine/spawn.ts
 import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { run, type ExecFn } from "./exec";
 import type { SnapshotEvent, TokenTotals } from "../../shared/types";
-import type { JailSpec } from "./jail";
+import { buildJailPlan, type JailSpec } from "./jail";
 
 export interface SpawnOptions {
     model?: string;
@@ -117,18 +118,41 @@ export async function spawnAgent(
         }
     };
 
-    const args = [
-        "-p", prompt,
-        "--output-format", "stream-json", "--verbose",
-        "--session-id", sessionId,
-        "--permission-mode", "auto",
-        // M6-②: inject the never-push belt + trusted-environment declaration inline. Built at the ipc edge
-        // (buildSpawnSettings) so this chokepoint stays decoupled from Project — it just forwards the string.
-        ...(opts.settings ? ["--settings", opts.settings] : []),
-        ...(opts.model ? ["--model", opts.model] : []),
-        ...(opts.extraArgs ?? []),
-    ];
-    const res = await exec("claude", args, { cwd: worktreePath, idleTimeoutMs: opts.idleTimeoutMs, onLine, signal: opts.signal });
+    // The command + args. HOST mode runs `claude` directly — byte-identical to today (invariant #4:
+    // jail-opt-in-host-default). JAIL mode (opts.jail present, M13) wraps it in `docker run … <image> claude …`
+    // via the PURE planner, writes the .ralph env-file (the base64 transport — spike FINDINGS §5), and arranges
+    // a `docker kill <name>` on abort (killTree on the docker CLIENT is a no-op on the container — FINDINGS §4).
+    // onLine parsing, session-id capture, usage/cost, and the return shape are SHARED across both — the stream
+    // just flows through `docker run` stdout instead of `claude`'s.
+    let command: string;
+    let args: string[];
+    let removeAbort: (() => void) | undefined;
+    if (opts.jail) {
+        const plan = buildJailPlan(opts.jail, { prompt, sessionId, settings: opts.settings, model: opts.model, extraArgs: opts.extraArgs });
+        writeFileSync(plan.envFilePath, `${plan.envFileLines.join("\n")}\n`); // the edge-side write (untested docker glue)
+        command = "docker";
+        args = plan.argv;
+        if (opts.signal) {
+            const onAbort = () => { void run("docker", plan.killArgs); }; // stop the CONTAINER, not just the docker client
+            if (opts.signal.aborted) onAbort();
+            else { opts.signal.addEventListener("abort", onAbort); removeAbort = () => opts.signal!.removeEventListener("abort", onAbort); }
+        }
+    } else {
+        command = "claude";
+        args = [
+            "-p", prompt,
+            "--output-format", "stream-json", "--verbose",
+            "--session-id", sessionId,
+            "--permission-mode", "auto",
+            // M6-②: inject the never-push belt + trusted-environment declaration inline. Built at the ipc edge
+            // (buildSpawnSettings) so this chokepoint stays decoupled from Project — it just forwards the string.
+            ...(opts.settings ? ["--settings", opts.settings] : []),
+            ...(opts.model ? ["--model", opts.model] : []),
+            ...(opts.extraArgs ?? []),
+        ];
+    }
+    const res = await exec(command, args, { cwd: worktreePath, idleTimeoutMs: opts.idleTimeoutMs, onLine, signal: opts.signal });
+    removeAbort?.();
 
     return {
         ok: res.code === 0 && !res.timedOut && res.idleTimedOut !== true,
