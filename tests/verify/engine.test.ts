@@ -45,7 +45,7 @@ describe("verify/invariants: predicates hold, and catch a lie", () => {
             capRespected: true, stallDetectedAndRecycled: false, noProgressBailed: false,
             worktreeRemoved: true, branchKept: false, diffstatRecorded: true, failureReasonSet: false,
             terminalReason: null, sessionIdsCaptured: true,
-            config: { iterationCap: 8, noProgressK: 2, denyWallK: 3, stallTimeoutMs: 1000, checkTimeoutMs: 1000 },
+            config: { iterationCap: 8, noProgressK: 2, denyWallK: 3, costCapUsd: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 },
         };
         const failed = runInvariants(lie).filter((r) => !r.ok).map((r) => r.name);
         expect(failed).toContain("no-merge-on-red");

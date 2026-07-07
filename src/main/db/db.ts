@@ -91,6 +91,12 @@ const STEPS: Array<(db: Db) => void> = [
         `);
         db.exec(`ALTER TABLE tasks ADD COLUMN planId TEXT`);
     },
+    // Step 9 — M12 per-task cost cap: a nullable REAL USD spend ceiling the Ralph loop enforces so a
+    // runaway task can't burn unbounded tokens overnight (nullable; NULL = engine default 25). Mapped in
+    // resolveLoopConfig with ?? (an explicit 0 is honored and means spawn nothing).
+    (db) => {
+        db.exec(`ALTER TABLE projects ADD COLUMN costCapUsd REAL`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.

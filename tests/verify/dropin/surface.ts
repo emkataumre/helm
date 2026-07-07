@@ -12,12 +12,12 @@ import type { LoopConfig } from "../../../src/main/engine/loopConfig";
 import type { Project, Task, TaskStatus, TokenTotals } from "../../../src/shared/types";
 
 const ZERO: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0 };
-const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
+const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, costCapUsd: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
 
 export const mkProject = (id: string, concurrencyCap: number | null): Project => ({
     id, name: id, repoPath: "/r", integrationBranch: "integration/ralph", targetBranch: "main", branchPrefix: "ralph",
     checkCommand: "c", worktreeDir: ".helm/worktrees", setupCommand: null, iterationCap: null, noProgressK: null,
-    stallTimeoutMin: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr",
+    stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr",
 });
 export const mkTask = (id: string, projectId: string, createdAt: number): Task => ({
     id, projectId, title: id, intent: "", acceptance: ["x"], status: "queued", scopeHint: null, dependsOn: [], planId: null,

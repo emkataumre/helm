@@ -200,9 +200,21 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     // at zero iterations). prevSha above is the worktree's current HEAD — the human's committed state.
     const startIndex = resume ? resume.startIndex : 0;
 
+    // M12 cost cap: this RUN's accumulated USD spend (sum of each iteration's usage.costUsd; null/absent → 0).
+    // Like the split iteration counter above, it is a LOCAL that re-inits to 0 every runTaskLoop call, so a
+    // resume gets a FRESH cost budget (the human resumed *because* the budget was exhausted). The cap gates
+    // SPAWNS only — checked at the top of the loop before spawning; a green iteration that crosses the cap
+    // still merges below.
+    let spend = 0;
+
     for (let i = 0; i < config.iterationCap; i++) {
         // Top-of-loop guard: a drop-in that lands between iterations bails before spawning the next one.
         if (d.signal?.aborted) return handOff();
+        // Cost-cap breaker: once this run's spend reaches the ceiling, stop spawning (BEFORE addIteration/spawn).
+        // A 0 cap is honored — spend (0) >= cap (0) on the first pass, so a 0-cap project spawns nothing at all.
+        if (spend >= config.costCapUsd) {
+            return terminate("needs-human", `cost cap reached ($${spend.toFixed(2)} of $${config.costCapUsd} cap)`, true);
+        }
         const dbIndex = startIndex + i;
         d.emit?.({ type: "iteration-start", index: dbIndex });
         const iter = d.addIteration(task.id, dbIndex);
@@ -213,6 +225,8 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
             cacheReadTokens: o.usage.cacheRead, cacheCreationTokens: o.usage.cacheCreation,
             costUsd: o.usage.costUsd, durationMs: o.durationMs,
         });
+        // Accumulate this iteration's spend for the next top-of-loop cost-cap check (null/absent → 0).
+        spend += o.usage.costUsd ?? 0;
         d.emit?.({ type: "iteration-end", index: dbIndex, verdict: o.verdict, commitSha: o.commitSha });
 
         // Post-iteration guard: a drop-in killed the in-flight session DURING this iteration. runIteration
