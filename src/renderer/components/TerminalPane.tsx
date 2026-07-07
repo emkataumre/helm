@@ -30,7 +30,9 @@ export function TerminalPane({ session }: { session: PtySession }) {
             if (disposed) return;
             const t = new Terminal({
                 cursorBlink: true,
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                // Cascadia first (ships with Win11): the generic ui-monospace stack lacked the box/braille
+                // glyphs TUI art uses — the claude logo rendered broken (M10-acceptance finding).
+                fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace',
                 fontSize: 13,
                 theme: { background: "#141413", foreground: "#FAF9F5", cursor: "#D97757" },
             });
@@ -38,6 +40,18 @@ export function TerminalPane({ session }: { session: PtySession }) {
             t.loadAddon(fit);
             t.open(host);
             term = t;
+
+            // Ctrl+V / Ctrl+Shift+V paste (M10-acceptance finding: with no app menu there's no paste
+            // accelerator, so Ctrl+V just sent ^V to the pty and nothing pasted). term.paste() goes through
+            // bracketed paste → the TUI receives it as a paste, not keystrokes. Alt+V (the claude TUI's own
+            // image-paste binding) is untouched — it never reaches this handler's chord.
+            t.attachCustomKeyEventHandler((e) => {
+                if (e.type === "keydown" && e.ctrlKey && !e.altKey && (e.key === "v" || e.key === "V")) {
+                    void navigator.clipboard.readText().then((text) => { if (text) t.paste(text); });
+                    return false;
+                }
+                return true;
+            });
 
             t.onData((data) => { void window.helm.ptyWrite(session.id, data); });
             unsubData = window.helm.onPtyData((id, chunk) => { if (id === session.id) t.write(chunk); });
