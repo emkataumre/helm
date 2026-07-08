@@ -199,6 +199,10 @@ export interface IterationView {
     durationMs: number | null;
     sessionId: string | null;
     commitSha: string | null;
+    // The failing gate's evidence tail (empty-string/null on green). Carried on iteration-end and
+    // rebuilt from the DB row, so the cockpit's expandable iteration rows read the same evidence
+    // in-session and after a restart.
+    outputTail: string | null;
 }
 
 export interface ActivityEntry {
@@ -229,7 +233,7 @@ export type SnapshotEvent =
     | { type: "tool-use"; index: number; name: string }
     | { type: "usage"; index: number; tokens: TokenTotals; durationMs?: number; sessionId?: string }
     | { type: "gate"; index: number; label: string }
-    | { type: "iteration-end"; index: number; verdict: IterationVerdict; commitSha: string }
+    | { type: "iteration-end"; index: number; verdict: IterationVerdict; commitSha: string; tail?: string }
     | { type: "status"; status: TaskStatus; terminalReason?: string };
 
 // M4 scheduler state for the cockpit indicator (one read per poll). Lives here (shared) so the

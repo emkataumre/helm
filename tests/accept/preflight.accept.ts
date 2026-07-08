@@ -7,6 +7,10 @@
 // text, NOT data-verify (stripped in prod). HARD CONSTRAINTS honoured: (1) the scheduler is PAUSED before
 // Confirm — confirm kicks it, and an unpaused queued task would auto-spawn a real claude; (2) the planner PTY
 // sits idle — the test NEVER writes to it (no real claude conversation). try/finally-closes the app.
+//
+// M14 cockpit deltas: verdict labels are "expected red" / "already green" / "could not run"; evidence tails
+// sit behind a per-row [Show output tail] toggle; ack checkboxes hide their inputs (click the .helm-check
+// label); Run pre-flight only exists once the draft parses.
 import { describe, it, expect } from "vitest";
 import type { Page } from "playwright-core";
 import { writeFileSync, mkdirSync, readdirSync } from "node:fs";
@@ -20,6 +24,7 @@ async function pauseFleet(page: Page): Promise<void> {
 }
 
 const listTasks = (page: Page) => page.evaluate(() => window.helm.listTasks());
+const stageNow = async (page: Page): Promise<string> => (await page.locator(".helm-stage .seg.now").textContent()) ?? "";
 function git(cwd: string, args: string[]): string {
     return execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
 }
@@ -52,42 +57,50 @@ describe("preflight", () => {
             // Pause BEFORE anything queues — Confirm kicks the scheduler; a queued+eligible task would auto-spawn.
             await pauseFleet(page);
 
-            // Open the planner via the real UI button → PlannerView mounts (idle planner PTY + side rail).
-            await page.getByRole("button", { name: "Plan: PreflightProj", exact: true }).click();
-            await page.getByText(/Conversing[^A-Za-z]*now/).waitFor({ state: "visible", timeout: 30_000 });
+            // Open the planner via the real UI (project view → Planner tab → Open the planner; idle PTY + rail).
+            await page.locator(".helm-sidebar").getByText("PreflightProj").click();
+            await page.getByRole("tab", { name: "Planner" }).click();
+            await page.getByRole("button", { name: "Open the planner", exact: true }).click();
+            await until(async () => (await stageNow(page)).includes("conversing"), { timeoutMs: 30_000, label: "stage = conversing" });
             mkdirSync(planDir, { recursive: true });
 
             writeFileSync(join(planDir, "prd.md"), "# Preflight PRD\n\nOne task, three acceptance flavours.\n");
-            await page.getByText(/PRD drafted[^A-Za-z]*now/).waitFor({ state: "visible", timeout: 30_000 });
+            await until(async () => (await stageNow(page)).includes("prd drafted"), { timeoutMs: 30_000, label: "stage = prd drafted" });
 
             writeFileSync(join(planDir, "tasks.json"), draftJson);
-            await page.getByText(/Tasks drafted[^A-Za-z]*now/).waitFor({ state: "visible", timeout: 30_000 });
+            await until(async () => (await stageNow(page)).includes("tasks drafted"), { timeoutMs: 30_000, label: "stage = tasks drafted" });
 
             // [Run pre-flight] — REALLY builds a throwaway worktree off integration/ralph and runs the 3 commands.
+            // The button only exists once the draft parses, so its visibility IS the valid-draft gate.
             const runBtn = page.getByRole("button", { name: /Run pre-flight/ });
-            await until(async () => (await runBtn.isDisabled()) ? null : true, { label: "run pre-flight enabled once valid" });
+            await runBtn.waitFor({ state: "visible", timeout: 30_000 });
             await runBtn.click();
 
-            // The verdict panel lands with all three flavours, the did-you-mean, and the ok-red evidence tail.
-            await page.getByText("already green").waitFor({ state: "visible", timeout: 60_000 });      // warn-already-green
-            await page.getByText("red (expected)").waitFor({ state: "visible", timeout: 30_000 });     // ok-red
-            await page.getByText(/did you mean/).waitFor({ state: "visible", timeout: 30_000 });        // warn-missing …
+            // The verdict panel lands with all three flavours + the did-you-mean carried onto the warn-missing.
+            await page.getByText("already green").first().waitFor({ state: "visible", timeout: 60_000 }); // warn-already-green
+            await page.getByText("expected red").first().waitFor({ state: "visible", timeout: 30_000 });  // ok-red
+            await page.getByText(/did you mean/).first().waitFor({ state: "visible", timeout: 30_000 });   // warn-missing …
             await page.getByText("verify:content", { exact: false }).first().waitFor({ state: "visible", timeout: 15_000 }); // … its did-you-mean
-            await page.getByText(/preflight red: gate not yet satisfied/).waitFor({ state: "visible", timeout: 15_000 });    // the ok-red tail
 
-            // Confirm is DISABLED until BOTH warns (already-green + missing) are acked.
+            // The ok-red evidence tail sits behind the row's toggle — expand the verify:red row (report rows
+            // follow the draft's acceptance order, so it's the first toggle) and read the real output.
+            await page.getByRole("button", { name: "Show output tail" }).first().click();
+            await page.getByText(/preflight red: gate not yet satisfied/).waitFor({ state: "visible", timeout: 15_000 });
+
+            // Confirm is DISABLED until BOTH warns (already-green + missing) are acked. The DS checkbox hides
+            // its input, so count via role but CLICK the .helm-check labels.
             const confirm = page.getByRole("button", { name: /Confirm/ });
             await until(async () => (await confirm.isDisabled()) ? true : null, { label: "confirm disabled until acked" });
             const boxes = page.getByRole("checkbox");
             await until(async () => (await boxes.count()) === 2 ? true : null, { label: "exactly two ack checkboxes (the two warns)" });
-            await boxes.nth(0).check();
+            await page.locator(".helm-check").nth(0).click();
             await until(async () => (await confirm.isDisabled()) ? true : null, { label: "confirm still disabled with one warn unacked" });
-            await boxes.nth(1).check();
+            await page.locator(".helm-check").nth(1).click();
             await until(async () => (await confirm.isDisabled()) ? null : true, { label: "confirm enabled once BOTH warns acked" });
 
             // Confirm → the engine RE-RUNS pre-flight server-side, re-asserts the acks, births the row, clears the dir.
             await confirm.click();
-            const tasks = await until(async () => { const ts = await listTasks(page); return ts.length === 1 ? ts : null; }, { label: "1 task queued after confirm" });
+            const tasks = await until(async () => { const ts = await listTasks(page); return ts.length === 1 ? ts : null; }, { timeoutMs: 60_000, label: "1 task queued after confirm" });
             expect(tasks[0].status).toBe("queued");   // paused → sits queued, never auto-spawns a real claude
             expect(tasks[0].planId).toBeTruthy();      // born from the plan
 

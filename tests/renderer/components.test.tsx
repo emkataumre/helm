@@ -1,34 +1,57 @@
 // tests/renderer/components.test.tsx
-// The M3 renderer verify slice. The presentational components are pure and prop-driven, so we drive
-// them with fixture snapshots and read the data-verify-* contract straight out of the static markup
-// (react-dom/server — no jsdom). The probe: a displayed total that disagrees with the sum of
-// iterations MUST surface data-verify-consistent="false".
+// The renderer verify slice, ported to the M14 cockpit. The presentational units are pure
+// and prop-driven, so we drive them with fixture snapshots and read the data-verify-*
+// contract straight out of the static markup (react-dom/server — no jsdom). Every unit
+// keeps at least one PROBE (a deliberately-wrong fixture that must surface the failing
+// state); the old scaffold's invariants carry over onto their new homes:
+//   TokenReadout consistency  → Inspector       ·  BoardCard             → TaskCard/VerbBar
+//   SchedulerBar within-cap   → StatusBar       ·  HandbackActions trio  → VerbBar (handed-off)
+//   PromoteResultPanel        → PromoteOutcome  ·  PlanRail/PlanDetail   → Planner units/PlansTab
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
 import { verifyAttrs } from "../../src/renderer/components/verifyAttrs";
-import { TokenReadout } from "../../src/renderer/components/TokenReadout";
-import { ActivityFeed } from "../../src/renderer/components/ActivityFeed";
-import { IterationHistory } from "../../src/renderer/components/IterationHistory";
-import { ProgressPanel } from "../../src/renderer/components/ProgressPanel";
-import { BoardCard } from "../../src/renderer/components/BoardCard";
-import { SchedulerBar } from "../../src/renderer/components/SchedulerBar";
-import { HandbackActions } from "../../src/renderer/components/HandbackActions";
-import { PromoteResultPanel } from "../../src/renderer/components/PromoteResultPanel";
 import { TerminalPane } from "../../src/renderer/components/TerminalPane";
-import { TerminalTabs } from "../../src/renderer/components/TerminalTabs";
-import { PlanRail, PlanStageTracker, PlanDraftCards, PreflightVerdictPanel } from "../../src/renderer/components/PlanRail";
-import { PlanDetail } from "../../src/renderer/components/PlanDetail";
-import { parseProgress } from "../../src/renderer/progress";
-import type { IterationView, TokenTotals, ActivityEntry, Task, TaskListItem, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState, PlanDraft, PreflightReport, Plan } from "../../src/shared/types";
+import { ActionCtx, Heatmap, verbsFor, VerbBar, type CockpitActions, type TaskVM } from "../../src/renderer/views/helpers";
+import { TaskCard } from "../../src/renderer/views/Board";
+import { FeedView, Inspector, IterationsTable, ProgressView } from "../../src/renderer/views/TaskDetail";
+import { StatusBar, Titlebar } from "../../src/renderer/views/shell";
+import { PromoteOutcome } from "../../src/renderer/views/dialogs";
+import { PlannerTab, PreflightReportPanel, StageRail, unackedWarns } from "../../src/renderer/views/Planner";
+import { PlansTab } from "../../src/renderer/views/Plans";
+import { TerminalsView } from "../../src/renderer/views/Terminals";
+import type { EngineSnapshot, PlanRailState, PreflightReport, Project, PromoteResponse, PtySession, PtySessionInfo, SchedulerState } from "../../src/shared/types";
 
-const schedState = (over: Partial<SchedulerState> = {}): SchedulerState =>
-    ({ paused: false, perProject: [{ projectId: "p1", running: 2, cap: 3 }], ...over });
+/* ---------- fixtures ---------- */
+const noop = () => { /* render-only */ };
+const STUB_ACTIONS: CockpitActions = {
+    openTask: noop, openPlan: noop, startNow: noop, dropIn: noop, startFresh: noop,
+    resume: noop, verifyMerge: noop, abandon: noop, clearDeps: noop, openShell: noop,
+};
+const render = (el: ReactElement): string =>
+    renderToStaticMarkup(<ActionCtx.Provider value={STUB_ACTIONS}>{el}</ActionCtx.Provider>);
 
-const iv = (index: number, output: number, costUsd = 0): IterationView =>
-    ({ index, verdict: "green", tokens: { input: 0, output, cacheRead: 0, cacheCreation: 0, costUsd }, durationMs: 100, sessionId: "s", commitSha: "c" });
-
-const task = (over: Partial<Task> = {}): Task =>
-    ({ id: "t", projectId: "p", title: "Build it", intent: "", acceptance: ["x"], status: "running", scopeHint: null, dependsOn: [], planId: null, branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0, ...over });
+const tokens = (output = 0, costUsd = 0) => ({ input: 0, output, cacheRead: 0, cacheCreation: 0, costUsd });
+const snap = (over: Partial<EngineSnapshot> = {}): EngineSnapshot => ({
+    taskId: "t", status: "running", currentIteration: null, iterations: [],
+    totals: tokens(), feed: [], feedEventsConsumed: 0, terminalReason: null, ...over,
+});
+const iv = (index: number, output: number, over: Partial<EngineSnapshot["iterations"][number]> = {}) => ({
+    index, verdict: "green" as const, tokens: tokens(output), durationMs: 100, sessionId: "s", commitSha: "c", outputTail: null, ...over,
+});
+const vm = (over: Partial<TaskVM> = {}): TaskVM => ({
+    id: "t", projectId: "p", title: "Build it", intent: "Do the thing", acceptance: ["npm test"],
+    status: "running", scopeHint: null, dependsOn: [], planId: null, branchName: null,
+    worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0,
+    resumable: false, blocked: false, waitingOn: [], snap: null, validating: false, ...over,
+});
+const project = (over: Partial<Project> = {}): Project => ({
+    id: "p", name: "alpha", repoPath: "C:\\repo", integrationBranch: "integration/ralph",
+    targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees",
+    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null,
+    model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null,
+    promotionMode: "pr", jailImage: null, ...over,
+});
 
 describe("verifyAttrs", () => {
     it("builds data-verify-* keys, stringifies values, drops null/undefined", () => {
@@ -44,486 +67,368 @@ describe("verifyAttrs", () => {
     });
 });
 
-describe("TokenReadout data-verify contract", () => {
-    it("stamps the totals and consistent=true when the displayed total equals the sum of iterations", () => {
-        const iterations = [iv(0, 5), iv(1, 7)];
-        const totals: TokenTotals = { input: 0, output: 12, cacheRead: 0, cacheCreation: 0, costUsd: 0 };
-        const html = renderToStaticMarkup(<TokenReadout totals={totals} iterations={iterations} />);
-        expect(html).toContain('data-verify-unit="TokenReadout"');
+describe("Inspector contract (the token-accounting invariant's new home)", () => {
+    const withTotals = (totalsOut: number) =>
+        vm({ snap: snap({ iterations: [iv(0, 5), iv(1, 7)], totals: tokens(totalsOut) }) });
+    it("stamps consistent=true when the displayed totals equal the sum of iterations", () => {
+        const html = render(<Inspector task={withTotals(12)} project={project()} tasksById={{}} plans={[]} />);
+        expect(html).toContain('data-verify-unit="Inspector"');
         expect(html).toContain('data-verify-output="12"');
         expect(html).toContain('data-verify-consistent="true"');
     });
-
     it("PROBE: a displayed total that disagrees with the sum surfaces data-verify-consistent=\"false\"", () => {
-        const iterations = [iv(0, 5), iv(1, 7)];
-        const totals: TokenTotals = { input: 0, output: 999, cacheRead: 0, cacheCreation: 0, costUsd: 0 }; // wrong on purpose
-        const html = renderToStaticMarkup(<TokenReadout totals={totals} iterations={iterations} />);
+        const html = render(<Inspector task={withTotals(999)} project={project()} tasksById={{}} plans={[]} />);
         expect(html).toContain('data-verify-consistent="false"');
     });
+    it("shows intent, acceptance commands, and the engine bounds", () => {
+        const html = render(<Inspector task={vm()} project={project()} tasksById={{}} plans={[]} />);
+        expect(html).toContain("Do the thing");
+        expect(html).toContain("npm test");
+        expect(html).toContain("cli default"); // model fallback
+    });
 });
 
-describe("ActivityFeed / IterationHistory / BoardCard contracts", () => {
-    it("ActivityFeed stamps its entry count", () => {
-        const feed: ActivityEntry[] = [{ iterationIndex: 0, kind: "assistant", text: "a" }, { iterationIndex: 0, kind: "tool-use", text: "Bash" }];
-        const html = renderToStaticMarkup(<ActivityFeed feed={feed} />);
-        expect(html).toContain('data-verify-unit="ActivityFeed"');
+describe("FeedView / IterationsTable contracts", () => {
+    it("FeedView stamps its entry count", () => {
+        const t = vm({ snap: snap({ feed: [{ iterationIndex: 0, kind: "assistant", text: "a" }, { iterationIndex: 0, kind: "tool-use", text: "Bash" }], feedEventsConsumed: 2 }) });
+        const html = render(<FeedView task={t} />);
+        expect(html).toContain('data-verify-unit="FeedView"');
         expect(html).toContain('data-verify-count="2"');
     });
-    it("IterationHistory stamps its iteration count", () => {
-        const html = renderToStaticMarkup(<IterationHistory iterations={[iv(0, 1), iv(1, 2), iv(2, 3)]} />);
-        expect(html).toContain('data-verify-count="3"');
+    it("IterationsTable stamps the SETTLED count and renders the live in-flight row separately", () => {
+        const t = vm({
+            snap: snap({
+                iterations: [iv(0, 1), iv(1, 2), { ...iv(2, 0), verdict: null }],
+                currentIteration: { index: 2, phase: "working", latestActivity: "editing foo.ts" },
+            }),
+        });
+        const html = render(<IterationsTable task={t} />);
+        expect(html).toContain('data-verify-count="2"'); // the in-flight iteration is NOT history
+        expect(html).toContain('data-verify-live="true"');
+        expect(html).toContain("agent working");
     });
-    it("BoardCard stamps the task status and shows the live one-liner only while running", () => {
-        const html = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} liveActivity="editing foo.ts" />);
+    it("PROBE: an unfinished iteration (no verdict, no live row) never counts as history", () => {
+        const t = vm({ snap: snap({ iterations: [{ ...iv(0, 0), verdict: null }] }) });
+        const html = render(<IterationsTable task={t} />);
+        expect(html).toContain("No iterations yet");
+    });
+    it("an iteration with an evidence tail is expandable; a resumeless turn is called out", () => {
+        const t = vm({ snap: snap({ iterations: [iv(0, 1, { verdict: "failed", outputTail: "check exploded", sessionId: null })] }) });
+        const html = render(<IterationsTable task={t} />);
+        expect(html).toContain("expandable");
+    });
+});
+
+describe("TaskCard contract", () => {
+    it("stamps the task status and shows the live one-liner only while running", () => {
+        const live = snap({ currentIteration: { index: 0, phase: "working", latestActivity: "editing foo.ts" } });
+        const html = render(<TaskCard task={vm({ status: "running", snap: live })} project={project()} />);
+        expect(html).toContain('data-verify-unit="TaskCard"');
         expect(html).toContain('data-verify-status="running"');
         expect(html).toContain("editing foo.ts");
-        const merged = renderToStaticMarkup(<BoardCard task={task({ status: "merged" })} liveActivity="should-not-show" />);
-        expect(merged).not.toContain("should-not-show");
+        const merged = render(<TaskCard task={vm({ status: "merged", snap: live })} project={project()} />);
+        expect(merged).not.toContain("editing foo.ts");
     });
 
-    it("BoardCard shows the Run button on a queued card ONLY when paused (manual mode)", () => {
-        const queuedPaused = renderToStaticMarkup(<BoardCard task={task({ status: "queued" })} paused onRun={() => {}} />);
-        expect(queuedPaused).toContain(">Run<");
-        const queuedAuto = renderToStaticMarkup(<BoardCard task={task({ status: "queued" })} paused={false} onRun={() => {}} />);
-        expect(queuedAuto).not.toContain(">Run<"); // auto-fleet → scheduler starts it, no manual button
-        const runningPaused = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} paused onRun={() => {}} />);
-        expect(runningPaused).not.toContain(">Run<"); // only queued cards get a Run button
+    it("offers Start now on an unblocked queued card; a blocked one waits instead", () => {
+        const queued = render(<TaskCard task={vm({ status: "queued" })} project={project()} />);
+        expect(queued).toContain(">Start now<");
+        const blocked = render(<TaskCard task={vm({ status: "queued", blocked: true, waitingOn: [{ id: "x", title: "parent", status: "running" }] })} project={project()} />);
+        expect(blocked).not.toContain(">Start now<");
+        expect(blocked).toContain("waiting on");
+        expect(blocked).toContain("parent");
     });
 
-    // M5: Drop in / Start fresh on a running OR needs-human card; Abandon also on needs-human.
-    it("BoardCard surfaces Drop in + Start fresh on running and needs-human cards (Abandon on needs-human)", () => {
-        const running = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} onDropIn={() => {}} onStartFresh={() => {}} onAbandon={() => {}} />);
-        expect(running).toContain(">Drop in<");
-        expect(running).toContain(">Start fresh<");
-        expect(running).not.toContain(">Abandon<");           // Abandon is offered from needs-human, not running
-        expect(running).toContain('data-verify-dropin="true"');
-
-        const nh = renderToStaticMarkup(<BoardCard task={task({ status: "needs-human" })} onDropIn={() => {}} onStartFresh={() => {}} onAbandon={() => {}} />);
-        expect(nh).toContain(">Drop in<");
-        expect(nh).toContain(">Abandon<");
-        expect(nh).toContain('data-verify-dropin="true"');
+    it("renders the waiting-on line on a queued+blocked card — waiting vs STUCK (Clear dependencies)", () => {
+        const stuck = render(<TaskCard task={vm({ status: "queued", blocked: true, waitingOn: [{ id: "x", title: "dead parent", status: "needs-human" }] })} project={project()} />);
+        expect(stuck).toContain("stuck — a parent needs a human");
+        expect(stuck).toContain(">Clear dependencies<");
+        expect(stuck).toContain('data-verify-stuck="true"');
     });
 
-    // M5 resume-guard: Drop in --resumes the latest session, so it's DISABLED until one is persisted
-    // (`resumable`). Start fresh is always available, so a disabled Drop in strands no one.
-    it("BoardCard DISABLES Drop in until a session is resumable; Start fresh stays available", () => {
-        const notYet = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} onDropIn={() => {}} onStartFresh={() => {}} />);
-        expect(notYet).toContain('data-verify-resumable="false"'); // the machine-readable guard state
-        expect(notYet).toContain('disabled=""');                   // the (only) disabled button is Drop in
-        expect(notYet).toContain("No resumable session yet");      // its explanatory title
-        expect(notYet).toContain(">Start fresh<");                 // always available to grab the agent
-
-        const ready = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} resumable onDropIn={() => {}} onStartFresh={() => {}} />);
-        expect(ready).toContain('data-verify-resumable="true"');
-        expect(ready).not.toContain('disabled=""');                // a persisted session → Drop in enabled
-    });
-
-    // M8: a retained worktree (needs-human / handed-off with a worktreePath) offers a free [+ terminal].
-    it("BoardCard offers [+ terminal] on a retained-worktree card (needs-human / handed-off), not otherwise", () => {
-        const nh = renderToStaticMarkup(<BoardCard task={task({ status: "needs-human", worktreePath: "/wt/t" })} onNewTerminal={() => {}} onDropIn={() => {}} onStartFresh={() => {}} onAbandon={() => {}} />);
-        expect(nh).toContain("+ terminal");
-        const ho = renderToStaticMarkup(<BoardCard task={task({ status: "handed-off", worktreePath: "/wt/t" })} onNewTerminal={() => {}} />);
-        expect(ho).toContain("+ terminal"); // handed-off has no drop-in row, but still gets the free shell
-        // a running task has no retained worktree yet → no [+ terminal]
-        const running = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} onNewTerminal={() => {}} onDropIn={() => {}} onStartFresh={() => {}} />);
-        expect(running).not.toContain("+ terminal");
-        // needs-human WITHOUT a worktree (pre-retention / already reaped) → no [+ terminal]
-        const noWt = renderToStaticMarkup(<BoardCard task={task({ status: "needs-human", worktreePath: null })} onNewTerminal={() => {}} onDropIn={() => {}} onStartFresh={() => {}} onAbandon={() => {}} />);
-        expect(noWt).not.toContain("+ terminal");
-    });
-
-    it("PROBE: a queued or merged card does NOT surface Drop in (data-verify-dropin=\"false\")", () => {
-        const queued = renderToStaticMarkup(<BoardCard task={task({ status: "queued" })} onDropIn={() => {}} onStartFresh={() => {}} />);
-        expect(queued).not.toContain(">Drop in<");
-        expect(queued).toContain('data-verify-dropin="false"');
-        const merged = renderToStaticMarkup(<BoardCard task={task({ status: "merged" })} onDropIn={() => {}} />);
-        expect(merged).not.toContain(">Drop in<");
-        expect(merged).toContain('data-verify-dropin="false"');
-    });
-
-    // M9: a queued + blocked card shows a waiting-on line and distinguishes WAITING (parent in flight) from
-    // STUCK (parent needs-human/abandoned), which also offers Clear dependencies. The manual Run is hidden
-    // while blocked (startNow is gated — a Run click would be a no-op).
-    it("BoardCard renders the waiting-on line on a queued+blocked card — waiting vs stuck", () => {
-        const waiting = renderToStaticMarkup(
-            <BoardCard task={task({ status: "queued" })} blocked waitingOn={[{ id: "p1", title: "Parent A", status: "running" }]} paused onRun={() => {}} onClearDeps={() => {}} />,
-        );
-        expect(waiting).toContain('data-verify-blocked="true"');
-        expect(waiting).toContain('data-verify-waiting-on="Parent A"');
-        expect(waiting).toContain("waiting on");
-        expect(waiting).toContain("Parent A");
-        expect(waiting).not.toContain("Clear dependencies"); // an in-flight parent → just wait
-        expect(waiting).not.toContain(">Run<");               // gated → no misleading manual Run
-
-        const stuck = renderToStaticMarkup(
-            <BoardCard task={task({ status: "queued" })} blocked waitingOn={[{ id: "p1", title: "Wedged Parent", status: "needs-human" }]} onClearDeps={() => {}} />,
-        );
-        expect(stuck).toContain("Wedged Parent");
-        expect(stuck).toContain("Clear dependencies");        // stuck → offer the unblock affordance
-    });
-
-    it("PROBE: an unblocked queued card has NO waiting-on line (data-verify-blocked=\"false\") and keeps its Run", () => {
-        const html = renderToStaticMarkup(<BoardCard task={task({ status: "queued" })} paused onRun={() => {}} />);
+    it("PROBE: an unblocked queued card has NO waiting-on line (data-verify-blocked=\"false\")", () => {
+        const html = render(<TaskCard task={vm({ status: "queued" })} project={project()} />);
         expect(html).toContain('data-verify-blocked="false"');
         expect(html).not.toContain("waiting on");
-        expect(html).toContain(">Run<"); // eligible → the manual Run stays
     });
 
-    // M13: a jailed project's cards carry a jail badge + the data-verify-jail contract.
-    it("BoardCard shows a jail badge + stamps data-verify-jail when the project is jailed", () => {
-        const html = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} jailed liveActivity="x" />);
-        expect(html).toContain('data-verify-jail="true"');
-        expect(html).toContain(">jailed<"); // the visible badge
+    it("Drop in appears only once a session is resumable; Start fresh is always available (§8.4)", () => {
+        const notYet = render(<TaskCard task={vm({ status: "running" })} project={project()} />);
+        expect(notYet).toContain('data-verify-resumable="false"');
+        expect(notYet).not.toContain(">Drop in<");
+        expect(notYet).toContain(">Start fresh<");
+        const ready = render(<TaskCard task={vm({ status: "running", resumable: true })} project={project()} />);
+        expect(ready).toContain('data-verify-resumable="true"');
+        expect(ready).toContain(">Drop in<");
     });
 
-    it("PROBE: a host-mode card carries NO jail badge and no data-verify-jail (the negative control)", () => {
-        const html = renderToStaticMarkup(<BoardCard task={task({ status: "running" })} liveActivity="x" />);
-        expect(html).not.toContain(">jailed<");
-        expect(html).not.toContain("data-verify-jail"); // jailed falsy → verifyAttrs drops the null key
+    it("PROBE: a merged card surfaces NO verbs at all (terminal states are history)", () => {
+        const html = render(<TaskCard task={vm({ status: "merged", resumable: true })} project={project()} />);
+        expect(html).not.toContain(">Drop in<");
+        expect(html).not.toContain(">Start now<");
+        expect(html).not.toContain(">Abandon<");
+    });
+
+    it("stamps data-verify-jail + the jail meta on a jailed project's card; host-mode carries neither", () => {
+        const jailed = render(<TaskCard task={vm()} project={project({ jailImage: "helm-jail:latest" })} />);
+        expect(jailed).toContain('data-verify-jail="true"');
+        expect(jailed).toContain("jail");
+        const host = render(<TaskCard task={vm()} project={project()} />);
+        expect(host).not.toContain("data-verify-jail");
+    });
+
+    it("stamps the plan id when the task was born from a plan; hand-made cards carry none", () => {
+        expect(render(<TaskCard task={vm({ planId: "pl1" })} project={project()} />)).toContain('data-verify-plan="pl1"');
+        expect(render(<TaskCard task={vm()} project={project()} />)).not.toContain("data-verify-plan");
+    });
+
+    it("a needs-human card quotes its failure reason verbatim", () => {
+        const html = render(<TaskCard task={vm({ status: "needs-human", failureReason: "iteration cap reached (8) — last gate: check failed" })} project={project()} />);
+        expect(html).toContain("iteration cap reached (8)");
     });
 });
 
-describe("HandbackActions contract (the handed-off trio)", () => {
-    it("renders Resume loop / Verify & merge / Abandon ONLY when handed-off", () => {
-        const ho = renderToStaticMarkup(<HandbackActions status="handed-off" onResume={() => {}} onVerifyAndMerge={() => {}} onAbandon={() => {}} />);
-        expect(ho).toContain(">Resume loop<");
-        expect(ho).toContain("Verify"); // "Verify & merge" (& renders escaped)
-        expect(ho).toContain(">Abandon<");
-        expect(ho).toContain('data-verify-unit="HandbackActions"');
-        expect(ho).toContain('data-verify-handback="true"');
+describe("VerbBar contract (the operator verb list — §5.2)", () => {
+    it("handed-off offers the hand-back trio (+ Open shell with a retained worktree)", () => {
+        const t = vm({ status: "handed-off", worktreePath: "C:\\wt" });
+        expect(verbsFor(t).map((v) => v.id)).toEqual(["resume", "verifyMerge", "openShell", "abandon"]);
+        const html = render(<VerbBar task={t} />);
+        expect(html).toContain(">Resume<");
+        expect(html).toContain(">Verify &amp; merge<");
+        expect(html).toContain(">Abandon<");
+        expect(html).toContain(">Open shell<");
     });
-
-    it("PROBE: a running task does NOT surface the trio (the renderer-side negative control)", () => {
-        const run = renderToStaticMarkup(<HandbackActions status="running" onResume={() => {}} onVerifyAndMerge={() => {}} onAbandon={() => {}} />);
-        expect(run).not.toContain(">Resume loop<");
-        expect(run).toContain('data-verify-handback="false"');
+    it("needs-human offers Start fresh / Open shell / Abandon (+ Drop in only when resumable)", () => {
+        expect(verbsFor(vm({ status: "needs-human", worktreePath: "C:\\wt" })).map((v) => v.id)).toEqual(["startFresh", "openShell", "abandon"]);
+        expect(verbsFor(vm({ status: "needs-human", worktreePath: "C:\\wt", resumable: true })).map((v) => v.id)).toEqual(["dropIn", "startFresh", "openShell", "abandon"]);
     });
-
-    it("shows the terminal-launch error when one was surfaced", () => {
-        const html = renderToStaticMarkup(<HandbackActions status="handed-off" launchError="terminal launch failed: wt.exe not found" />);
-        expect(html).toContain("terminal launch failed");
+    it("PROBE: a running task does NOT surface the hand-back trio", () => {
+        const ids = verbsFor(vm({ status: "running", resumable: true })).map((v) => v.id);
+        expect(ids).not.toContain("resume");
+        expect(ids).not.toContain("verifyMerge");
+        expect(ids).not.toContain("abandon");
+    });
+    it("verify & merge shows its in-flight state while validating", () => {
+        const html = render(<VerbBar task={vm({ status: "handed-off", validating: true })} />);
+        expect(html).toContain("Validating…");
     });
 });
 
-describe("SchedulerBar contract", () => {
-    it("stamps paused + within-cap=true when every project's running ≤ cap", () => {
-        const html = renderToStaticMarkup(
-            <SchedulerBar state={schedState({ perProject: [{ projectId: "p1", running: 2, cap: 3 }, { projectId: "p2", running: 1, cap: 2 }] })} onSetPaused={() => {}} />,
-        );
-        expect(html).toContain('data-verify-unit="SchedulerBar"');
+describe("Titlebar / StatusBar contracts (fleet telemetry)", () => {
+    const sched = (over: Partial<SchedulerState> = {}): SchedulerState =>
+        ({ paused: false, perProject: [{ projectId: "p", running: 2, cap: 3 }], ...over });
+    const counts = { running: 2, needsHuman: 1, merged: 5 };
+
+    it("Titlebar mirrors the tray tooltip counts and the pause state", () => {
+        const html = render(<Titlebar counts={counts} paused={false} onTogglePause={noop} />);
+        expect(html).toContain("2 running · 1 needs-human · 5 merged");
         expect(html).toContain('data-verify-paused="false"');
+        const paused = render(<Titlebar counts={counts} paused onTogglePause={noop} />);
+        expect(paused).toContain('data-verify-paused="true"');
+        expect(paused).toContain("scheduler paused");
+    });
+
+    it("StatusBar stamps paused + within-cap=true when every project's running ≤ cap, and shows the slot line", () => {
+        const html = render(<StatusBar counts={counts} projects={[project()]} sched={sched()} paused={false} spend={4.2} />);
+        expect(html).toContain('data-verify-unit="StatusBar"');
         expect(html).toContain('data-verify-within-cap="true"');
+        expect(html).toContain("alpha 2/3");
+        expect(html).toContain("$4.20");
     });
 
     it("PROBE: a project with running > cap surfaces data-verify-within-cap=\"false\"", () => {
-        const html = renderToStaticMarkup(<SchedulerBar state={schedState({ perProject: [{ projectId: "p1", running: 4, cap: 3 }] })} onSetPaused={() => {}} />);
+        const html = render(<StatusBar counts={counts} projects={[project()]} sched={sched({ perProject: [{ projectId: "p", running: 4, cap: 3 }] })} paused={false} spend={0} />);
         expect(html).toContain('data-verify-within-cap="false"');
-    });
-
-    it("shows running/cap and a queued count per project", () => {
-        const html = renderToStaticMarkup(
-            <SchedulerBar state={schedState({ perProject: [{ projectId: "p1", running: 2, cap: 3 }] })} queuedByProject={{ p1: 5 }} names={{ p1: "MyProj" }} onSetPaused={() => {}} />,
-        );
-        expect(html).toContain("MyProj");
-        expect(html).toContain("2/3");
-        expect(html).toContain("5 queued");
-    });
-
-    it("reflects paused state in the toggle: Pause when running, Resume when paused", () => {
-        const running = renderToStaticMarkup(<SchedulerBar state={schedState({ paused: false })} onSetPaused={() => {}} />);
-        expect(running).toContain("Pause");
-        const paused = renderToStaticMarkup(<SchedulerBar state={schedState({ paused: true })} onSetPaused={() => {}} />);
-        expect(paused).toContain("Resume");
-        expect(paused).toContain('data-verify-paused="true"');
     });
 });
 
-describe("PromoteResultPanel contract (the result surface)", () => {
-    const directAdvanced: PromoteResponse = {
-        outcome: "ready", validatedSha: "abcdef0123456789", diffstat: "+5 -2",
-        promoteBranch: "helm/promote-p1-abcdef012345",
-        pushedRefs: [], advancedTarget: true, advancedTo: "abcdef0123456789",
-        note: "advanced main → abcdef012345 (the exact re-checked commit)",
-        commands: ["git push origin abcdef0123456789:refs/heads/main"],
+describe("PromoteOutcome contract (the result surface — never-push is load-bearing)", () => {
+    const p = project();
+    const ready = {
+        outcome: "ready" as const, validatedSha: "abcdef1234567890", diffstat: "3 files changed", promoteBranch: "helm/promote-x",
     };
-
     it("direct advanced: stamps advanced=true and shows the target was advanced on the click", () => {
-        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={directAdvanced} />);
-        expect(html).toContain('data-verify-unit="PromoteResultPanel"');
+        const r: PromoteResponse = { ...ready, pushedRefs: [], commands: ["git push origin abcdef1234567890:refs/heads/main"], advancedTarget: true, advancedTo: "abcdef1234567890", note: "advanced main" };
+        const html = render(<PromoteOutcome project={p} result={r} />);
         expect(html).toContain('data-verify-outcome="ready"');
-        expect(html).toContain('data-verify-ready="true"');
         expect(html).toContain('data-verify-advanced="true"');
-        expect(html).toContain('data-verify-pushed="0"'); // no helper push — the advance IS the push
-        expect(html).toContain("+5 -2");
-        expect(html).toContain("advanced main"); // the headline note
+        expect(html).toContain("advanced main →");
+        expect(html).toContain("audit trail");
     });
-
-    it("pr ready: advanced=false, integration pushed, the gh command shown to run", () => {
-        const pr: PromoteResponse = {
-            outcome: "ready", validatedSha: "abcdef0123456789", diffstat: "+5 -2", promoteBranch: "helm/promote-p1-abcdef012345",
-            pushedRefs: ["integration/ralph"], advancedTarget: false, note: "pushed integration/ralph — open the PR to graduate it into main",
-            commands: ["gh pr create --base main --head integration/ralph --fill"],
-        };
-        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={pr} />);
+    it("pr ready: advanced=false, integration pushed, the gh command handed to run", () => {
+        const r: PromoteResponse = { ...ready, pushedRefs: ["integration/ralph"], commands: ["gh pr create --base main --head integration/ralph --fill"], advancedTarget: false, note: "pushed integration/ralph" };
+        const html = render(<PromoteOutcome project={p} result={r} />);
         expect(html).toContain('data-verify-advanced="false"');
-        expect(html).toContain('data-verify-pushed="1"');
-        expect(html).toContain("gh pr create"); // the human still opens the PR
+        expect(html).toContain("integration/ralph");
+        expect(html).toContain("gh pr create");
+        expect(html).toContain("your move");
     });
-
     it("direct advance failed: shows the error and hands the retry command", () => {
-        const failed: PromoteResponse = {
-            outcome: "ready", validatedSha: "abcdef0123456789", diffstat: "+5 -2", promoteBranch: "helm/promote-p1-abcdef012345",
-            pushedRefs: [], advancedTarget: false, note: "could not advance main — it may have moved; re-run Promote",
-            error: "! [rejected] (non-fast-forward)", commands: ["git push origin abcdef0123456789:refs/heads/main"],
-        };
-        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={failed} />);
-        expect(html).toContain('data-verify-advanced="false"');
+        const r: PromoteResponse = { ...ready, pushedRefs: [], commands: ["git push origin abcdef1234567890:refs/heads/main"], advancedTarget: false, note: "could not advance", error: "non-fast-forward" };
+        const html = render(<PromoteOutcome project={p} result={r} />);
         expect(html).toContain("non-fast-forward");
-        expect(html).toContain("git push origin abcdef0123456789:refs/heads/main"); // retry
+        expect(html).toContain("retry command");
     });
-
-    it("recheck-failed: surfaces the outcome, the failure output, and NO commands", () => {
-        const html = renderToStaticMarkup(<PromoteResultPanel projectName="MyProj" result={{ outcome: "recheck-failed", output: "tests failed on the fresh tip" }} />);
+    it("PROBE: recheck-failed surfaces the failure output and hands NO commands", () => {
+        const html = render(<PromoteOutcome project={p} result={{ outcome: "recheck-failed", output: "tsc exploded" }} />);
         expect(html).toContain('data-verify-outcome="recheck-failed"');
-        expect(html).toContain('data-verify-ready="false"');
-        expect(html).toContain('data-verify-advanced="false"');
         expect(html).toContain('data-verify-commands="0"');
-        expect(html).toContain("tests failed on the fresh tip");
+        expect(html).toContain("tsc exploded");
+        expect(html).not.toContain("your move");
     });
-
-    it("nothing-to-promote / conflict: a ready=false note, no commands", () => {
-        const nothing = renderToStaticMarkup(<PromoteResultPanel projectName="P" result={{ outcome: "nothing-to-promote" }} />);
-        expect(nothing).toContain('data-verify-outcome="nothing-to-promote"');
-        expect(nothing).toContain('data-verify-ready="false"');
-        const conflict = renderToStaticMarkup(<PromoteResultPanel projectName="P" result={{ outcome: "conflict" }} />);
-        expect(conflict).toContain('data-verify-outcome="conflict"');
-        expect(conflict).toContain("Resolve the conflict");
-    });
-
-    it("loading: stamps outcome=loading and shows the in-flight note", () => {
-        const html = renderToStaticMarkup(<PromoteResultPanel projectName="P" result="loading" />);
-        expect(html).toContain('data-verify-outcome="loading"');
-        expect(html).toContain("validating integration on a fresh origin tip");
+    it("nothing-to-promote / conflict: a plain note, no commands", () => {
+        expect(render(<PromoteOutcome project={p} result={{ outcome: "nothing-to-promote" }} />)).toContain("Nothing to promote");
+        expect(render(<PromoteOutcome project={p} result={{ outcome: "conflict" }} />)).toContain("Nothing was pushed");
     });
 });
 
 describe("TerminalPane contract (shell only — xterm is the vendor edge)", () => {
-    const sess = (over: Partial<PtySession> = {}): PtySession =>
-        ({ id: "sess-123", kind: "dropin", title: "task-42 drop-in", cwd: "/wt/task-42", taskId: "t42", ...over });
-
-    // react-dom/server does NOT run useEffect, so xterm never loads (node env, no DOM) — the shell renders
-    // alone. This asserts the machine-readable contract a verifier/agent reads to find a mounted terminal.
+    const session: PtySession = { id: "s1", kind: "dropin", title: "fix the bug", cwd: "C:\\wt" };
     it("stamps the session id + kind on the shell root without mounting xterm", () => {
-        const html = renderToStaticMarkup(<TerminalPane session={sess()} />);
+        const html = renderToStaticMarkup(<TerminalPane session={session} />);
         expect(html).toContain('data-verify-unit="TerminalPane"');
-        expect(html).toContain('data-verify-session="sess-123"');
+        expect(html).toContain('data-verify-session="s1"');
         expect(html).toContain('data-verify-kind="dropin"');
     });
-
     it("reflects a different session's kind (planner) — the same reusable pane", () => {
-        const html = renderToStaticMarkup(<TerminalPane session={sess({ id: "p1", kind: "planner" })} />);
-        expect(html).toContain('data-verify-session="p1"');
+        const html = renderToStaticMarkup(<TerminalPane session={{ ...session, id: "s2", kind: "planner" }} />);
         expect(html).toContain('data-verify-kind="planner"');
     });
 });
 
-describe("TerminalTabs contract (M8 tab strip — the terminal host)", () => {
-    const info = (id: string, over: Partial<PtySessionInfo> = {}): PtySessionInfo =>
-        ({ id, kind: "free", title: id, cwd: `/wt/${id}`, alive: true, ...over });
-
-    it("stamps the tab count and marks exactly the active tab", () => {
-        const html = renderToStaticMarkup(<TerminalTabs sessions={[info("a", { kind: "dropin" }), info("b")]} activeId="a" onFocus={() => {}} onClose={() => {}} />);
-        expect(html).toContain('data-verify-unit="TerminalTabs"');
+describe("TerminalsView contract (closing = killing, dead tabs grey out — §8.5)", () => {
+    const sess = (over: Partial<PtySessionInfo> = {}): PtySessionInfo =>
+        ({ id: "s1", kind: "free", title: "alpha — shell", cwd: "C:\\repo", alive: true, ...over });
+    const props = { onSelect: noop, onKill: noop, onNewShell: noop, projects: [project()], tasksById: {} };
+    it("stamps session/live counts + the active tab, with a kill control per tab", () => {
+        const html = render(<TerminalsView sessions={[sess(), sess({ id: "s2", title: "beta", alive: false })]} activeId="s1" {...props} />);
+        expect(html).toContain('data-verify-unit="TerminalsView"');
         expect(html).toContain('data-verify-count="2"');
-        expect(html).toContain('data-verify-active="a"'); // the strip's active id
-        // per-tab kind + which one is active
-        expect(html).toContain('data-verify-session="a"');
-        expect(html).toContain('data-verify-kind="dropin"');
-        expect(html).toContain('data-verify-kind="free"');
-        // the active tab reads active=true, the other active=false (machine-readable focus)
-        expect(html).toMatch(/data-verify-session="a"[^>]*data-verify-kind="dropin"[^>]*data-verify-active="true"/);
-        expect(html).toMatch(/data-verify-session="b"[^>]*data-verify-active="false"/);
+        expect(html).toContain('data-verify-live="1"');
+        expect(html).toContain('data-verify-active="s1"');
+        expect(html).toContain("· exited"); // the dead session stays listed, greyed
+        expect((html.match(/aria-label="Kill session"/g) ?? []).length).toBe(2);
     });
-
-    it("renders a close (×) control per tab (the only renderer-initiated kill)", () => {
-        const html = renderToStaticMarkup(<TerminalTabs sessions={[info("a")]} activeId="a" onFocus={() => {}} onClose={() => {}} />);
-        expect(html).toContain("×");
-    });
-
-    it("greys out a dead session (alive=false) until its exit event prunes it", () => {
-        const html = renderToStaticMarkup(<TerminalTabs sessions={[info("a", { alive: false })]} activeId="a" onFocus={() => {}} onClose={() => {}} />);
-        expect(html).toContain('data-verify-alive="false"');
-    });
-
-    it("an empty strip stamps count=0 and no active tab", () => {
-        const html = renderToStaticMarkup(<TerminalTabs sessions={[]} activeId={null} onFocus={() => {}} onClose={() => {}} />);
-        expect(html).toContain('data-verify-count="0"');
-        expect(html).not.toContain('data-verify-active='); // null active → attribute dropped
+    it("PROBE: no sessions → the empty state, no pane", () => {
+        const html = render(<TerminalsView sessions={[]} activeId={null} {...props} />);
+        expect(html).toContain("No sessions");
+        expect(html).not.toContain("data-verify-unit=\"TerminalPane\"");
     });
 });
 
-describe("ProgressPanel contract", () => {
+describe("ProgressView contract", () => {
+    const structured = "## Current focus\nShip it\n\n## Done\n- a\n\n## Remaining\n- b\n\n## Tried & ruled out\n- c\n";
     it("renders the four sections when the progress parses (structured)", () => {
-        const md = "## Current focus\nwiring\n\n## Done\n- a\n\n## Remaining\n- b\n\n## Tried & ruled out\n- c\n";
-        const html = renderToStaticMarkup(<ProgressPanel progress={parseProgress(md)} />);
-        expect(html).toContain('data-verify-unit="ProgressPanel"');
-        expect(html).toContain('data-verify-structured="true"');
-        expect(html).toContain("wiring");
+        const html = render(<ProgressView md={structured} />);
+        expect(html).toContain('data-verify-ok="true"');
+        expect(html).toContain("Current focus");
+        expect(html).toContain("Tried &amp; ruled out");
     });
-    it("falls back to raw markdown for off-schema input", () => {
-        const html = renderToStaticMarkup(<ProgressPanel progress={parseProgress("freeform, no headings")} />);
-        expect(html).toContain('data-verify-structured="false"');
+    it("PROBE: falls back to raw markdown for off-schema input", () => {
+        const html = render(<ProgressView md={"# freeform\nnot the schema"} />);
+        expect(html).toContain('data-verify-ok="false"');
         expect(html).toContain("freeform");
     });
     it("reports unavailable when there is no progress file", () => {
-        const html = renderToStaticMarkup(<ProgressPanel progress={null} />);
-        expect(html).toContain('data-verify-available="false"');
+        expect(render(<ProgressView md={null} />)).toContain("No progress file");
     });
 });
 
-describe("PlanRail contract (M10 planner side rail)", () => {
-    const validParse: PlanRailState["parse"] = { ok: true, draft: { planTitle: "p", tasks: [
-        { slug: "t1", title: "Foundation", intent: "build the thing", acceptance: ["npm run check", "npm run verify:trays"], scopeHint: null, dependsOn: [] },
-        { slug: "t2", title: "Rail", intent: "render it", acceptance: ["npm run check"], scopeHint: null, dependsOn: ["t1"] },
-    ] } };
-    const verdicts: PlanRailState["verdicts"] = [
-        { taskSlug: "t1", command: "npm run check", level: "ok" },
-        { taskSlug: "t1", command: "npm run verify:trays", level: "warn", reason: "no npm script \"verify:trays\"", suggestion: "verify:tray" },
-        { taskSlug: "t2", command: "npm run check", level: "ok" },
-    ];
-    const validRail: PlanRailState = { stage: "tasks", prdText: "# PRD\nbody", parse: validParse, verdicts };
-    const invalidRail: PlanRailState = { stage: "tasks", prdText: null, parse: { ok: false, errors: ["planTitle must be a non-empty string"] }, verdicts: [] };
+describe("Planner units (M10 rail + M11 two-phase approval)", () => {
+    const session: PtySession = { id: "pl", kind: "planner", title: "alpha — plan", cwd: "C:\\repo" };
+    const rail = (over: Partial<PlanRailState> = {}): PlanRailState =>
+        ({ stage: "tasks", prdText: "# PRD", parse: null, verdicts: [], ...over });
+    const draft = {
+        planTitle: "Plan A",
+        tasks: [{ slug: "t1", title: "First", intent: "do it", acceptance: ["npm run x"], scopeHint: null, dependsOn: [] }],
+    };
+    const plannerProps = { project: project(), session, onOpen: noop, onApproved: noop };
 
-    it("PlanStageTracker stamps the stage and marks exactly the active step (◂ now)", () => {
-        const html = renderToStaticMarkup(<PlanStageTracker stage="prd" />);
-        expect(html).toContain('data-verify-unit="PlanStageTracker"');
+    it("StageRail stamps the stage and renders the three steps", () => {
+        const html = render(<StageRail stage="prd" />);
         expect(html).toContain('data-verify-stage="prd"');
-        expect(html).toContain("PRD drafted ◂ now"); // the active step, readable off the DOM
-        expect(html).not.toContain("Tasks drafted ◂ now"); // a later, inactive step is not marked
+        expect(html).toContain("conversing");
+        expect(html).toContain("tasks drafted");
     });
 
-    it("PlanDraftCards (valid) stamps task + warn counts and shows the ⚠ + did-you-mean", () => {
-        const html = renderToStaticMarkup(<PlanDraftCards parse={validParse} verdicts={verdicts} />);
-        expect(html).toContain('data-verify-unit="PlanDraftCards"');
-        expect(html).toContain('data-verify-state="valid"');
-        expect(html).toContain('data-verify-tasks="2"');
-        expect(html).toContain('data-verify-warns="1"');
-        expect(html).toContain("⚠");
+    it("a valid draft renders its cards + the static ⚠ with did-you-mean, and offers Run pre-flight", () => {
+        const html = render(<PlannerTab {...plannerProps} rail={rail({
+            parse: { ok: true, draft },
+            verdicts: [{ taskSlug: "t1", command: "npm run x", level: "warn", reason: 'no npm script "x"', suggestion: "check" }],
+        })} />);
+        expect(html).toContain('data-verify-parse-ok="true"');
+        expect(html).toContain("First");
         expect(html).toContain("did you mean");
-        expect(html).toContain("verify:tray");        // the suggested script
-        expect(html).toContain("depends on: t1");      // the edge by slug
+        expect(html).toContain("npm run check");
+        expect(html).toContain(">Run pre-flight<");
     });
 
-    it("PlanDraftCards (invalid) stamps state=invalid + error count and lists the errors verbatim", () => {
-        const html = renderToStaticMarkup(<PlanDraftCards parse={invalidRail.parse} verdicts={[]} />);
-        expect(html).toContain('data-verify-state="invalid"');
-        expect(html).toContain('data-verify-errors="1"');
-        expect(html).toContain("planTitle must be a non-empty string");
+    it("PROBE: a parse-invalid draft lists the errors verbatim and offers NO approval path", () => {
+        const html = render(<PlannerTab {...plannerProps} rail={rail({ parse: { ok: false, errors: ["tasks[0].acceptance must be non-empty"] } })} />);
+        expect(html).toContain('data-verify-parse-ok="false"');
+        expect(html).toContain("tasks[0].acceptance must be non-empty");
+        expect(html).not.toContain(">Run pre-flight<");
+        expect(html).not.toContain("Confirm &amp; queue");
     });
 
-    const noop = () => {};
-    const railProps = (over: Partial<Parameters<typeof PlanRail>[0]> = {}) => ({
-        preflight: null as PreflightReport | "loading" | null, acks: [] as string[],
-        onRunPreflight: noop, onSkip: noop, onToggleAck: noop, onConfirm: noop, ...over,
-    });
-
-    it("PlanRail (phase=pending) offers Run pre-flight, ENABLED for a valid non-empty draft", () => {
-        const html = renderToStaticMarkup(<PlanRail state={validRail} {...railProps()} />);
-        expect(html).toContain('data-verify-unit="PlanRail"');
-        expect(html).toContain('data-verify-can-approve="true"');
-        expect(html).toContain('data-verify-phase="pending"');
-        expect(html).toContain('data-verify-tasks="2"');
-        expect(html).toContain("Run pre-flight");
-        expect(html).toContain("Skip pre-flight"); // the explicit escape stays available
-    });
-
-    it("PROBE: PlanRail DISABLES Run pre-flight while the draft is parse-invalid", () => {
-        const html = renderToStaticMarkup(<PlanRail state={invalidRail} {...railProps()} />);
-        expect(html).toContain('data-verify-can-approve="false"');
-        expect(html).toContain('disabled=""'); // run pre-flight + skip both blocked while invalid
-    });
-
-    it("PlanRail (phase=ready) swaps to Confirm, DISABLED while a warn is unacked", () => {
-        const report: PreflightReport = { ran: true, warnCount: 2, verdicts: [
-            { command: "npm run check", taskSlugs: ["t1", "t2"], level: "warn-already-green", exitCode: 0, tail: "ok" },
-            { command: "npm run verify:trays", taskSlugs: ["t1"], level: "warn-missing", exitCode: 1, tail: "missing", suggestion: "verify:tray" },
-        ] };
-        const disabled = renderToStaticMarkup(<PlanRail state={validRail} {...railProps({ preflight: report })} />);
-        expect(disabled).toContain('data-verify-phase="ready"');
-        expect(disabled).toContain("Confirm"); // the button swapped from Run pre-flight
-        expect(disabled).toContain('disabled=""'); // Confirm blocked while warns unacked
-
-        const enabled = renderToStaticMarkup(<PlanRail state={validRail} {...railProps({ preflight: report, acks: ["npm run check", "npm run verify:trays"] })} />);
-        expect(enabled).toContain("Confirm");
-        expect(enabled).not.toContain('disabled=""'); // both warns acked → Confirm unlocks
+    it("without a session, the tab offers only Open the planner", () => {
+        const html = render(<PlannerTab {...plannerProps} session={null} rail={undefined} />);
+        expect(html).toContain("Open the planner");
     });
 });
 
-describe("PreflightVerdictPanel contract (M11 dynamic verdict gate)", () => {
-    const draft: PlanDraft = { planTitle: "p", tasks: [
-        { slug: "t1", title: "Foundation", intent: "i", acceptance: ["npm run verify:fail", "npm run check", "npm run verify:trays"], scopeHint: null, dependsOn: [] },
-    ] };
-    const report: PreflightReport = { ran: true, warnCount: 2, verdicts: [
-        { command: "npm run verify:fail", taskSlugs: ["t1"], level: "ok-red", exitCode: 1, tail: "1 test failed: expected true" },
-        { command: "npm run check", taskSlugs: ["t1"], level: "warn-already-green", exitCode: 0, tail: "all green" },
-        { command: "npm run verify:trays", taskSlugs: ["t1"], level: "warn-missing", exitCode: 1, tail: "Missing script", suggestion: "verify:tray" },
-    ] };
-
-    it("stamps verdict/warn/acked counts and renders all three flavors with their evidence", () => {
-        const html = renderToStaticMarkup(<PreflightVerdictPanel draft={draft} report={report} acks={["npm run check"]} onToggleAck={() => {}} />);
-        expect(html).toContain('data-verify-unit="PreflightVerdictPanel"');
-        expect(html).toContain('data-verify-verdicts="3"');
+describe("PreflightReportPanel contract (the ack gate — §8.7)", () => {
+    const report: PreflightReport = {
+        ran: true, warnCount: 2, verdicts: [
+            { command: "npm run a", taskSlugs: ["t1"], level: "ok-red", exitCode: 1, tail: "1 failed" },
+            { command: "npm run b", taskSlugs: ["t1", "t2"], level: "warn-already-green", exitCode: 0, tail: "all passed" },
+            { command: "npm run c", taskSlugs: ["t2"], level: "warn-missing", exitCode: null, tail: "", reason: 'no npm script "c"', suggestion: "check" },
+        ],
+    };
+    it("stamps warn/unacked counts and renders all three verdict flavors", () => {
+        const html = render(<PreflightReportPanel report={report} acks={[]} onAck={noop} />);
+        expect(html).toContain('data-verify-unit="PreflightReport"');
         expect(html).toContain('data-verify-warns="2"');
-        expect(html).toContain('data-verify-acked="1"');
-        expect(html).toContain('data-verify-can-confirm="false"'); // one warn (verify:trays) still unacked
-        expect(html).toContain("red (expected)");   // ok-red flavor
-        expect(html).toContain("already green");     // warn-already-green flavor
-        expect(html).toContain("missing");           // warn-missing flavor
-        expect(html).toContain("did you mean");       // the static did-you-mean carried over
-        expect(html).toContain("verify:tray");        // the suggested script
-        expect(html).toContain("expected true");      // the ok-red evidence tail
+        expect(html).toContain('data-verify-unacked="2"');
+        expect(html).toContain("expected red");
+        expect(html).toContain("already green");
+        expect(html).toContain("could not run");
+        expect(html).toContain("exit —"); // a never-spawned command has no exit code
     });
-
-    it("PROBE: can-confirm is false while any warn is unacked; true once every warn is acked", () => {
-        const none = renderToStaticMarkup(<PreflightVerdictPanel draft={draft} report={report} acks={[]} onToggleAck={() => {}} />);
-        expect(none).toContain('data-verify-acked="0"');
-        expect(none).toContain('data-verify-can-confirm="false"');
-
-        const all = renderToStaticMarkup(<PreflightVerdictPanel draft={draft} report={report} acks={["npm run check", "npm run verify:trays"]} onToggleAck={() => {}} />);
-        expect(all).toContain('data-verify-acked="2"');
-        expect(all).toContain('data-verify-can-confirm="true"');
+    it("PROBE: unackedWarns hits zero only when EVERY warn is acknowledged", () => {
+        expect(unackedWarns(report, [])).toBe(2);
+        expect(unackedWarns(report, ["npm run b"])).toBe(1);
+        expect(unackedWarns(report, ["npm run b", "npm run c"])).toBe(0);
+        expect(unackedWarns(report, ["npm run a"])).toBe(2); // acking an ok-red changes nothing
     });
 });
 
-describe("M11 plan views: BoardCard badge + PlanDetail progress", () => {
-    const tli = (over: Partial<TaskListItem> = {}): TaskListItem =>
-        ({ ...task(), resumable: false, blocked: false, waitingOn: [], ...over });
-    const plan: Plan = { id: "pl1", projectId: "p", title: "Rail feature", prdText: "# PRD\nbuild the rail", createdAt: 0 };
-
-    it("BoardCard renders a plan badge only when the task carries a plan (title), stamped in data-verify", () => {
-        const withPlan = renderToStaticMarkup(<BoardCard task={task({ planId: "pl1" })} planTitle="Rail feature" onOpenPlan={() => {}} />);
-        expect(withPlan).toContain('data-verify-plan="Rail feature"');
-        expect(withPlan).toContain("plan: Rail feature");
-        const handMade = renderToStaticMarkup(<BoardCard task={task({ planId: null })} />);
-        expect(handMade).not.toContain("data-verify-plan"); // no badge for a hand-made task
-    });
-
-    it("PlanDetail stamps N/M merged progress and lists member tasks with their statuses", () => {
-        const members = [tli({ id: "a", title: "Foundation", status: "merged" }), tli({ id: "b", title: "Rail", status: "running" })];
-        const html = renderToStaticMarkup(<PlanDetail plan={plan} tasks={members} onClose={() => {}} />);
-        expect(html).toContain('data-verify-unit="PlanDetail"');
-        expect(html).toContain('data-verify-tasks="2"');
+describe("PlansTab contract (M11 plan views)", () => {
+    const plan = { id: "pl1", projectId: "p", title: "Plan A", prdText: "# PRD body", createdAt: 1 };
+    it("stamps plan/member/merged counts and lists member tasks with their statuses", () => {
+        const members = [vm({ id: "a", planId: "pl1", status: "merged", diffstat: "2 files changed, 10 insertions(+), 2 deletions(-)" }), vm({ id: "b", planId: "pl1", status: "queued" })];
+        const html = render(<PlansTab project={project()} plans={[plan]} tasks={members} onFilterBoard={noop} />);
+        expect(html).toContain('data-verify-unit="PlansTab"');
+        expect(html).toContain('data-verify-members="2"');
         expect(html).toContain('data-verify-merged="1"');
-        expect(html).toContain('data-verify-progress="1/2"');
-        expect(html).toContain("build the rail"); // the stored PRD text is rendered
-        expect(html).toContain("Foundation");
-        expect(html).toContain("Rail");
+        expect(html).toContain("# PRD body");
+        expect(html).toContain("+10 −2");
     });
-
-    it("PROBE: PlanDetail progress reflects ZERO merged when no member has merged (not a happy-path 1/1)", () => {
-        const members = [tli({ id: "a", status: "queued" }), tli({ id: "b", status: "needs-human" })];
-        const html = renderToStaticMarkup(<PlanDetail plan={plan} tasks={members} onClose={() => {}} />);
+    it("PROBE: zero merged members stamps merged=0 (not a happy-path replay)", () => {
+        const html = render(<PlansTab project={project()} plans={[plan]} tasks={[vm({ id: "a", planId: "pl1", status: "queued" })]} onFilterBoard={noop} />);
         expect(html).toContain('data-verify-merged="0"');
-        expect(html).toContain('data-verify-progress="0/2"');
+    });
+});
+
+describe("Heatmap contract (real merge timestamps)", () => {
+    it("stamps the merged count it was fed", () => {
+        const html = render(<Heatmap mergedAt={[Date.now(), Date.now() - 86_400_000]} />);
+        expect(html).toContain('data-verify-unit="Heatmap"');
+        expect(html).toContain('data-verify-merged="2"');
+    });
+    it("PROBE: an empty history stamps merged=0 and paints no cells", () => {
+        const html = render(<Heatmap mergedAt={[]} />);
+        expect(html).toContain('data-verify-merged="0"');
+        expect(html).not.toContain("1 merged");
     });
 });

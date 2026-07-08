@@ -5,6 +5,9 @@
 // remove` race the still-live shell) — that latency contract is exactly why nodePtyFactory uses the
 // bundled-conpty.dll kill branch (see nodePtyFactory.ts + kill.accept.ts for the stray-fire fix this file
 // originally surfaced).
+//
+// M14 cockpit deltas: the worktree shell opens via the card's "Open shell" verb (which routes to the
+// Terminals view), and Abandon lives in the task view's verb bar behind a confirm dialog.
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import { launchHelm, seededNeedsHumanBoard, until, collect, readBuf, ptyList, normPath } from "./harness";
@@ -15,9 +18,11 @@ describe("reap", () => {
         const helm = await launchHelm({ seed });
         const { page } = helm;
         try {
-            await page.getByText(title).waitFor({ state: "visible", timeout: 30_000 });
-            // Open a free shell INSIDE the task's retained worktree (the card's own + terminal button).
-            await page.getByRole("button", { name: "+ terminal", exact: true }).click();
+            // Open a free shell INSIDE the task's retained worktree via the card's own Open-shell verb.
+            const card = page.locator(".helm-task-card").filter({ hasText: title });
+            await card.waitFor({ state: "visible", timeout: 30_000 });
+            await card.hover();
+            await card.getByRole("button", { name: "Open shell", exact: true }).click();
             const shell = await until(async () => (await ptyList(page)).find((x) => x.kind === "free" && x.alive) ?? null, { label: "worktree shell" });
             expect(normPath(shell.cwd)).toBe(normPath(worktreePath)); // the shell holds the worktree dir
             // Prove it's a live holder of the dir before we reap it.
@@ -25,8 +30,12 @@ describe("reap", () => {
             await page.evaluate((id) => window.helm.ptyWrite(id, "echo insideworktree\r"), shell.id);
             await until(async () => (await readBuf(page, shell.id)).includes("insideworktree"), { timeoutMs: 25_000, label: "shell live in worktree" });
 
-            // Abandon from the UI. The reap seam killByCwdPrefix(worktree) fires, then removeWorktree.
+            // Abandon from the UI: back to the fleet, open the task, Abandon → confirm. The reap seam
+            // killByCwdPrefix(worktree) fires, then removeWorktree.
+            await page.locator(".helm-sidebar").getByText("Fleet").click();
+            await page.locator(".helm-task-card").filter({ hasText: title }).click();
             await page.getByRole("button", { name: "Abandon", exact: true }).click();
+            await page.locator(".helm-dialog").getByRole("button", { name: "Abandon task", exact: true }).click();
 
             // The worktree must ACTUALLY be gone — the whole point: an open shell can't EBUSY-wedge the
             // removal. On Windows the fire-and-forget taskkill races git worktree remove and abandon is

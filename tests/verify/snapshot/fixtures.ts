@@ -42,7 +42,7 @@ const noTokens = () => ({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0, c
 // sum so ONLY the negativity trips token-accounting-monotonic, not reconciliation.
 export const NEGATIVE_TOKENS: EngineSnapshot = {
     taskId: "t", status: "running", currentIteration: null,
-    iterations: [{ index: 0, verdict: "green", tokens: { input: 10, output: -5, cacheRead: 0, cacheCreation: 0, costUsd: 0.1 }, durationMs: null, sessionId: null, commitSha: "a" }],
+    iterations: [{ index: 0, verdict: "green", tokens: { input: 10, output: -5, cacheRead: 0, cacheCreation: 0, costUsd: 0.1 }, durationMs: null, sessionId: null, commitSha: "a", outputTail: null }],
     totals: { input: 10, output: -5, cacheRead: 0, cacheCreation: 0, costUsd: 0.1 },
     feed: [], feedEventsConsumed: 0, terminalReason: null,
 };
@@ -50,7 +50,7 @@ export const NEGATIVE_TOKENS: EngineSnapshot = {
 // Probe 2 — an orphan feed entry pointing at an iteration that doesn't exist.
 export const ORPHAN_FEED: EngineSnapshot = {
     taskId: "t", status: "running", currentIteration: null,
-    iterations: [{ index: 0, verdict: null, tokens: noTokens(), durationMs: null, sessionId: null, commitSha: null }],
+    iterations: [{ index: 0, verdict: null, tokens: noTokens(), durationMs: null, sessionId: null, commitSha: null, outputTail: null }],
     totals: noTokens(),
     feed: [{ iterationIndex: 5, kind: "assistant", text: "from a phantom iteration" }],
     feedEventsConsumed: 1, terminalReason: null,
@@ -59,7 +59,7 @@ export const ORPHAN_FEED: EngineSnapshot = {
 // Probe 2b — a fabricated feed (length exceeds the count of events that produced it).
 export const FEED_EXCEEDS_CONSUMED: EngineSnapshot = {
     taskId: "t", status: "running", currentIteration: null,
-    iterations: [{ index: 0, verdict: null, tokens: noTokens(), durationMs: null, sessionId: null, commitSha: null }],
+    iterations: [{ index: 0, verdict: null, tokens: noTokens(), durationMs: null, sessionId: null, commitSha: null, outputTail: null }],
     totals: noTokens(),
     feed: [{ iterationIndex: 0, kind: "assistant", text: "a" }, { iterationIndex: 0, kind: "assistant", text: "b" }],
     feedEventsConsumed: 1, terminalReason: null,

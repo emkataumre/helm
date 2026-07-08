@@ -177,8 +177,11 @@ export async function launchHelm(opts: { seed?: string[] } = {}): Promise<Launch
         timeout: 120_000,
     });
     const page = await app.firstWindow({ timeout: 60_000 });
-    // React mounted + the board rendered (the h1 is the most stable anchor).
-    await page.getByRole("heading", { name: "Helm", level: 1 }).waitFor({ state: "visible", timeout: 60_000 });
+    // React mounted + the cockpit chrome rendered. The titlebar is the most stable anchor (present on
+    // every route); a fresh userData always boots onto the Fleet view (route persists in localStorage,
+    // which lives inside the throwaway partition).
+    await page.locator(".helm-titlebar").waitFor({ state: "visible", timeout: 60_000 });
+    await page.getByRole("heading", { name: "Fleet", level: 1 }).waitFor({ state: "visible", timeout: 60_000 });
     const helmType = await page.evaluate(() => typeof window.helm);
     if (helmType !== "object") throw new Error(`window.helm not exposed (got ${helmType}) — preload bridge missing`);
 

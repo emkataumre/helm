@@ -21,7 +21,7 @@ export function emptySnapshot(taskId: string, status: TaskStatus = "queued"): En
 }
 
 function freshIteration(index: number): IterationView {
-    return { index, verdict: null, tokens: emptyTokens(), durationMs: null, sessionId: null, commitSha: null };
+    return { index, verdict: null, tokens: emptyTokens(), durationMs: null, sessionId: null, commitSha: null, outputTail: null };
 }
 
 // totals is always the sum of the per-iteration series — recomputed from scratch so it can never
@@ -91,7 +91,7 @@ export function applyEvent(draft: EngineSnapshot, event: SnapshotEvent): EngineS
         }
         case "iteration-end": {
             const it = draft.iterations.find((i) => i.index === event.index);
-            if (it) { it.verdict = event.verdict; it.commitSha = event.commitSha; }
+            if (it) { it.verdict = event.verdict; it.commitSha = event.commitSha; it.outputTail = event.tail || null; }
             draft.currentIteration = null;
             break;
         }
@@ -126,6 +126,7 @@ export function snapshotFromRows(
             durationMs: r.durationMs,
             sessionId: r.sessionId,
             commitSha: r.commitSha,
+            outputTail: r.outputTail || null,
         });
     }
     recomputeTotals(s);

@@ -2,6 +2,10 @@
 // deliberately-lying NEGATIVE CONTROL. Drives the REAL built app; asserts via window.helm (the prod-safe
 // machine-readable agent handle) + visible DOM text. Every scenario try/finally-closes its Electron app;
 // a failed launch is a loud FAIL (launchHelm throws), never a skip. No scenario drives a real claude.
+//
+// M14 cockpit deltas: the fleet board is a kanban of TaskCards whose verbs reveal on hover (compact —
+// two verbs + an overflow into the task view); the resume-guard now HIDES Drop in until a session is
+// resumable (§8.4 — offering it would fail) instead of disabling it. Start fresh is always available.
 import { describe, it, expect } from "vitest";
 import { launchHelm, seededNeedsHumanBoard } from "./harness";
 
@@ -15,24 +19,28 @@ describe("board", () => {
             expect(tasks.length).toBe(1);
             expect(tasks[0].status).toBe("needs-human"); // boot-reconcile did NOT prune / re-drive it
             expect(tasks[0].worktreePath).not.toBeNull();
+            expect(tasks[0].resumable).toBe(false); // no iterations seeded → nothing to --resume
 
             const projects = await helm.page.evaluate(() => window.helm.listProjects());
             expect(projects.map((p) => p.name)).toContain("AcceptProj");
 
-            // The RENDERER drew the card — its title is visible in the DOM (a card only renders in the lane
-            // matching its status, so a visible title + status=needs-human ⇒ it's in the needs-human lane).
-            await helm.page.getByText("Seeded needs-human task").waitFor({ state: "visible", timeout: 30_000 });
+            // The RENDERER drew the card — its title is visible in the DOM (a card only renders in the
+            // kanban column matching its status, so a visible title + status=needs-human ⇒ it's in place).
+            const card = helm.page.locator(".helm-task-card").filter({ hasText: "Seeded needs-human task" });
+            await card.waitFor({ state: "visible", timeout: 30_000 });
 
-            // M5 resume-guard UI: this needs-human task has no persisted session (no iterations seeded) →
-            // `resumable` is false → the card's Drop in is DISABLED (a killed/never-completed iteration has
-            // nothing to --resume), while Start fresh is always available. The retained worktree also offers
-            // a + terminal, and needs-human offers Abandon. Proves "recorded sessionId ⇔ resumable" at the UI.
-            const dropIn = helm.page.getByRole("button", { name: "Drop in", exact: true });
-            await dropIn.waitFor({ state: "visible", timeout: 15_000 });
-            expect(await dropIn.isDisabled()).toBe(true);
+            // M5 resume-guard UI (M14 shape): no persisted session → Drop in is NOT OFFERED anywhere on the
+            // card; Start fresh (always available) + Open shell (retained worktree) are the compact verbs.
+            await card.hover();
+            expect(await card.getByRole("button", { name: "Drop in", exact: true }).count()).toBe(0);
+            await card.getByRole("button", { name: "Start fresh", exact: true }).waitFor({ state: "visible", timeout: 15_000 });
+            await card.getByRole("button", { name: "Open shell", exact: true }).waitFor({ state: "visible" });
+
+            // The remaining verb (Abandon) lives in the task view — open it and see the full verb bar.
+            await card.click();
+            await helm.page.getByRole("button", { name: "Abandon", exact: true }).waitFor({ state: "visible", timeout: 30_000 });
             await helm.page.getByRole("button", { name: "Start fresh", exact: true }).waitFor({ state: "visible" });
-            await helm.page.getByRole("button", { name: "+ terminal", exact: true }).waitFor({ state: "visible" });
-            await helm.page.getByRole("button", { name: "Abandon", exact: true }).waitFor({ state: "visible" });
+            expect(await helm.page.getByRole("button", { name: "Drop in", exact: true }).count()).toBe(0);
         } finally {
             await helm.close();
         }

@@ -1,617 +1,344 @@
-import { useEffect, useState, useCallback } from "react";
-import type { Project, Task, TaskListItem, TaskStatus, EngineSnapshot, NewProjectInput, SchedulerState, PromoteResponse, PtySession, PtySessionInfo, PlanRailState, PreflightReport, Plan } from "../shared/types";
-import { PlanRail } from "./components/PlanRail";
-import { PlanDetail } from "./components/PlanDetail";
-import { TokenReadout } from "./components/TokenReadout";
-import { IterationHistory } from "./components/IterationHistory";
-import { ActivityFeed } from "./components/ActivityFeed";
-import { ProgressPanel } from "./components/ProgressPanel";
-import { BoardCard } from "./components/BoardCard";
-import { SchedulerBar } from "./components/SchedulerBar";
-import { HandbackActions } from "./components/HandbackActions";
-import { PromoteResultPanel } from "./components/PromoteResultPanel";
-import { TerminalPane } from "./components/TerminalPane";
-import { TerminalTabs } from "./components/TerminalTabs";
-import { upsertTab, removeTab, resolveActive } from "./terminalTabs";
-import { parseProgress, type ParsedProgress } from "./progress";
+// src/renderer/App.tsx
+// The cockpit root: route state, the real data plane (window.helm + push events), the
+// per-task snapshot cache, the operator actions (the verb list, nothing else), dialogs
+// and toasts. Ported from the Claude Design handoff (app/main.jsx) with the simulation
+// replaced by the live engine: tasks:changed re-fetches the board, snapshot:changed
+// refreshes one task's telemetry, plan:changed feeds the planner rail, pty:exit greys
+// terminal tabs. Statuses stay engine-owned — every mutation goes through a HelmApi verb.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import type {
+    EngineSnapshot, NewProjectInput, NewTaskInput, Plan, PlanRailState, Project,
+    ProjectConfigPatch, PtySession, PtySessionInfo, SchedulerState, TaskListItem,
+} from "../shared/types";
+import { Toast, type ToastTone } from "./ds";
+import { ActionCtx, ConfirmDialog, type CockpitActions, type TaskVM } from "./views/helpers";
+import { countTasks, FleetView, ProjectView, Sidebar, StatusBar, Titlebar, type Route } from "./views/shell";
+import { TaskDetail } from "./views/TaskDetail";
+import { TerminalsView } from "./views/Terminals";
+import { NewTaskDialog, PromoteDialog, RegisterProjectDialog } from "./views/dialogs";
+import type { BoardLayout } from "./views/Board";
 
-// A plain pwsh shell (no claude) is the default program for a free [+ terminal] — the human runs claude
-// themselves if they want it. Drop-in tabs still use buildDropinArgv (main-side, in tasks:dropIn).
+// A plain pwsh shell (no claude) is the default program for a free shell — the human runs
+// claude themselves if they want it. Drop-in tabs are built main-side (tasks:dropIn).
 const FREE_SHELL_ARGV = ["pwsh.exe", "-NoLogo"];
+const DAY_MS = 86_400_000;
 
-// M5: a 5th lane for handed-off (drop-in) tasks.
-const LANES: TaskStatus[] = ["queued", "running", "handed-off", "needs-human", "merged"];
-const numOrNull = (s: string): number | null => (s.trim() === "" ? null : Number(s));
+let toastSeq = 0;
+interface ToastItem { id: number; tone: ToastTone; title: string; msg: ReactNode }
 
-// Thin data container: the board (lanes + project filter) and a task-detail view, both driven by
-// the prop-driven presentational components. All data crosses window.helm; the components stay pure.
+const loadRoute = (): Route => {
+    try { return (JSON.parse(localStorage.getItem("helm-route") ?? "") as Route) || { view: "fleet" }; } catch { return { view: "fleet" }; }
+};
+const loadLayout = (): BoardLayout => {
+    const l = localStorage.getItem("helm-layout");
+    return l === "list" || l === "grid" ? l : "kanban";
+};
+
 export function App() {
     const [projects, setProjects] = useState<Project[]>([]);
-    const [tasks, setTasks] = useState<TaskListItem[]>([]);
-    const [plans, setPlans] = useState<Plan[]>([]); // M11: every project's plans (for the badge + filter + detail)
-    const [filter, setFilter] = useState<string>("");
-    const [planFilter, setPlanFilter] = useState<string>(""); // M11: narrow the board to one plan's tasks
-    const [selected, setSelected] = useState<string | null>(null);
-    const [selectedPlan, setSelectedPlan] = useState<string | null>(null); // M11: the open plan-detail view
-    const [live, setLive] = useState<Record<string, string>>({});
+    const [taskRows, setTaskRows] = useState<TaskListItem[]>([]);
+    const [plans, setPlans] = useState<Plan[]>([]);
     const [sched, setSched] = useState<SchedulerState | null>(null);
-    // M6-③: the last Promote and its result (null until the human clicks Promote on a project).
-    const [promote, setPromote] = useState<{ projectId: string; result: PromoteResponse | "loading" } | null>(null);
-    // M8 terminal host: a full tab strip over the manager's live sessions (pty:list). `terms` are the open
-    // tabs (drop-in returns + free [+ terminal] creates); `activeTerm` is the ONE mounted TerminalPane —
-    // switching tabs remounts it (key=id) so it re-attaches and replays the main-side scrollback. `termOpen`
-    // collapses the whole host without dropping any session (main-process residency keeps them running).
-    const [terms, setTerms] = useState<PtySessionInfo[]>([]);
-    const [activeTerm, setActiveTerm] = useState<string | null>(null);
-    const [termOpen, setTermOpen] = useState(true);
-    // M10 planner: the open planner view (one project at a time) + the live rail state per project (pushed via
-    // onPlanChanged as the session writes .helm/plan/). The planner PTY lives in its OWN dedicated view (a
-    // TerminalPane beside the rail), never in the bottom terminal host — so "planner"-kind sessions are filtered
-    // out of `terms`.
-    const [planner, setPlanner] = useState<{ projectId: string; session: PtySession } | null>(null);
+    const [snaps, setSnaps] = useState<Record<string, EngineSnapshot | null>>({});
+    const snapsRef = useRef(snaps);
+    snapsRef.current = snaps;
+    const [validating, setValidating] = useState<Set<string>>(new Set());
+    const [sessions, setSessions] = useState<PtySessionInfo[]>([]);
+    const [dismissedSessions, setDismissedSessions] = useState<Set<string>>(new Set());
+    const [activeSession, setActiveSession] = useState<string | null>(null);
+    const [plannerSessions, setPlannerSessions] = useState<Record<string, PtySession>>({});
     const [railStates, setRailStates] = useState<Record<string, PlanRailState>>({});
+    const [route, setRoute] = useState<Route>(loadRoute);
+    const [layout, setLayout] = useState<BoardLayout>(loadLayout);
+    const [toasts, setToasts] = useState<ToastItem[]>([]);
+    const [dialogs, setDialogs] = useState<{ newTask: boolean; newTaskProject: string | null; promote: string | null; register: boolean }>({ newTask: false, newTaskProject: null, promote: null, register: false });
+    const [confirm, setConfirm] = useState<{ title: string; body: ReactNode; label: string; run: () => void } | null>(null);
 
-    // Open/focus a session as a tab (a Drop-in return or a [+ terminal] create). upsertTab is idempotent,
-    // so re-opening a live session just re-focuses it.
-    const showTerm = useCallback((s: PtySession) => { setTerms((ts) => upsertTab(ts, s)); setActiveTerm(s.id); setTermOpen(true); }, []);
-    // Close a tab = kill the session — the ONLY renderer-initiated kill (an explicit user action). Unmount
-    // (Hide / tab-switch / window-hide) NEVER kills. The exit event then prunes the tab; drop it optimistically.
-    const closeTerm = useCallback((id: string) => { window.helm.ptyKill(id); setTerms((ts) => removeTab(ts, id)); }, []);
-    // A plain shell in a project's repo (cwd = repoPath) or a task's retained worktree (cwd = worktreePath).
-    const newProjectTerminal = useCallback((p: Project) => {
-        window.helm.ptyCreate({ cwd: p.repoPath, argv: FREE_SHELL_ARGV, kind: "free", title: `${p.name} — shell`, projectId: p.id }).then(showTerm);
-    }, [showTerm]);
-    const newTaskTerminal = useCallback((t: Task) => {
-        if (!t.worktreePath) return;
-        window.helm.ptyCreate({ cwd: t.worktreePath, argv: FREE_SHELL_ARGV, kind: "free", title: `${t.title} — shell`, taskId: t.id, projectId: t.projectId }).then(showTerm);
-    }, [showTerm]);
-
-    // M10: open (or reuse) a project's planner. openPlanner ensures the drop dir + watcher and returns the
-    // planner PTY session + the current rail state; we seed the rail and switch to the dedicated planner view.
-    const openPlanner = useCallback((p: Project) => {
-        window.helm.openPlanner(p.id).then((r) => {
-            if (!r) return;
-            setRailStates((m) => ({ ...m, [p.id]: r.state }));
-            setPlanner({ projectId: p.id, session: r.session });
-        });
+    /* ---------- toasts ---------- */
+    const toast = useCallback((tone: ToastTone, title: string, msg: ReactNode) => {
+        const id = ++toastSeq;
+        setToasts((ts) => [...ts.slice(-3), { id, tone, title, msg }]);
+        setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), 6000);
     }, []);
+
+    /* ---------- routing ---------- */
+    const go = useCallback((r: Route) => {
+        setRoute(r);
+        try { localStorage.setItem("helm-route", JSON.stringify(r)); } catch { /* storage unavailable */ }
+    }, []);
+    const setBoardLayout = useCallback((l: BoardLayout) => {
+        setLayout(l);
+        try { localStorage.setItem("helm-layout", l); } catch { /* storage unavailable */ }
+    }, []);
+
+    /* ---------- the data plane ---------- */
+    // Refetch a task's snapshot when it's missing or its status moved (any transition re-reads;
+    // live running detail is additionally push-refreshed via snapshot:changed).
+    const hydrateSnaps = useCallback(async (rows: TaskListItem[]) => {
+        const targets = rows.filter((t) => {
+            const s = snapsRef.current[t.id];
+            return !s || s.status !== t.status;
+        });
+        if (!targets.length) return;
+        const entries = await Promise.all(targets.map(async (t) => [t.id, await window.helm.getVerifyState(t.id)] as const));
+        setSnaps((m) => { const n = { ...m }; for (const [id, s] of entries) n[id] = s; return n; });
+    }, []);
+
     const refresh = useCallback(async () => {
         const ps = await window.helm.listProjects();
+        const rows = await window.helm.listTasks();
         setProjects(ps);
-        setTasks(await window.helm.listTasks());
-        // M11: every project's plans, flattened (newest-first per project). Joined to tasks renderer-side by planId.
+        setTaskRows(rows);
         const perProject = await Promise.all(ps.map((p) => window.helm.listPlans(p.id)));
         setPlans(perProject.flat());
-    }, []);
+        // A verify-&-merge settled when its task left handed-off.
+        setValidating((v) => {
+            const still = new Set([...v].filter((id) => rows.find((t) => t.id === id)?.status === "handed-off"));
+            return still.size === v.size ? v : still;
+        });
+        void hydrateSnaps(rows);
+    }, [hydrateSnaps]);
+
     const refreshSched = useCallback(async () => { setSched(await window.helm.getSchedulerState()); }, []);
+    const refreshSessions = useCallback(async () => { setSessions(await window.helm.ptyList()); }, []);
 
     useEffect(() => {
-        refresh(); refreshSched();
-        // Repopulate the bottom tab strip on (re)mount — sessions live in main. Planner-kind sessions have
-        // their own dedicated view, so they never join the bottom host.
-        window.helm.ptyList().then((all) => setTerms(all.filter((s) => s.kind !== "planner")));
-        window.helm.onTasksChanged(() => { refresh(); refreshSched(); });
-        // M10: the live plan rail — subscribe ONCE (app-singleton), stash the latest state per project.
+        void refresh(); void refreshSched(); void refreshSessions();
+        window.helm.onTasksChanged(() => { void refresh(); void refreshSched(); });
+        window.helm.onSnapshotChanged((taskId) => {
+            void window.helm.getVerifyState(taskId).then((s) => setSnaps((m) => ({ ...m, [taskId]: s })));
+        });
         window.helm.onPlanChanged((projectId, state) => setRailStates((m) => ({ ...m, [projectId]: state })));
-        window.helm.onSnapshotChanged(async (taskId) => {
-            const snap = await window.helm.getVerifyState(taskId);
-            if (snap?.currentIteration) setLive((m) => ({ ...m, [taskId]: snap.currentIteration!.latestActivity }));
-        });
-        // A session that exits (claude quit + pwsh closed, killed, or the process died) → prune its tab.
-        const unsubExit = window.helm.onPtyExit((id) => setTerms((ts) => removeTab(ts, id)));
-        const id = setInterval(refreshSched, 1000); // keep the per-project running counts live
+        const unsubExit = window.helm.onPtyExit(() => { void refreshSessions(); });
+        const id = setInterval(() => { void refreshSched(); }, 1000); // keep the per-project slot counts live
         return () => { clearInterval(id); unsubExit(); };
-    }, [refresh, refreshSched]);
+    }, [refresh, refreshSched, refreshSessions]);
 
-    // Keep the focused tab valid: whenever the tab list changes, a closed/exited active tab hands focus to
-    // a neighbour (resolveActive) instead of blanking the pane; an empty list drops focus to null.
-    useEffect(() => { setActiveTerm((a) => resolveActive(terms, a)); }, [terms]);
-
-    const togglePaused = async (paused: boolean) => { await window.helm.setSchedulerPaused(paused); refreshSched(); };
+    /* ---------- view models ---------- */
+    const tasks: TaskVM[] = useMemo(
+        () => taskRows.map((t) => ({ ...t, snap: snaps[t.id] ?? null, validating: validating.has(t.id) })),
+        [taskRows, snaps, validating],
+    );
+    const tasksById = useMemo(() => Object.fromEntries(tasks.map((t) => [t.id, t])), [tasks]);
+    const counts = countTasks(tasks);
     const paused = sched?.paused ?? false;
+    // Fleet spend over the last 24h of task activity, off the snapshot cache (whole-task totals).
+    const spend = useMemo(() => {
+        const cutoff = Date.now() - DAY_MS;
+        return tasks.reduce((a, t) => a + (t.status === "running" || t.updatedAt > cutoff ? t.snap?.totals.costUsd ?? 0 : 0), 0);
+    }, [tasks]);
+    const visibleSessions = useMemo(() => sessions.filter((s) => !dismissedSessions.has(s.id)), [sessions, dismissedSessions]);
 
-    // Run one project's batch Promote: show a loading panel, then the PromoteResponse (a thrown engine
-    // error — e.g. a mid-promote git failure — is surfaced as a recheck-failed so the human sees why).
-    const doPromote = async (projectId: string) => {
-        setPromote({ projectId, result: "loading" });
-        try { setPromote({ projectId, result: await window.helm.promote(projectId) }); }
-        catch (e) { setPromote({ projectId, result: { outcome: "recheck-failed", output: e instanceof Error ? e.message : String(e) } }); }
-    };
+    /* ---------- scheduler pause ---------- */
+    const togglePause = useCallback(() => {
+        const next = !(sched?.paused ?? false);
+        void window.helm.setSchedulerPaused(next).then(refreshSched);
+        toast(next ? "warning" : "info", next ? "Scheduler paused" : "Scheduler resumed",
+            next ? "Nothing will auto-start. Manual Start-now still works, respecting all gates." : "Free slots refill FIFO, honoring dependency blocks.");
+    }, [sched, refreshSched, toast]);
 
-    const selectedTask = selected ? tasks.find((t) => t.id === selected) : undefined;
-    const shown = tasks.filter((t) => (!filter || t.projectId === filter) && (!planFilter || t.planId === planFilter));
-    const abandoned = shown.filter((t) => t.status === "abandoned");
-    const queuedByProject = tasks.reduce<Record<string, number>>((m, t) => { if (t.status === "queued") m[t.projectId] = (m[t.projectId] ?? 0) + 1; return m; }, {});
-    const names = Object.fromEntries(projects.map((p) => [p.id, p.name]));
-    // M11 plan joins: id→title (the board badge) + the open plan-detail object with its member tasks.
-    const planTitles = Object.fromEntries(plans.map((p) => [p.id, p.title]));
-    const planOptions = plans.filter((p) => !filter || p.projectId === filter);
-    const selectedPlanObj = selectedPlan ? plans.find((p) => p.id === selectedPlan) : undefined;
-    const planMembers = selectedPlan ? tasks.filter((t) => t.planId === selectedPlan) : [];
+    /* ---------- terminals ---------- */
+    const showSession = useCallback((s: PtySession) => {
+        setDismissedSessions((d) => { const n = new Set(d); n.delete(s.id); return n; });
+        void refreshSessions();
+        setActiveSession(s.id);
+        go({ view: "terminals" });
+    }, [go, refreshSessions]);
+    const killSession = useCallback((id: string) => {
+        const s = sessions.find((x) => x.id === id);
+        if (s && !s.alive) setDismissedSessions((d) => new Set(d).add(id)); // dead → just remove from the list
+        else void window.helm.ptyKill(id).then(refreshSessions);           // live → closing IS killing (§8.5)
+    }, [sessions, refreshSessions]);
+    const newShell = useCallback((projectId: string) => {
+        const p = projects.find((x) => x.id === projectId);
+        if (!p) return;
+        void window.helm.ptyCreate({ cwd: p.repoPath, argv: FREE_SHELL_ARGV, kind: "free", title: `${p.name} — shell`, projectId: p.id }).then(showSession);
+    }, [projects, showSession]);
 
-    return (
-        <div style={{ fontFamily: "system-ui", padding: 20, display: "grid", gap: 20, maxWidth: 1120, margin: "0 auto" }}>
-            <h1 style={{ fontFamily: "ui-serif, Georgia, serif" }}>Helm</h1>
+    /* ---------- planner ---------- */
+    const openPlanner = useCallback((project: Project) => {
+        void window.helm.openPlanner(project.id).then((r) => {
+            if (!r) return;
+            setRailStates((m) => ({ ...m, [project.id]: r.state }));
+            setPlannerSessions((m) => ({ ...m, [project.id]: r.session }));
+            void refreshSessions(); // the planner PTY also shows in the Terminals list
+        });
+    }, [refreshSessions]);
+    const onPlanApproved = useCallback((projectId: string, count: number, warnings: string[], skipped: boolean) => {
+        toast("success", `Queued ${count} task${count === 1 ? "" : "s"}`,
+            (warnings.length ? warnings.join(" · ") + ". " : "PRD stored durably with the plan. ") +
+            (skipped ? "Pre-flight was explicitly skipped." : "Every warning was acknowledged."));
+        go({ view: "project", projectId, tab: "board" });
+        void refresh();
+    }, [toast, go, refresh]);
 
-            {selectedTask ? (
-                <TaskDetail task={selectedTask} onClose={() => setSelected(null)} onAction={refresh} />
-            ) : planner ? (
-                <PlannerView
-                    projectId={planner.projectId}
-                    projectName={names[planner.projectId] ?? planner.projectId}
-                    session={planner.session}
-                    state={railStates[planner.projectId]}
-                    onClose={() => setPlanner(null)}
-                    onApproved={() => { setPlanner(null); refresh(); }}
-                />
-            ) : selectedPlanObj ? (
-                <PlanDetail
-                    plan={selectedPlanObj}
-                    tasks={planMembers}
-                    onClose={() => setSelectedPlan(null)}
-                    onSelectTask={(id) => { setSelectedPlan(null); setSelected(id); }}
-                />
-            ) : (
-                <>
-                    <RegisterProjectForm onDone={refresh} />
-                    <ProjectConfigForm projects={projects} onDone={refresh} />
-                    <NewTaskForm projects={projects} tasks={tasks} onDone={refresh} />
-
-                    {sched ? <SchedulerBar state={sched} queuedByProject={queuedByProject} names={names} onSetPaused={togglePaused} /> : null}
-
-                    {projects.length > 0 ? (
-                        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                            <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, textTransform: "uppercase", color: "#788C5D" }}>Promote (integration → target)</span>
-                            {projects.map((p) => (
-                                <button key={p.id} onClick={() => doPromote(p.id)} disabled={promote?.projectId === p.id && promote.result === "loading"}>
-                                    {p.name} ({p.promotionMode})
-                                </button>
-                            ))}
-                        </div>
-                    ) : null}
-                    {promote ? <PromoteResultPanel projectName={names[promote.projectId] ?? promote.projectId} result={promote.result} /> : null}
-
-                    {projects.length > 0 ? (
-                        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                            <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, textTransform: "uppercase", color: "#788C5D" }}>Terminals (free shell in repo)</span>
-                            {projects.map((p) => (
-                                <button key={p.id} onClick={() => newProjectTerminal(p)} title={`Open a pwsh shell in ${p.repoPath}`}>+ {p.name}</button>
-                            ))}
-                        </div>
-                    ) : null}
-
-                    {projects.length > 0 ? (
-                        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                            <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12, textTransform: "uppercase", color: "#788C5D" }}>Plan (embedded session → draft tasks)</span>
-                            {projects.map((p) => (
-                                <button key={p.id} onClick={() => openPlanner(p)} title={`Open the planner for ${p.name} (an embedded claude session + live side rail)`}>Plan: {p.name}</button>
-                            ))}
-                        </div>
-                    ) : null}
-
-                    <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
-                        <label>Project filter:{" "}
-                            <select value={filter} onChange={(e) => { setFilter(e.target.value); setPlanFilter(""); }}>
-                                <option value="">all projects</option>
-                                {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                            </select>
-                        </label>
-                        {planOptions.length > 0 ? (
-                            <label>Plan filter:{" "}
-                                <select value={planFilter} onChange={(e) => setPlanFilter(e.target.value)}>
-                                    <option value="">all plans</option>
-                                    {planOptions.map((p) => <option key={p.id} value={p.id}>{p.title}</option>)}
-                                </select>
-                            </label>
-                        ) : null}
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
-                        {LANES.map((lane) => (
-                            <div key={lane}>
-                                <h3 style={{ fontFamily: "ui-monospace, monospace", fontSize: 13, textTransform: "uppercase", color: "#788C5D" }}>{lane}</h3>
-                                {shown.filter((t) => t.status === lane).map((t) => (
-                                    <BoardCard
-                                        key={t.id} task={t} liveActivity={live[t.id]} paused={paused} resumable={t.resumable}
-                                        blocked={t.blocked} waitingOn={t.waitingOn}
-                                        planTitle={t.planId ? planTitles[t.planId] : undefined}
-                                        jailed={projects.some((p) => p.id === t.projectId && !!p.jailImage)}
-                                        onClick={() => setSelected(t.id)}
-                                        onRun={() => { window.helm.startNow(t.id); }}
-                                        onDropIn={() => { window.helm.dropIn(t.id).then((s) => { refresh(); if (s) showTerm(s); }); }}
-                                        onStartFresh={() => { window.helm.dropIn(t.id, true).then((s) => { refresh(); if (s) showTerm(s); }); }}
-                                        onAbandon={() => { window.helm.abandon(t.id).then(refresh); }}
-                                        onNewTerminal={() => newTaskTerminal(t)}
-                                        onClearDeps={() => { window.helm.setDependsOn(t.id, []).then(refresh); }}
-                                        onOpenPlan={() => { if (t.planId) setSelectedPlan(t.planId); }}
-                                    />
-                                ))}
-                            </div>
-                        ))}
-                    </div>
-
-                    {abandoned.length > 0 ? (
-                        <details>
-                            <summary>abandoned ({abandoned.length})</summary>
-                            {abandoned.map((t) => <BoardCard key={t.id} task={t} jailed={projects.some((p) => p.id === t.projectId && !!p.jailImage)} onClick={() => setSelected(t.id)} />)}
-                        </details>
-                    ) : null}
-                </>
-            )}
-
-            {/* M8 terminal host: a docked, constrained tab strip + ONE mounted pane. Reserve space so the
-                fixed host never covers the board's tail. */}
-            {terms.length > 0 ? <TerminalHost terms={terms} activeId={activeTerm} open={termOpen} onFocus={(id) => { setActiveTerm(id); setTermOpen(true); }} onClose={closeTerm} onToggleOpen={() => setTermOpen((v) => !v)} /> : null}
-        </div>
-    );
-}
-
-// The docked terminal host: a tab strip over every live session + the single active TerminalPane (keyed by
-// id, so a tab switch remounts it → re-attach + scrollback replay, and a hidden tab's 0×0 element never
-// mis-fits). Collapsed (Hide) it keeps every session running (main-process residency); Show re-attaches.
-function TerminalHost({ terms, activeId, open, onFocus, onClose, onToggleOpen }: {
-    terms: PtySessionInfo[];
-    activeId: string | null;
-    open: boolean;
-    onFocus: (id: string) => void;
-    onClose: (id: string) => void;
-    onToggleOpen: () => void;
-}) {
-    const active = terms.find((t) => t.id === activeId) ?? null;
-    return (
-        <>
-            <div style={{ height: open ? 372 : 60 }} />
-            <div
-                data-verify-unit="TerminalHost" data-verify-open={String(open)} data-verify-count={terms.length}
-                style={{ position: "fixed", left: 0, right: 0, bottom: 0, height: open ? 360 : 44, background: "#1e1e1c", borderTop: "1.5px solid #3D3D3A", display: "flex", flexDirection: "column", zIndex: 50 }}
-            >
-                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "5px 12px", borderBottom: open ? "1px solid #2a2a28" : "none", color: "#FAF9F5" }}>
-                    <span style={{ textTransform: "uppercase", color: "#D97757", fontFamily: "ui-monospace, monospace", fontSize: 11, letterSpacing: 0.5, flexShrink: 0 }}>terminals</span>
-                    <TerminalTabs sessions={terms} activeId={activeId} onFocus={onFocus} onClose={onClose} />
-                    <button style={{ flexShrink: 0 }} onClick={onToggleOpen}>{open ? "Hide" : "Show"}</button>
-                </div>
-                {open && active ? (
-                    <div style={{ flex: 1, minHeight: 0, padding: 8, boxSizing: "border-box", maxWidth: 1120, width: "100%", margin: "0 auto" }}>
-                        <TerminalPane key={active.id} session={active} />
-                    </div>
-                ) : null}
-            </div>
-        </>
-    );
-}
-
-// M10/M11 planner view: the embedded human session (a TerminalPane over the planner PTY) on the left, the live
-// side rail on the right. The rail materializes the PRD + draft cards as the session writes .helm/plan/; M11
-// makes approve TWO-PHASE — [Run pre-flight] executes each acceptance command in a throwaway worktree, the
-// verdict panel lands, every ⚠ needs an ack, then [Confirm → queue]. This view owns the phase/ack state; a
-// plan:changed (the draft edited) resets it (a stale report can't be confirmed). Keyed by session id so
-// switching projects remounts the pane (re-attach + scrollback replay).
-function PlannerView({ projectId, projectName, session, state, onClose, onApproved }: {
-    projectId: string;
-    projectName: string;
-    session: PtySession;
-    state: PlanRailState | undefined;
-    onClose: () => void;
-    onApproved: () => void;
-}) {
-    const [preflight, setPreflight] = useState<PreflightReport | "loading" | null>(null);
-    const [acks, setAcks] = useState<string[]>([]);
-    const [error, setError] = useState<string | null>(null);
-
-    // Any plan:changed (a fresh rail-state object per fire) means the draft may have changed — reset the gate so
-    // a stale report/ack set can't be confirmed. The human re-runs pre-flight against the new draft.
-    useEffect(() => { setPreflight(null); setAcks([]); setError(null); }, [state]);
-
-    // Belt over the ipc's structured errors: a REJECTED invoke (the M10-acceptance finding — it left this
-    // stuck on "loading" with every button disabled) lands in the error strip, never a wedged gate.
-    const runPreflight = async () => {
-        setPreflight("loading"); setError(null);
-        try {
-            const r = await window.helm.preflightPlan(projectId);
-            if (r.ok) setPreflight(r.report);
-            else { setPreflight(null); setError(r.errors.join(" · ")); }
-        } catch (err) {
-            setPreflight(null); setError(`pre-flight failed: ${(err as Error)?.message ?? String(err)}`);
+    /* ---------- operator actions (the verb list, nothing else) ---------- */
+    const grab = async (t: TaskVM, fresh: boolean) => {
+        const proj = projects.find((p) => p.id === t.projectId);
+        const wasRunning = t.status === "running";
+        const s = await window.helm.dropIn(t.id, fresh); // running → hard-interrupt + handed-off
+        void refresh();
+        if (s) {
+            showSession(s);
+            if (wasRunning) toast("warning", "Agent interrupted", "Partial work was checkpoint-committed. The task is handed-off — you are at the helm.");
+        } else if (proj?.terminalCommand) {
+            toast("info", "External terminal launched", proj.terminalCommand.replace("{worktree}", t.worktreePath ?? "").replace("{resume}", fresh ? "" : "--resume <session>"));
         }
     };
-    const toggleAck = (command: string) => setAcks((a) => (a.includes(command) ? a.filter((c) => c !== command) : [...a, command]));
-    const confirm = async () => {
-        try {
-            const r = await window.helm.approvePlan(projectId, { acks, skipPreflight: false });
-            if (r.ok) onApproved(); else setError(r.errors.join(" · "));
-        } catch (err) { setError(`approve failed: ${(err as Error)?.message ?? String(err)}`); }
+
+    const actions: CockpitActions = {
+        openTask: (id) => go({ view: "task", taskId: id }),
+        openPlan: (projectId, planId) => go({ view: "project", projectId, tab: "plans", planId }),
+        startNow: (t) => {
+            // Pre-check the same gates the scheduler applies, so a silent engine no-op becomes feedback.
+            const proj = projects.find((p) => p.id === t.projectId);
+            if (t.status !== "queued") return toast("warning", "Not queued", "Only queued tasks can be started.");
+            if (t.blocked) return toast("warning", "Dependency-blocked", "Waiting on: " + t.waitingOn.map((w) => w.title).join(", "));
+            const slot = sched?.perProject.find((r) => r.projectId === t.projectId);
+            const running = slot?.running ?? tasks.filter((x) => x.projectId === t.projectId && x.status === "running").length;
+            const cap = slot?.cap ?? proj?.concurrencyCap ?? 3;
+            if (running >= cap) return toast("warning", "No free slot", `${proj?.name ?? t.projectId} is at ${running}/${cap} concurrent tasks.`);
+            void window.helm.startNow(t.id).then(refresh);
+            toast("success", "Started", t.title);
+        },
+        dropIn: (t) => {
+            if (!t.resumable) return toast("warning", "Nothing to resume", "No persisted session — use Start fresh.");
+            void grab(t, false);
+        },
+        startFresh: (t) => { void grab(t, true); },
+        resume: (t) => {
+            void window.helm.resumeTask(t.id).then(refresh);
+            toast("success", "Handed back to the loop", "Worktree and history kept. Fresh iteration and cost budget. " + (paused ? "Queued — the scheduler is paused." : "It re-queues and starts when a slot frees."));
+        },
+        verifyMerge: (t) => {
+            setValidating((v) => new Set(v).add(t.id));
+            void window.helm.verifyAndMerge(t.id);
+            toast("info", "Verify & merge running", "Committing your work, then full merge-stage validation against the fresh integration tip. The task stays handed-off while it validates.");
+        },
+        abandon: (t) => setConfirm({
+            title: `Abandon ${t.title.length > 32 ? t.title.slice(0, 32) + "…" : t.title}?`,
+            body: "The worktree and branch are reaped and the task is marked abandoned — terminal, but it stays viewable as history.",
+            label: "Abandon task",
+            run: () => {
+                void window.helm.abandon(t.id).then(refresh);
+                toast("info", "Abandoned", t.title);
+            },
+        }),
+        clearDeps: (t) => setConfirm({
+            title: "Clear dependencies?",
+            body: "The escape hatch for a stuck task: its dependency set is replaced with none. It may immediately unblock and auto-start.",
+            label: "Clear dependencies",
+            run: () => {
+                void window.helm.setDependsOn(t.id, []).then(refresh);
+                toast("success", "Dependencies cleared", t.title + (paused ? " — still queued (scheduler paused)." : " — it will auto-start when a slot frees."));
+            },
+        }),
+        openShell: (t) => {
+            if (!t.worktreePath) return;
+            void window.helm.ptyCreate({ cwd: t.worktreePath, argv: FREE_SHELL_ARGV, kind: "free", title: `${t.title.slice(0, 22)} — shell`, taskId: t.id, projectId: t.projectId }).then(showSession);
+        },
     };
-    const skip = async () => {
-        try {
-            const r = await window.helm.approvePlan(projectId, { skipPreflight: true });
-            if (r.ok) onApproved(); else setError(r.errors.join(" · "));
-        } catch (err) { setError(`approve failed: ${(err as Error)?.message ?? String(err)}`); }
+
+    /* ---------- dialog ops ---------- */
+    const createTask = (input: NewTaskInput) => {
+        void window.helm.createTask(input).then(() => void refresh());
+        toast("success", "Task queued", input.title + (paused ? " — the scheduler is paused; use Start now or resume auto-start." : " — auto-starts when a slot frees."));
+    };
+    const registerProject = (input: NewProjectInput) => {
+        void window.helm.registerProject(input).then((p) => {
+            toast("success", "Project registered", `${p.name} — its board is empty. Queue a task or open the planner.`);
+            go({ view: "project", projectId: p.id, tab: "board" });
+            void refresh();
+        });
+    };
+    const saveConfig = (id: string, patch: ProjectConfigPatch) => {
+        void window.helm.updateProject(id, patch).then((p) => {
+            toast("success", "Config saved", (p?.name ?? id) + " — freed slots fill immediately if you raised concurrency.");
+            void refresh();
+        });
+    };
+    const deleteProject = (id: string) => {
+        const p = projects.find((x) => x.id === id);
+        void window.helm.deleteProject(id).then(() => {
+            toast("info", "Project deleted", `${p?.name ?? id} and all its tasks, iterations and plans are gone.`);
+            go({ view: "fleet" });
+            void refresh();
+        });
     };
 
-    return (
-        <div style={{ display: "grid", gap: 14 }}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                <button onClick={onClose}>← board</button>
-                <h2 style={{ fontFamily: "ui-serif, Georgia, serif", margin: 0 }}>Plan — {projectName}</h2>
-            </div>
-            {error ? <div style={{ color: "#b00", fontSize: 13 }}>{error}</div> : null}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }}>
-                <div style={{ height: 520, minHeight: 0 }}>
-                    <TerminalPane key={session.id} session={session} />
-                </div>
-                {state ? (
-                    <PlanRail
-                        state={state} preflight={preflight} acks={acks}
-                        onRunPreflight={runPreflight} onSkip={skip} onToggleAck={toggleAck} onConfirm={confirm}
-                    />
-                ) : <div style={{ color: "#888" }}>Loading plan…</div>}
-            </div>
-        </div>
-    );
-}
-
-function TaskDetail({ task, onClose, onAction }: { task: Task; onClose: () => void; onAction: () => void }) {
-    const taskId = task.id;
-    const [snap, setSnap] = useState<EngineSnapshot | null>(null);
-    const [progress, setProgress] = useState<ParsedProgress | null>(null);
-    const [showProgress, setShowProgress] = useState(false);
-
+    /* ---------- keyboard (design: N new task · P pause toggle) ---------- */
     useEffect(() => {
-        let active = true;
-        const poll = async () => { const s = await window.helm.getVerifyState(taskId); if (active) setSnap(s); };
-        poll();
-        const id = setInterval(poll, 1000); // poll the live snapshot while the detail is open
-        return () => { active = false; clearInterval(id); };
-    }, [taskId]);
-
-    const toggleProgress = async () => {
-        if (!showProgress) {
-            const md = await window.helm.getProgress(taskId);
-            setProgress(md == null ? null : parseProgress(md));
-        }
-        setShowProgress((v) => !v);
-    };
-
-    // M5 hand-back trio (handed-off only). Driven off task.status (always present) so it renders even
-    // before the snapshot loads; each action calls the engine then refreshes the board.
-    const act = (fn: (id: string) => Promise<void>) => async () => { await fn(taskId); onAction(); };
-    const handback = (
-        <HandbackActions
-            status={task.status}
-            launchError={task.failureReason}
-            onResume={act((id) => window.helm.resumeTask(id))}
-            onVerifyAndMerge={act((id) => window.helm.verifyAndMerge(id))}
-            onAbandon={act((id) => window.helm.abandon(id))}
-        />
-    );
-
-    if (!snap) {
-        return (
-            <div style={{ display: "grid", gap: 14 }}>
-                <div><button onClick={onClose}>← board</button></div>
-                <h2 style={{ fontFamily: "ui-serif, Georgia, serif", margin: 0 }}>{task.id} — <code>{task.status}</code></h2>
-                {handback}
-                <p>Loading…</p>
-            </div>
-        );
-    }
-
-    const lastFailing = [...snap.iterations].reverse().find((i) => i.verdict === "failed" || i.verdict === "hang");
-    return (
-        <div style={{ display: "grid", gap: 14 }}>
-            <div><button onClick={onClose}>← board</button></div>
-            <h2 style={{ fontFamily: "ui-serif, Georgia, serif", margin: 0 }}>{task.id} — <code>{task.status}</code></h2>
-            {handback}
-            {snap.terminalReason ? <div style={{ color: "#b00" }}>{snap.terminalReason}</div> : null}
-            {snap.currentIteration ? (
-                <div style={{ color: "#788C5D", fontFamily: "ui-monospace, monospace", fontSize: 13 }}>
-                    iteration {snap.currentIteration.index} · {snap.currentIteration.phase} · {snap.currentIteration.latestActivity || "…"}
-                </div>
-            ) : null}
-
-            <TokenReadout totals={snap.totals} iterations={snap.iterations} />
-
-            <section><h3>Iterations</h3><IterationHistory iterations={snap.iterations} /></section>
-            <section><h3>Activity feed</h3><ActivityFeed feed={snap.feed} /></section>
-
-            {lastFailing ? (
-                <section>
-                    <h3>Last failing gate (iteration {lastFailing.index})</h3>
-                    <div style={{ fontSize: 12, color: "#888" }}>verdict: {lastFailing.verdict} · commit {lastFailing.commitSha ?? "—"}</div>
-                </section>
-            ) : null}
-
-            <section>
-                <h3>progress.md <button onClick={toggleProgress}>{showProgress ? "hide" : "show"}</button></h3>
-                {showProgress ? <ProgressPanel progress={progress} /> : null}
-            </section>
-        </div>
-    );
-}
-
-function RegisterProjectForm({ onDone }: { onDone: () => void }) {
-    const [f, setF] = useState({ name: "", repoPath: "", targetBranch: "main", checkCommand: "", setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", costCapUsd: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr", jailImage: "" });
-    const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
-
-    const detect = async () => {
-        if (!f.repoPath) return;
-        const d = await window.helm.detectProject(f.repoPath);
-        setF((s) => ({ ...s, targetBranch: d.targetBranch ?? s.targetBranch, checkCommand: d.checkCommand ?? s.checkCommand, setupCommand: d.setupCommand ?? s.setupCommand }));
-    };
-    const submit = async () => {
-        const input: NewProjectInput = {
-            name: f.name, repoPath: f.repoPath, targetBranch: f.targetBranch, checkCommand: f.checkCommand,
-            setupCommand: f.setupCommand || null, model: f.model || null,
-            iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
-            costCapUsd: numOrNull(f.costCapUsd),
-            concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
-            autoModeEnvironment: f.autoModeEnvironment || null,
-            promotionMode: f.promotionMode as "pr" | "direct" | "strict",
-            jailImage: f.jailImage || null,
+        const onKey = (e: KeyboardEvent) => {
+            const tag = (e.target as HTMLElement | null)?.tagName ?? "";
+            if (/input|textarea|select/i.test(tag)) return;
+            if (e.key === "n" || e.key === "N") setDialogs((d) => ({ ...d, newTask: true, newTaskProject: route.view === "project" ? route.projectId : null }));
+            if (e.key === "p" || e.key === "P") togglePause();
         };
-        await window.helm.registerProject(input);
-        onDone();
-    };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [route, togglePause]);
 
-    const input = (k: keyof typeof f, ph: string) => <input key={k} placeholder={ph} value={f[k]} onChange={set(k)} style={{ display: "block", margin: "4px 0", width: 480 }} />;
+    /* ---------- routed view ---------- */
+    const routeProject = route.view === "project" ? projects.find((p) => p.id === route.projectId) : undefined;
+    const routeTask = route.view === "task" ? tasksById[route.taskId] : undefined;
+    const fleetFallback = (route.view === "project" && !routeProject) || (route.view === "task" && !routeTask);
+
     return (
-        <details>
-            <summary>Register project</summary>
-            <div style={{ paddingTop: 8 }}>
-                {input("name", "name")}
-                {input("repoPath", "repoPath")}
-                <button onClick={detect} style={{ margin: "4px 0" }}>Auto-detect from repo</button>
-                {input("targetBranch", "targetBranch (auto-detected)")}
-                {input("checkCommand", "checkCommand — mandatory")}
-                {input("setupCommand", "setupCommand (optional)")}
-                {input("iterationCap", "iterationCap (blank = default 8)")}
-                {input("noProgressK", "noProgressK (blank = default 2)")}
-                {input("stallTimeoutMin", "stallTimeoutMin (blank = default 40)")}
-                {input("costCapUsd", "costCapUsd (blank = default 25; 0 = spawn nothing)")}
-                {input("concurrencyCap", "concurrencyCap (blank = default 3)")}
-                {input("model", "model (blank = CLI default)")}
-                {input("terminalCommand", 'terminalCommand (blank = in-app terminal tab; set a template to launch externally, e.g. wt.exe -d "{worktree}" pwsh -NoExit -Command "claude {resume}")')}
-                {input("autoModeEnvironment", 'autoModeEnvironment (blank = ["$defaults"] — trusts repo + origin)')}
-                <label style={{ display: "block", margin: "4px 0" }}>promotionMode{" "}
-                    <select value={f.promotionMode} onChange={set("promotionMode")}>
-                        <option value="pr">pr — push integration, hand a gh pr create command</option>
-                        <option value="direct">direct — push the validated branch, hand a raw-sha push</option>
-                        <option value="strict">strict — push nothing, hand the full local sequence</option>
-                    </select>
-                </label>
-                {input("jailImage", "jailImage (blank = host mode; e.g. helm-jail:latest — run jailed in Docker)")}
-                <button disabled={!f.name || !f.repoPath || !f.checkCommand} onClick={submit}>Register</button>
+        <ActionCtx.Provider value={actions}>
+            <div className="helm-root">
+                <Titlebar counts={counts} paused={paused} onTogglePause={togglePause} />
+                <div className="helm-main">
+                    <Sidebar projects={projects} tasks={tasks} sessions={visibleSessions} route={route} go={go} paused={paused}
+                        onRegister={() => setDialogs((d) => ({ ...d, register: true }))} />
+                    {(route.view === "fleet" || fleetFallback) && (
+                        <FleetView tasks={tasks} projects={projects} layout={layout} onLayout={setBoardLayout}
+                            onNewTask={() => setDialogs((d) => ({ ...d, newTask: true, newTaskProject: null }))} />
+                    )}
+                    {route.view === "project" && routeProject && (
+                        <ProjectView
+                            project={routeProject} tasks={tasks} plans={plans} layout={layout} onLayout={setBoardLayout}
+                            route={route} go={go}
+                            plannerSession={plannerSessions[routeProject.id] ?? null}
+                            plannerRail={railStates[routeProject.id]}
+                            onOpenPlanner={() => openPlanner(routeProject)}
+                            onApproved={(count, warnings, skipped) => onPlanApproved(routeProject.id, count, warnings, skipped)}
+                            onNewTask={() => setDialogs((d) => ({ ...d, newTask: true, newTaskProject: routeProject.id }))}
+                            onPromote={() => setDialogs((d) => ({ ...d, promote: routeProject.id }))}
+                            onSaveConfig={saveConfig} onDeleteProject={deleteProject}
+                        />
+                    )}
+                    {route.view === "task" && routeTask && (
+                        <TaskDetail
+                            task={routeTask} project={projects.find((p) => p.id === routeTask.projectId)!}
+                            tasksById={tasksById} plans={plans}
+                            onBack={() => go({ view: "project", projectId: routeTask.projectId, tab: "board" })}
+                        />
+                    )}
+                    {route.view === "terminals" && (
+                        <TerminalsView sessions={visibleSessions} activeId={activeSession}
+                            onSelect={setActiveSession} onKill={killSession} onNewShell={newShell}
+                            projects={projects} tasksById={tasksById} />
+                    )}
+                </div>
+                <StatusBar counts={counts} projects={projects} sched={sched} paused={paused} spend={spend} />
+
+                {/* dialogs */}
+                <NewTaskDialog open={dialogs.newTask} projects={projects} tasks={tasks} defaultProjectId={dialogs.newTaskProject}
+                    onCreate={createTask} onClose={() => setDialogs((d) => ({ ...d, newTask: false }))} />
+                <PromoteDialog open={!!dialogs.promote} project={projects.find((p) => p.id === dialogs.promote)}
+                    onClose={() => setDialogs((d) => ({ ...d, promote: null }))} />
+                <RegisterProjectDialog open={dialogs.register} onCreate={registerProject} onClose={() => setDialogs((d) => ({ ...d, register: false }))} />
+                <ConfirmDialog open={!!confirm} title={confirm?.title ?? ""} body={confirm?.body} confirmLabel={confirm?.label ?? "Confirm"} danger
+                    onConfirm={() => confirm?.run()} onClose={() => setConfirm(null)} />
+
+                {/* toasts */}
+                <div className="helm-toasts">
+                    {toasts.map((x) => (
+                        <Toast key={x.id} tone={x.tone} title={x.title} onClose={() => setToasts((ts) => ts.filter((y) => y.id !== x.id))}>{x.msg}</Toast>
+                    ))}
+                </div>
             </div>
-        </details>
-    );
-}
-
-function ProjectConfigForm({ projects, onDone }: { projects: Project[]; onDone: () => void }) {
-    const [id, setId] = useState("");
-    const selected = projects.find((p) => p.id === id);
-    const [f, setF] = useState({ setupCommand: "", iterationCap: "", noProgressK: "", stallTimeoutMin: "", costCapUsd: "", model: "", concurrencyCap: "", terminalCommand: "", autoModeEnvironment: "", promotionMode: "pr", jailImage: "" });
-
-    useEffect(() => {
-        if (!selected) return;
-        setF({
-            setupCommand: selected.setupCommand ?? "",
-            iterationCap: selected.iterationCap?.toString() ?? "",
-            noProgressK: selected.noProgressK?.toString() ?? "",
-            stallTimeoutMin: selected.stallTimeoutMin?.toString() ?? "",
-            costCapUsd: selected.costCapUsd?.toString() ?? "",
-            model: selected.model ?? "",
-            concurrencyCap: selected.concurrencyCap?.toString() ?? "",
-            terminalCommand: selected.terminalCommand ?? "",
-            autoModeEnvironment: selected.autoModeEnvironment ?? "",
-            promotionMode: selected.promotionMode,
-            jailImage: selected.jailImage ?? "",
-        });
-    }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
-
-    const set = (k: keyof typeof f) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
-    const save = async () => {
-        await window.helm.updateProject(id, {
-            setupCommand: f.setupCommand || null, model: f.model || null,
-            iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK), stallTimeoutMin: numOrNull(f.stallTimeoutMin),
-            costCapUsd: numOrNull(f.costCapUsd),
-            concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
-            autoModeEnvironment: f.autoModeEnvironment || null,
-            promotionMode: f.promotionMode as "pr" | "direct" | "strict",
-            jailImage: f.jailImage || null,
-        });
-        onDone();
-    };
-    // Delete the whole project (+ its tasks/iterations, cascaded in the DB). Guarded by a confirm since it's
-    // irreversible; on success clear the selection and refresh the board.
-    const remove = async () => {
-        if (!selected) return;
-        if (!window.confirm(`Delete project "${selected.name}" and all its tasks? This cannot be undone.`)) return;
-        await window.helm.deleteProject(selected.id);
-        setId("");
-        onDone();
-    };
-    const input = (k: keyof typeof f, ph: string) => <input placeholder={ph} value={f[k]} onChange={set(k)} style={{ display: "block", margin: "4px 0", width: 480 }} />;
-    return (
-        <details>
-            <summary>Edit project config</summary>
-            <div style={{ paddingTop: 8 }}>
-                <select value={id} onChange={(e) => setId(e.target.value)}>
-                    <option value="">— project —</option>
-                    {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-                {selected ? (
-                    <>
-                        {input("setupCommand", "setupCommand")}
-                        {input("iterationCap", "iterationCap")}
-                        {input("noProgressK", "noProgressK")}
-                        {input("stallTimeoutMin", "stallTimeoutMin")}
-                        {input("costCapUsd", "costCapUsd (0 = spawn nothing)")}
-                        {input("concurrencyCap", "concurrencyCap")}
-                        {input("model", "model")}
-                        {input("terminalCommand", "terminalCommand (blank = in-app tab; else external template)")}
-                        {input("autoModeEnvironment", 'autoModeEnvironment (blank = ["$defaults"])')}
-                        <label style={{ display: "block", margin: "4px 0" }}>promotionMode{" "}
-                            <select value={f.promotionMode} onChange={set("promotionMode")}>
-                                <option value="pr">pr</option>
-                                <option value="direct">direct</option>
-                                <option value="strict">strict</option>
-                            </select>
-                        </label>
-                        {input("jailImage", "jailImage (blank = host mode; e.g. helm-jail:latest)")}
-                        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                            <button onClick={save}>Save config</button>
-                            <button onClick={remove} style={{ color: "#D97757" }}>Delete project</button>
-                        </div>
-                    </>
-                ) : null}
-            </div>
-        </details>
-    );
-}
-
-function NewTaskForm({ projects, tasks, onDone }: { projects: Project[]; tasks: TaskListItem[]; onDone: () => void }) {
-    const [f, setF] = useState({ projectId: "", title: "", intent: "", acceptance: "", scopeHint: "" });
-    // M9: hand-made dependency chains. Candidate parents are the selected project's non-terminal tasks
-    // (merged/abandoned are pointless to wait on). Reset the picks when the project changes so a chosen id
-    // can't leak across projects.
-    const [deps, setDeps] = useState<string[]>([]);
-    const candidates = tasks.filter((t) => t.projectId === f.projectId && t.status !== "merged" && t.status !== "abandoned");
-    return (
-        <details>
-            <summary>New task</summary>
-            <div style={{ paddingTop: 8 }}>
-                <select value={f.projectId} onChange={(e) => { setF({ ...f, projectId: e.target.value }); setDeps([]); }}>
-                    <option value="">— project —</option>
-                    {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-                <input placeholder="title" value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} style={{ display: "block", margin: "4px 0", width: 480 }} />
-                <textarea placeholder="intent (what to build)" value={f.intent} onChange={(e) => setF({ ...f, intent: e.target.value })} style={{ display: "block", margin: "4px 0", width: 480, height: 60 }} />
-                <textarea placeholder="acceptance commands, one per line" value={f.acceptance} onChange={(e) => setF({ ...f, acceptance: e.target.value })} style={{ display: "block", margin: "4px 0", width: 480, height: 60 }} />
-                <input placeholder="scopeHint (optional, e.g. src/widgets/**)" value={f.scopeHint} onChange={(e) => setF({ ...f, scopeHint: e.target.value })} style={{ display: "block", margin: "4px 0", width: 480 }} />
-                {candidates.length > 0 ? (
-                    <label style={{ display: "block", margin: "4px 0", fontSize: 13 }}>depends on (optional — waits for these to merge first)
-                        <select multiple value={deps} onChange={(e) => setDeps(Array.from(e.target.selectedOptions, (o) => o.value))} style={{ display: "block", width: 480, minHeight: 60, margin: "4px 0" }}>
-                            {candidates.map((t) => <option key={t.id} value={t.id}>{t.title} ({t.status})</option>)}
-                        </select>
-                    </label>
-                ) : null}
-                <button
-                    disabled={!f.projectId || !f.title || !f.intent || !f.acceptance.trim()}
-                    onClick={async () => {
-                        await window.helm.createTask({
-                            projectId: f.projectId, title: f.title, intent: f.intent,
-                            acceptance: f.acceptance.split("\n").map((s) => s.trim()).filter(Boolean),
-                            scopeHint: f.scopeHint.trim() || null,
-                            dependsOn: deps,
-                        });
-                        // Clear the form after a successful create — otherwise the just-made task lingers in
-                        // the depends-on picker (and the fields stay populated for an accidental re-submit).
-                        setF({ projectId: "", title: "", intent: "", acceptance: "", scopeHint: "" });
-                        setDeps([]);
-                        onDone();
-                    }}
-                >Create</button>
-            </div>
-        </details>
+        </ActionCtx.Provider>
     );
 }

@@ -4,6 +4,9 @@
 // (the prod build strips those attributes). AGENT-FREE: every task is created/seeded with the scheduler
 // PAUSED first (the intake suite proves pause blocks auto-spawn) and every scenario try/finally-closes its
 // app, so no real claude ever runs and no Electron process leaks.
+//
+// M14 cockpit deltas: the blocked card renders a "waiting on" block with parent links; a STUCK card says
+// "stuck — a parent needs a human" and offers Clear dependencies, which now confirms via dialog.
 import { describe, it, expect } from "vitest";
 import type { Page } from "playwright-core";
 import { launchHelm, seededProject, seededNeedsHumanBoard, until } from "./harness";
@@ -42,10 +45,13 @@ describe("deps", () => {
             expect(child.waitingOn.map((w) => w.id)).toEqual([parentId]);
             expect(child.waitingOn[0].status).toBe("queued"); // parent in flight → WAITING (not stuck)
 
-            // The card renders the waiting-on line naming the parent, and offers NO Clear-dependencies button
-            // (that affordance is only for a stuck card).
-            await page.getByText(/waiting on:.*Parent A/).waitFor({ state: "visible", timeout: 15_000 });
-            expect(await page.getByRole("button", { name: "Clear dependencies" }).count()).toBe(0);
+            // The child's card renders the waiting-on block naming the parent, and offers NO
+            // Clear-dependencies (that affordance is only for a stuck card).
+            const card = page.locator(".helm-task-card").filter({ hasText: "Child of A" });
+            await card.getByText("waiting on", { exact: false }).waitFor({ state: "visible", timeout: 15_000 });
+            await card.getByText("Parent A").waitFor({ state: "visible", timeout: 15_000 });
+            await card.hover();
+            expect(await card.getByRole("button", { name: "Clear dependencies" }).count()).toBe(0);
         } finally {
             await helm.close();
         }
@@ -68,19 +74,24 @@ describe("deps", () => {
             }, { label: "child derived blocked (stuck)" });
             expect(stuck.waitingOn[0].status).toBe("needs-human"); // parent wedged → STUCK
 
-            // The stuck card shows the warning line naming the parent + the Clear-dependencies affordance.
-            await page.getByText(/resolve first:.*Wedged parent/).waitFor({ state: "visible", timeout: 15_000 });
-            const clear = page.getByRole("button", { name: "Clear dependencies" });
+            // The stuck card shows the warning line naming the parent + the Clear-dependencies verb.
+            const card = page.locator(".helm-task-card").filter({ hasText: "Child of wedged" });
+            await card.getByText("stuck — a parent needs a human").waitFor({ state: "visible", timeout: 15_000 });
+            await card.getByText("Wedged parent").waitFor({ state: "visible", timeout: 15_000 });
+            await card.hover();
+            const clear = card.getByRole("button", { name: "Clear dependencies" });
             await clear.waitFor({ state: "visible", timeout: 15_000 });
 
-            // Clear → the edge is dropped; the child returns to plain queued (no waiting line, no button).
+            // Clear (confirmed via dialog) → the edge is dropped; the child returns to plain queued.
             await clear.click();
+            await page.locator(".helm-dialog").getByRole("button", { name: "Clear dependencies", exact: true }).click();
             const cleared = await until(async () => {
                 const t = await listTaskById(page, childId);
                 return t && !t.blocked && t.dependsOn.length === 0 ? t : null;
             }, { label: "dependencies cleared" });
             expect(cleared.status).toBe("queued");
-            expect(await page.getByRole("button", { name: "Clear dependencies" }).count()).toBe(0);
+            await card.hover();
+            expect(await card.getByRole("button", { name: "Clear dependencies" }).count()).toBe(0);
         } finally {
             await helm.close();
         }

@@ -257,7 +257,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         });
         // Accumulate this iteration's spend for the next top-of-loop cost-cap check (null/absent → 0).
         spend += o.usage.costUsd ?? 0;
-        d.emit?.({ type: "iteration-end", index: dbIndex, verdict: o.verdict, commitSha: o.commitSha });
+        d.emit?.({ type: "iteration-end", index: dbIndex, verdict: o.verdict, commitSha: o.commitSha, tail: o.gateOutput });
 
         // Post-iteration guard: a drop-in killed the in-flight session DURING this iteration. runIteration
         // recorded sessionId=null for that killed turn (it never persisted), so drop-in resumes the freshest

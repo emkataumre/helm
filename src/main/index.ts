@@ -20,8 +20,14 @@ let disposePtys: () => void = () => {};
 
 function createWindow(): void {
     mainWindow = new BrowserWindow({
-        width: 1100,
-        height: 760,
+        width: 1440,
+        height: 900,
+        // M14 cockpit chrome: the renderer draws its own 40px titlebar (brand, fleet counts,
+        // pause switch) and Electron overlays the native min/max/close in the corner, colour-
+        // matched to the design's --surface-app ink. Close still hides to tray (below).
+        titleBarStyle: "hidden",
+        titleBarOverlay: { color: "#0B0D11", symbolColor: "#6B7688", height: 40 },
+        backgroundColor: "#0B0D11",
         webPreferences: { preload: join(import.meta.dirname, "../preload/index.cjs") },
     });
     if (process.env.ELECTRON_RENDERER_URL) mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);

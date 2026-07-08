@@ -5,6 +5,10 @@
 // text, NOT data-verify (stripped in prod). TWO HARD CONSTRAINTS honoured: (1) the scheduler is PAUSED before
 // approve — approve kicks it, and an unpaused queued task would auto-spawn a real claude; (2) the planner PTY
 // sits idle — the test NEVER writes to it (no real claude conversation). try/finally-closes the app.
+//
+// M14 cockpit deltas: the planner is a project-view tab opened via [Open the planner]; the stage tracker
+// marks the active step with the `.seg.now` class (lowercase labels); a parse-invalid draft lists its errors
+// and offers NO approval path at all; Skip pre-flight confirms via dialog.
 import { describe, it, expect } from "vitest";
 import type { Page } from "playwright-core";
 import { writeFileSync, mkdirSync, readdirSync } from "node:fs";
@@ -17,6 +21,7 @@ async function pauseFleet(page: Page): Promise<void> {
 }
 
 const listTasks = (page: Page) => page.evaluate(() => window.helm.listTasks());
+const stageNow = async (page: Page): Promise<string> => (await page.locator(".helm-stage .seg.now").textContent()) ?? "";
 
 // A valid tasks.json: a parent + a child that dependsOn it, the child carrying one HALLUCINATED npm script
 // (verify:contents ~ the repo's real verify:content) so a static ⚠ + did-you-mean renders but doesn't block.
@@ -28,7 +33,7 @@ const validTasksJson = JSON.stringify({
     ],
 }, null, 2);
 
-// An INVALID tasks.json: the child has an empty acceptance → parsePlanDraft rejects it (approve stays disabled).
+// An INVALID tasks.json: the child has an empty acceptance → parsePlanDraft rejects it (no approval path).
 const invalidTasksJson = JSON.stringify({
     planTitle: "accept-plan",
     tasks: [{ slug: "t1", title: "T", intent: "i", acceptance: [] }],
@@ -37,6 +42,7 @@ const invalidTasksJson = JSON.stringify({
 describe("plan", () => {
     it("watcher → side rail → approve: the drop seam materializes drafts, then queues them with edges resolved", async () => {
         const { repo, projectId, seed } = seededProject("PlanProj");
+        void projectId;
         const planDir = join(repo, ".helm", "plan");
         const helm = await launchHelm({ seed });
         const { page } = helm;
@@ -44,35 +50,39 @@ describe("plan", () => {
             // Pause BEFORE anything queues — approve kicks the scheduler; a queued+eligible task would auto-spawn.
             await pauseFleet(page);
 
-            // Open the planner via the real UI button → PlannerView mounts (TerminalPane + side rail). The
-            // planner PTY spawns idle; the test never writes to it. openPlanner creates .helm/plan/ + the watcher.
-            await page.getByRole("button", { name: "Plan: PlanProj", exact: true }).click();
-            await page.getByText(/Conversing[^A-Za-z]*now/).waitFor({ state: "visible", timeout: 30_000 });
+            // Open the planner via the real UI: project view → Planner tab → [Open the planner]. The planner
+            // PTY spawns idle; the test never writes to it. openPlanner creates .helm/plan/ + the watcher.
+            await page.locator(".helm-sidebar").getByText("PlanProj").click();
+            await page.getByRole("tab", { name: "Planner" }).click();
+            await page.getByRole("button", { name: "Open the planner", exact: true }).click();
+            await until(async () => (await stageNow(page)).includes("conversing"), { timeoutMs: 30_000, label: "stage = conversing" });
             mkdirSync(planDir, { recursive: true }); // defensive — openPlanner already made it
 
-            // Stage flips to PRD when prd.md lands (the watcher fires; assert the DOM, loosely on the marker).
+            // Stage flips to PRD when prd.md lands (the watcher fires; assert the stage tracker's active seg).
             writeFileSync(join(planDir, "prd.md"), "# Accept PRD\n\nA small 2-task feature with one dependency edge.\n");
-            await page.getByText(/PRD drafted[^A-Za-z]*now/).waitFor({ state: "visible", timeout: 30_000 });
+            await until(async () => (await stageNow(page)).includes("prd drafted"), { timeoutMs: 30_000, label: "stage = prd drafted" });
 
-            // A MALFORMED tasks.json flips the stage to Tasks but keeps the approve controls DISABLED, listing
-            // the parse error. M11: the primary is now [Run pre-flight]; the explicit [Skip pre-flight] escape
-            // is what this agent-free drop-seam test uses (running pre-flight would execute the throwaway commands
-            // — that's preflight.accept.ts's job). Both are disabled while parse-invalid.
+            // A MALFORMED tasks.json flips the stage to Tasks but offers NO approval path: the errors render
+            // verbatim ("fix it in the session") and neither Run pre-flight nor Skip exists.
             writeFileSync(join(planDir, "tasks.json"), invalidTasksJson);
-            await page.getByText(/Tasks drafted[^A-Za-z]*now/).waitFor({ state: "visible", timeout: 30_000 });
-            const skip = page.getByRole("button", { name: "Skip pre-flight", exact: true });
-            await until(async () => (await skip.isDisabled()) ? true : null, { label: "skip disabled while parse-invalid" });
-            await page.getByText(/acceptance/).waitFor({ state: "visible", timeout: 15_000 }); // the verbatim parse error
+            await until(async () => (await stageNow(page)).includes("tasks drafted"), { timeoutMs: 30_000, label: "stage = tasks drafted" });
+            await page.getByText("fix it in the session", { exact: false }).waitFor({ state: "visible", timeout: 15_000 });
+            await page.getByText(/acceptance/).first().waitFor({ state: "visible", timeout: 15_000 }); // the verbatim parse error
+            expect(await page.getByRole("button", { name: /Run pre-flight/ }).count()).toBe(0);
+            expect(await page.getByRole("button", { name: /Skip pre-flight/ }).count()).toBe(0);
 
-            // Fix the file → the draft cards render with the ⚠ + did-you-mean, and the approve controls ENABLE.
+            // Fix the file → the draft cards render with the ⚠ + did-you-mean, and the approval panel appears.
             writeFileSync(join(planDir, "tasks.json"), validTasksJson);
             await page.getByText(/did you mean/).waitFor({ state: "visible", timeout: 30_000 });
             await page.getByText("verify:content", { exact: false }).first().waitFor({ state: "visible", timeout: 15_000 });
-            await page.getByText("depends on: t1-parent").waitFor({ state: "visible", timeout: 15_000 });
-            await until(async () => (await skip.isDisabled()) ? null : true, { label: "skip enabled once valid" });
+            await page.getByText("t1-parent").first().waitFor({ state: "visible", timeout: 15_000 }); // the dependsOn edge badge
+            const skip = page.getByRole("button", { name: "Skip pre-flight & queue", exact: true });
+            await skip.waitFor({ state: "visible", timeout: 15_000 });
 
-            // Skip pre-flight → the engine re-validates from disk, rows are born; the view routes back to the board.
+            // Skip pre-flight (an explicit, confirmed escape) → the engine re-validates from disk, rows are
+            // born; the view routes back to the board.
             await skip.click();
+            await page.locator(".helm-dialog").getByRole("button", { name: "Skip & queue", exact: true }).click();
             const tasks = await until(async () => { const ts = await listTasks(page); return ts.length === 2 ? ts : null; }, { label: "2 tasks queued after approve" });
 
             // window.helm (machine-readable): both queued + planId-stamped (same plan); the edge resolved to the
@@ -87,9 +97,11 @@ describe("plan", () => {
             expect(child.blocked).toBe(true);                // parent unmerged → derived blocked
             expect(child.waitingOn.map((w) => w.id)).toEqual([parent.id]);
 
-            // The board re-rendered post-approve: the child card shows its WAITING line naming the parent (the
-            // parent is queued/in-flight, not stuck), which uniquely proves the queued cards landed on the board.
-            await page.getByText(/waiting on:.*Parent slice/).waitFor({ state: "visible", timeout: 15_000 });
+            // The board re-rendered post-approve: the child card shows its WAITING block naming the parent
+            // (the parent is queued/in-flight, not stuck), which proves the queued cards landed on the board.
+            const childCard = page.locator(".helm-task-card").filter({ hasText: "Child slice" });
+            await childCard.getByText("waiting on", { exact: false }).waitFor({ state: "visible", timeout: 15_000 });
+            await childCard.getByText("Parent slice").waitFor({ state: "visible", timeout: 15_000 });
 
             // fs check: approve cleared the transient drop dir (the PRD is now durable in the plans row).
             await until(() => readdirSync(planDir).length === 0 ? true : null, { label: ".helm/plan/ cleared after approve" });

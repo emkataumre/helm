@@ -34,7 +34,8 @@ export function TerminalPane({ session }: { session: PtySession }) {
                 // glyphs TUI art uses — the claude logo rendered broken (M10-acceptance finding).
                 fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace',
                 fontSize: 13,
-                theme: { background: "#141413", foreground: "#FAF9F5", cursor: "#D97757" },
+                // M14 cockpit palette: --surface-inset well, --ink-160 text, amber signal cursor.
+                theme: { background: "#08090C", foreground: "#C7CEDA", cursor: "#F5A623" },
             });
             const fit = new FitAddon();
             t.loadAddon(fit);
@@ -84,7 +85,8 @@ export function TerminalPane({ session }: { session: PtySession }) {
     return (
         <div
             {...verifyAttrs({ unit: "TerminalPane", session: session.id, kind: session.kind, title: session.title })}
-            style={{ height: "100%", width: "100%", background: "#141413", borderRadius: 10, overflow: "hidden", padding: 6, boxSizing: "border-box" }}
+            className="helm-term"
+            style={{ height: "100%", width: "100%" }}
         >
             <div ref={hostRef} style={{ height: "100%", width: "100%" }} />
         </div>

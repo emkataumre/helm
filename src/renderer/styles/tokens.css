@@ -1,0 +1,299 @@
+/* Helm design tokens — ported verbatim from the Claude Design handoff
+ * (_ds/helm-design-system tokens/*.css), fonts swapped from the Google CDN to
+ * self-hosted @fontsource imports (see main.tsx). Dark-first "cockpit" palette:
+ * cool slate ink base + warm amber signal light. */
+
+:root {
+    /* ---- Ink ramp (cool slate, hue ~222) — backgrounds → text ---- */
+    --ink-950: #08090C;
+    --ink-900: #0B0D11;   /* app background, deepest */
+    --ink-880: #0E1116;
+    --ink-850: #12151B;
+    --ink-820: #161A21;
+    --ink-800: #1A1E26;   /* card / panel */
+    --ink-760: #1F242D;   /* overlay / popover */
+    --ink-720: #252B35;
+    --ink-680: #2C333F;   /* strong border / active surface */
+    --ink-640: #353D4A;
+    --ink-560: #434C5C;
+    --ink-480: #525D70;
+    --ink-400: #6B7688;   /* muted text / idle icon */
+    --ink-320: #8A94A6;
+    --ink-240: #A8B1C1;   /* secondary text */
+    --ink-160: #C7CEDA;
+    --ink-080: #E4E8EF;
+    --ink-020: #F4F6F9;
+    --white:   #FFFFFF;
+
+    /* ---- Amber — brand signal / primary ---- */
+    --amber-200: #FFE3AC;
+    --amber-300: #FFCE78;
+    --amber-400: #FBB84C;
+    --amber-500: #F5A623;   /* primary */
+    --amber-600: #DE8C12;
+    --amber-700: #AF6B0C;
+
+    /* ---- Green — running / pass / healthy ---- */
+    --green-300: #7BE9B8;
+    --green-400: #4ADE9A;
+    --green-500: #2FBF87;
+    --green-600: #1E9A6B;
+
+    /* ---- Red — failed / gate blocked / destructive ---- */
+    --red-300: #FFA8AF;
+    --red-400: #FF7A85;
+    --red-500: #F04E5E;
+    --red-600: #CE374A;
+
+    /* ---- Cyan — info / telemetry / queued ---- */
+    --cyan-300: #A5E2FF;
+    --cyan-400: #6FD3FF;
+    --cyan-500: #3BA9F0;
+    --cyan-600: #2183CB;
+
+    /* ---- Violet — accent (rare: diffs, selection) ---- */
+    --violet-400: #B69CFF;
+    --violet-500: #8E6DF5;
+
+    /* ============ Semantic surfaces ============ */
+    --surface-app:      var(--ink-900);
+    --surface-base:     var(--ink-880);
+    --surface-raised:   var(--ink-850);
+    --surface-card:     var(--ink-800);
+    --surface-overlay:  var(--ink-760);
+    --surface-inset:    var(--ink-950);   /* wells, input fields, terminals */
+    --surface-hover:    rgba(255, 255, 255, 0.04);
+    --surface-active:   rgba(255, 255, 255, 0.07);
+    --surface-selected: color-mix(in oklab, var(--amber-500) 12%, transparent);
+    --scrim:            rgba(6, 7, 10, 0.68);
+
+    /* ============ Semantic text ============ */
+    --text-primary:   #EDF0F5;
+    --text-secondary: var(--ink-240);
+    --text-muted:     var(--ink-400);
+    --text-faint:     var(--ink-480);
+    --text-inverse:   var(--ink-900);   /* on amber */
+    --text-link:      var(--amber-400);
+    --text-link-hover:var(--amber-300);
+
+    /* ============ Semantic borders ============ */
+    --border-subtle:  rgba(255, 255, 255, 0.06);
+    --border-default: rgba(255, 255, 255, 0.10);
+    --border-strong:  rgba(255, 255, 255, 0.16);
+    --border-focus:   var(--amber-500);
+
+    /* ============ Brand / primary ============ */
+    --color-primary:       var(--amber-500);
+    --color-primary-hover: var(--amber-400);
+    --color-primary-press: var(--amber-600);
+    --color-on-primary:    var(--ink-900);
+    --color-primary-tint:  color-mix(in oklab, var(--amber-500) 14%, transparent);
+    --color-primary-ring:  color-mix(in oklab, var(--amber-500) 45%, transparent);
+
+    /* ============ Status (task lifecycle — engine-owned) ============ */
+    --status-queued:      var(--ink-400);    /* waiting for a slot */
+    --status-blocked:     var(--ink-480);    /* queued behind unmerged parents */
+    --status-running:     var(--green-400);  /* loop active */
+    --status-needs-human: var(--amber-400);  /* stopped, human must act — THE attention state */
+    --status-handed-off:  var(--cyan-400);   /* a human is at the helm */
+    --status-merged:      var(--violet-400); /* landed on integration (terminal) */
+    --status-abandoned:   var(--ink-560);    /* given up (terminal) */
+
+    /* ============ Iteration gate verdicts ============ */
+    --verdict-green:  var(--green-400);
+    --verdict-failed: var(--red-500);
+    --verdict-hang:   var(--amber-500);
+
+    /* ============ Semantic feedback ============ */
+    --color-success: var(--green-500);
+    --color-danger:  var(--red-500);
+    --color-warning: var(--amber-500);
+    --color-info:    var(--cyan-500);
+
+    /* Tinted fills for badges / pill backgrounds */
+    --tint-success: color-mix(in oklab, var(--green-500) 15%, transparent);
+    --tint-danger:  color-mix(in oklab, var(--red-500) 15%, transparent);
+    --tint-warning: color-mix(in oklab, var(--amber-500) 15%, transparent);
+    --tint-info:    color-mix(in oklab, var(--cyan-500) 15%, transparent);
+    --tint-neutral: rgba(255, 255, 255, 0.06);
+
+    /* ============ Typography ============ */
+    /* @fontsource registers 'Geist Sans' / 'Geist Mono' / 'Space Grotesk'; keep
+     * the design's bare 'Geist' in the stack for parity with the mockups. */
+    --font-display: 'Space Grotesk', 'Geist Sans', 'Geist', ui-sans-serif, system-ui, sans-serif;
+    --font-sans:    'Geist Sans', 'Geist', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-mono:    'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+    /* ---- Size scale (px) — dense desktop-tool base of 14 ---- */
+    --text-2xs:  11px;
+    --text-xs:   12px;
+    --text-sm:   13px;
+    --text-base: 14px;   /* default UI text */
+    --text-md:   15px;
+    --text-lg:   17px;
+    --text-xl:   20px;
+    --text-2xl:  24px;
+    --text-3xl:  30px;
+    --text-4xl:  38px;
+    --text-5xl:  48px;
+    --text-6xl:  64px;
+    --text-7xl:  84px;
+
+    /* ---- Weights ---- */
+    --weight-light:    300;
+    --weight-regular:  400;
+    --weight-medium:   500;
+    --weight-semibold: 600;
+    --weight-bold:     700;
+
+    /* ---- Line heights ---- */
+    --leading-none:    1;
+    --leading-tight:   1.15;
+    --leading-snug:    1.3;
+    --leading-normal:  1.5;
+    --leading-relaxed: 1.65;
+
+    /* ---- Letter spacing ---- */
+    --tracking-tighter: -0.03em;
+    --tracking-tight:   -0.015em;
+    --tracking-normal:  0;
+    --tracking-wide:    0.02em;
+    --tracking-caps:    0.08em;
+
+    /* ---- Composite text roles ---- */
+    --role-display: var(--weight-medium) var(--text-6xl)/var(--leading-none) var(--font-display);
+    --role-title:   var(--weight-medium) var(--text-2xl)/var(--leading-tight) var(--font-display);
+    --role-heading: var(--weight-semibold) var(--text-lg)/var(--leading-snug) var(--font-sans);
+    --role-body:    var(--weight-regular) var(--text-base)/var(--leading-normal) var(--font-sans);
+    --role-label:   var(--weight-medium) var(--text-sm)/var(--leading-snug) var(--font-sans);
+    --role-mono:    var(--weight-regular) var(--text-sm)/var(--leading-snug) var(--font-mono);
+    --role-overline:var(--weight-medium) var(--text-2xs)/var(--leading-none) var(--font-mono);
+
+    /* ============ Spacing — 4px base grid ============ */
+    --space-0:   0;
+    --space-px:  1px;
+    --space-0-5: 2px;
+    --space-1:   4px;
+    --space-1-5: 6px;
+    --space-2:   8px;
+    --space-2-5: 10px;
+    --space-3:   12px;
+    --space-4:   16px;
+    --space-5:   20px;
+    --space-6:   24px;
+    --space-7:   28px;
+    --space-8:   32px;
+    --space-10:  40px;
+    --space-12:  48px;
+    --space-14:  56px;
+    --space-16:  64px;
+    --space-20:  80px;
+    --space-24:  96px;
+    --space-32:  128px;
+
+    /* Layout rails specific to the cockpit shell */
+    --rail-sidebar:   264px;
+    --rail-inspector: 340px;
+    --bar-titlebar:   40px;
+    --bar-statusbar:  28px;
+    --gutter:         var(--space-6);
+
+    /* ============ Radius — tight, engineered corners ============ */
+    --radius-xs:   4px;
+    --radius-sm:   6px;
+    --radius-md:   8px;
+    --radius-lg:   10px;
+    --radius-xl:   14px;
+    --radius-2xl:  18px;
+    --radius-full: 999px;
+
+    /* ============ Elevation & focus ============ */
+    --shadow-0: none;
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40);
+    --shadow-2: 0 2px 6px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.50), 0 2px 6px rgba(0, 0, 0, 0.40);
+    --shadow-4: 0 20px 48px rgba(0, 0, 0, 0.58), 0 6px 16px rgba(0, 0, 0, 0.44);
+
+    --bevel-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --bevel-inset: inset 0 1px 2px rgba(0, 0, 0, 0.55);
+
+    --elev-card:    var(--bevel-top), var(--shadow-2);
+    --elev-popover: var(--bevel-top), var(--shadow-3);
+    --elev-dialog:  var(--bevel-top), var(--shadow-4);
+
+    --focus-ring:  0 0 0 2px var(--surface-app), 0 0 0 4px var(--color-primary-ring);
+    --focus-ring-tight: 0 0 0 2px var(--color-primary-ring);
+
+    --glow-amber: 0 0 0 1px color-mix(in oklab, var(--amber-500) 40%, transparent),
+                  0 4px 20px color-mix(in oklab, var(--amber-500) 22%, transparent);
+    --glow-green: 0 0 12px color-mix(in oklab, var(--green-400) 45%, transparent);
+
+    /* ============ Motion — restrained, mechanical ============ */
+    --duration-instant: 80ms;
+    --duration-fast:    120ms;
+    --duration-base:    180ms;
+    --duration-slow:    260ms;
+    --duration-slower:  400ms;
+
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+    --ease-out:      cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in:       cubic-bezier(0.4, 0, 1, 1);
+    --ease-linear:   linear;
+
+    --transition-colors: color var(--duration-fast) var(--ease-standard),
+                         background-color var(--duration-fast) var(--ease-standard),
+                         border-color var(--duration-fast) var(--ease-standard),
+                         box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+/* ============ Base element styling & resets (dark-first) ============ */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    background: var(--surface-app);
+    color: var(--text-primary);
+    font: var(--role-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "cv01", "ss01";
+}
+
+a { color: var(--text-link); text-decoration: none; transition: var(--transition-colors); }
+a:hover { color: var(--text-link-hover); }
+
+::selection {
+    background: color-mix(in oklab, var(--amber-500) 30%, transparent);
+    color: var(--text-primary);
+}
+
+/* Numeric data reads better tabular in a telemetry UI */
+.tabular, [data-tabular] { font-variant-numeric: tabular-nums; }
+
+/* Thin instrument scrollbars */
+* { scrollbar-width: thin; scrollbar-color: var(--ink-680) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+    background: var(--ink-680);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: var(--radius-full);
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-640); }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-corner { background: transparent; }
+
+/* Running pulse — heartbeat of an active agent loop */
+@keyframes helm-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+}
+
+/* Reduced motion: kill the pulse */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+    }
+}
