@@ -1,9 +1,12 @@
-// src/renderer/views/Planner.tsx
-// Planner tab: the embedded human claude session (real TerminalPane over the planner PTY)
-// beside the live rail — stage tracker, PRD, draft cards with static verdicts, and the
-// M11 two-phase approval (run pre-flight → ack every ⚠ → confirm; Skip is an explicit,
-// confirmed escape). Any plan:changed resets the gate so a stale report can't be confirmed;
-// the ipc re-validates everything from disk anyway — this gate is UX honesty (§8.7).
+// src/renderer/views/Conductor.tsx
+// Conductor tab (M16 — the M10 planner pane absorbed): the project's ONE persistent interactive
+// claude session (real TerminalPane over the conductor PTY) beside the live rail — stage tracker,
+// PRD, draft cards with static verdicts, and the M11 two-phase approval (run pre-flight → ack every
+// ⚠ → confirm; Skip is an explicit, confirmed escape). Any plan:changed resets the gate so a stale
+// report can't be confirmed; the ipc re-validates everything from disk anyway — the gate is UX
+// honesty (§8.7). New in M16: without a live session the pane offers [Resume conductor] (enabled iff
+// the recorded session is actually resumable — the M5 guard, re-checked main-side) beside
+// [Fresh session]; persistence is the CONVERSATION (via --resume), not the PTY process.
 import { useEffect, useState } from "react";
 import type { PlanDraftTask, PlanRailState, PlanStage, PreflightCommandVerdict, PreflightReport, PreflightVerdict, Project, PtySession } from "../../shared/types";
 import { Badge, Button, Checkbox, Icon, IconButton, ProgressBar } from "../ds";
@@ -118,12 +121,37 @@ export function PreflightReportPanel({ report, acks, onAck }: {
     );
 }
 
-/* ---------- planner tab ---------- */
-export function PlannerTab({ project, session, rail, onOpen, onApproved }: {
+/* ---------- conductor launch panel (no live session) ---------- */
+// The two-button launch contract (spec §4): [Resume conductor] enabled IFF the recorded session is
+// actually resumable (main re-checks the guard on launch — this enablement is UX honesty), beside the
+// always-available [Fresh session]. Pure + prop-driven so the render tests probe both states.
+export function ConductorLaunch({ project, resumable, onLaunch }: {
+    project: Project;
+    resumable: boolean;
+    onLaunch: (fresh: boolean) => void;
+}) {
+    return (
+        <div {...verifyAttrs({ unit: "ConductorLaunch", resumable })} style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+            <EmptyState icon="Anchor"
+                line={`The conductor is ${project.name}'s single persistent claude session — plan (including from GitHub issues), ask "where are we?" (it reads the fleet via helm status), and steer, all in conversation. Resume continues the recorded conversation; Fresh starts a new one.`}
+                action={
+                    <div style={{ display: "flex", gap: 8 }}>
+                        <Button variant="primary" disabled={!resumable} iconLeft={<Icon name="Play" size={14} />} onClick={() => onLaunch(false)}>Resume conductor</Button>
+                        <Button variant="secondary" iconLeft={<Icon name="Plus" size={14} />} onClick={() => onLaunch(true)}>Fresh session</Button>
+                    </div>
+                } />
+        </div>
+    );
+}
+
+/* ---------- conductor tab ---------- */
+export function ConductorTab({ project, session, rail, resumable, onHydrate, onLaunch, onApproved }: {
     project: Project;
     session: PtySession | null;
     rail: PlanRailState | undefined;
-    onOpen: () => void;
+    resumable: boolean;
+    onHydrate: () => void;        // read-only conductor:open — refresh session/rail/resumable; spawns nothing
+    onLaunch: (fresh: boolean) => void;
     onApproved: (count: number, warnings: string[], skipped: boolean) => void;
 }) {
     const [preflight, setPreflight] = useState<PreflightReport | "loading" | null>(null);
@@ -131,15 +159,17 @@ export function PlannerTab({ project, session, rail, onOpen, onApproved }: {
     const [error, setError] = useState<string | null>(null);
     const [confirmSkip, setConfirmSkip] = useState(false);
 
+    // Hydrate on mount / project switch: pick up a still-alive session, the rail state, and the
+    // resume-guard verdict. Read-only (conductor:open never spawns), so mounting the tab is free.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => { onHydrate(); }, [project.id]);
+
     // Any plan:changed (a fresh rail-state object per fire) means the draft may have changed —
     // reset the gate so a stale report/ack set can't be confirmed (the M11 rule).
     useEffect(() => { setPreflight(null); setAcks([]); setError(null); }, [rail]);
 
     if (!session || !rail) {
-        return (
-            <EmptyState icon="Map" line={`No planning session for ${project.name} yet. The planner is a real claude session at the repo root — converse with it to break work down.`}
-                action={<Button variant="primary" iconLeft={<Icon name="Map" size={14} />} onClick={onOpen}>Open the planner</Button>} />
-        );
+        return <ConductorLaunch project={project} resumable={resumable} onLaunch={onLaunch} />;
     }
 
     const draft = rail.parse?.ok ? rail.parse.draft : null;
@@ -167,11 +197,11 @@ export function PlannerTab({ project, session, rail, onOpen, onApproved }: {
     };
 
     return (
-        <div {...verifyAttrs({ unit: "PlannerTab", stage: rail.stage, "parse-ok": rail.parse ? rail.parse.ok : null, unacked: report ? unacked : null })} style={{ display: "flex", gap: 16, flex: 1, minHeight: 0 }}>
-            {/* live planning session */}
+        <div {...verifyAttrs({ unit: "ConductorTab", stage: rail.stage, "parse-ok": rail.parse ? rail.parse.ok : null, unacked: report ? unacked : null })} style={{ display: "flex", gap: 16, flex: 1, minHeight: 0 }}>
+            {/* the live conductor session */}
             <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <Overline>planning session — {project.repoPath}</Overline>
+                    <Overline>conductor — {project.repoPath}</Overline>
                     <span style={{ flex: 1 }}></span>
                     <Mono dim size="var(--text-2xs)">closing the tab keeps it alive</Mono>
                 </div>

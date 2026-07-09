@@ -9,7 +9,7 @@ import mark from "../assets/helm-mark.svg";
 import { Badge, Button, Icon, Kbd, StatusDot, Switch, Tabs, Tooltip } from "../ds";
 import { verifyAttrs } from "../components/verifyAttrs";
 import { Board, LayoutSwitch, type BoardLayout } from "./Board";
-import { PlannerTab } from "./Planner";
+import { ConductorTab } from "./Conductor";
 import { PlansTab } from "./Plans";
 import { ProjectConfigTab } from "./dialogs";
 import { Heatmap, Mono, Overline, fmtUsd, type TaskVM } from "./helpers";
@@ -24,7 +24,7 @@ export const countTasks = (tasks: TaskVM[]): FleetCounts => ({
 export type Route =
     | { view: "fleet" }
     | { view: "terminals" }
-    | { view: "project"; projectId: string; tab?: "board" | "planner" | "plans" | "config"; planId?: string }
+    | { view: "project"; projectId: string; tab?: "board" | "conductor" | "plans" | "config"; planId?: string }
     | { view: "task"; taskId: string };
 
 /* ================= titlebar ================= */
@@ -172,7 +172,7 @@ export function FleetView({ tasks, projects, layout, onLayout, onNewTask }: {
 }
 
 /* ================= project view ================= */
-export function ProjectView({ project, tasks, plans, layout, onLayout, route, go, plannerSession, plannerRail, onOpenPlanner, onApproved, onNewTask, onPromote, onSaveConfig, onDeleteProject }: {
+export function ProjectView({ project, tasks, plans, layout, onLayout, route, go, conductorSession, conductorRail, conductorResumable, onHydrateConductor, onLaunchConductor, onApproved, onNewTask, onPromote, onSaveConfig, onDeleteProject }: {
     project: Project;
     tasks: TaskVM[]; // the whole fleet — filtered per tab below
     plans: Plan[];
@@ -180,9 +180,11 @@ export function ProjectView({ project, tasks, plans, layout, onLayout, route, go
     onLayout: (l: BoardLayout) => void;
     route: Extract<Route, { view: "project" }>;
     go: (r: Route) => void;
-    plannerSession: PtySession | null;
-    plannerRail: PlanRailState | undefined;
-    onOpenPlanner: () => void;
+    conductorSession: PtySession | null;
+    conductorRail: PlanRailState | undefined;
+    conductorResumable: boolean;
+    onHydrateConductor: () => void;
+    onLaunchConductor: (fresh: boolean) => void;
     onApproved: (count: number, warnings: string[], skipped: boolean) => void;
     onNewTask: () => void;
     onPromote: () => void;
@@ -207,9 +209,9 @@ export function ProjectView({ project, tasks, plans, layout, onLayout, route, go
                     <Button variant="primary" iconLeft={<Icon name="Plus" size={14} />} onClick={onNewTask}>New task</Button>
                 </div>
 
-                <Tabs value={tab} onChange={(id) => go({ view: "project", projectId: project.id, tab: id as "board" | "planner" | "plans" | "config" })} items={[
+                <Tabs value={tab} onChange={(id) => go({ view: "project", projectId: project.id, tab: id as "board" | "conductor" | "plans" | "config" })} items={[
                     { id: "board", label: "Board", icon: <Icon name="LayoutGrid" size={14} />, count: myTasks.length || undefined },
-                    { id: "planner", label: "Planner", icon: <Icon name="Map" size={14} /> },
+                    { id: "conductor", label: "Conductor", icon: <Icon name="Anchor" size={14} /> },
                     { id: "plans", label: "Plans", icon: <Icon name="ScrollText" size={14} />, count: myPlans.length || undefined },
                     { id: "config", label: "Config", icon: <Icon name="Settings2" size={14} /> },
                 ]} />
@@ -237,8 +239,9 @@ export function ProjectView({ project, tasks, plans, layout, onLayout, route, go
                                 emptyAction={<Button variant="primary" size="sm" onClick={onNewTask}>New task</Button>} />
                         </div>
                     )}
-                    {tab === "planner" && (
-                        <PlannerTab project={project} session={plannerSession} rail={plannerRail} onOpen={onOpenPlanner} onApproved={onApproved} />
+                    {tab === "conductor" && (
+                        <ConductorTab project={project} session={conductorSession} rail={conductorRail} resumable={conductorResumable}
+                            onHydrate={onHydrateConductor} onLaunch={onLaunchConductor} onApproved={onApproved} />
                     )}
                     {tab === "plans" && (
                         <PlansTab project={project} plans={plans} tasks={tasks} initialPlanId={route.planId ?? null}

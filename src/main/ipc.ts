@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { openDb } from "./db/db";
-import { insertProject, listProjects, getProject, updateProject, deleteProject } from "./db/projects";
+import { insertProject, listProjects, getProject, updateProject, deleteProject, recordConductorSession } from "./db/projects";
 import { insertPlan, listPlans, getPlan } from "./db/plans";
 import { insertTask, insertPlanTask, listTasks, getTask, updateTask, setDependsOn } from "./db/tasks";
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
@@ -41,10 +41,11 @@ import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
 import { createPtyManager } from "./engine/ptyManager";
 import { nodePtyFactory } from "./engine/nodePtyFactory";
 import { deriveTrayCounts, formatTrayTooltip } from "./engine/trayCounts";
+import { buildConductorArgv, isConductorResumable } from "./engine/conductor";
 import { pipeNameFor, buildShims, buildCtlEnv } from "./ctl/protocol";
 import { buildCtlVerbs, type CtlActions, type ProjectSelector } from "./ctl/verbs";
 import { startCtlServer } from "./ctl/server";
-import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession, PlanRailState, ApprovePlanResult, PreflightRunResult, ApproveOptions } from "../shared/types";
+import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession, PlanRailState, ApprovePlanResult, PreflightRunResult, ApproveOptions, ConductorOpenResult } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
 
@@ -472,30 +473,64 @@ export function registerIpc(
     ipcMain.handle("pty:attach", (_e, id: string) => { ptyManager.attach(id, (chunk) => getWindow()?.webContents.send("pty:data", id, chunk)); });
     ipcMain.handle("pty:detach", (_e, id: string) => { ptyManager.detach(id); });
 
-    // ── M10 plan ingestion (spec §3) ──────────────────────────────────────────────────────────────
-    // Open (or reuse) a project's planner: ensure the .helm/plan/ drop dir + git-exclude .helm/, start the
-    // live watcher (pushes plan:changed as prd.md/tasks.json land), and create-or-reuse the HUMAN planner
-    // PTY (kind "planner", cwd repoPath, a resilient `pwsh -NoExit` wrapping `claude`, default permission
-    // mode — NOT through spawn.ts). Returns that session + the initial rail state so the view renders at once.
-    ipcMain.handle("plans:openPlanner", (_e, projectId: string): { session: PtySession; state: PlanRailState } | null => {
-        const project = getProject(db, projectId);
-        if (!project) return null;
+    // ── M16 conductor pane (M10's planner absorbed — spec §4) ─────────────────────────────────────
+    // The conductor is the project's ONE persistent interactive claude session (kind "planner" — the
+    // M10 value, kept stable). The M10 plan-dir + watcher plumbing is unchanged; what changed is the
+    // launch contract: open = READ-ONLY hydration (never spawns), launch = the explicit human click.
+    const ensurePlanWatch = (project: Project): void => {
         const dir = planDirFor(project.repoPath);
         mkdirSync(dir, { recursive: true });
         ensureHelmExcluded(project.repoPath);
-
-        if (!planWatchers.has(projectId)) {
-            planWatchers.set(projectId, watchPlanDir(dir, () => {
-                getWindow()?.webContents.send("plan:changed", projectId, readPlanRailState(project.repoPath));
+        if (!planWatchers.has(project.id)) {
+            planWatchers.set(project.id, watchPlanDir(dir, () => {
+                getWindow()?.webContents.send("plan:changed", project.id, readPlanRailState(project.repoPath));
             }));
         }
+    };
+    const liveConductor = (projectId: string) =>
+        ptyManager.list().find((s) => s.kind === "planner" && s.projectId === projectId && s.alive);
+    // The resume-guard, conductor edition (M5 kernel "recorded ⇔ resumable"): the recorded id counts
+    // only if claude actually persisted that session on disk — a launch that died before the first
+    // completed turn leaves no file, so Resume stays disabled and we can never `claude --resume` a
+    // conversation claude can't find (spec §6).
+    const conductorResumable = (project: Project): boolean =>
+        isConductorResumable(project.conductorSessionId, existsSync, homedir(), project.repoPath);
 
-        const alive = ptyManager.list().find((s) => s.kind === "planner" && s.projectId === projectId && s.alive);
-        let session: PtySession;
+    ipcMain.handle("conductor:open", (_e, projectId: string): ConductorOpenResult | null => {
+        const project = getProject(db, projectId);
+        if (!project) return null;
+        ensurePlanWatch(project);
+        const alive = liveConductor(projectId);
+        let session: PtySession | null = null;
         if (alive) { const { alive: _a, ...meta } = alive; session = meta; }
-        else session = ptyManager.create({ cwd: project.repoPath, argv: ["pwsh.exe", "-NoExit", "-Command", "claude"], kind: "planner", title: `${project.name} — plan`, projectId });
+        return { session, state: readPlanRailState(project.repoPath), resumable: conductorResumable(project) };
+    });
 
-        return { session, state: readPlanRailState(project.repoPath) };
+    // Launch on the human's click. A live session is reused (idempotent — a double-click can't fork the
+    // conversation). fresh=false resumes ONLY when the guard holds (belt: a stale renderer can't force
+    // --resume); anything else is a fresh session whose id is forced (--session-id) and recorded
+    // UP FRONT, so the next open can offer Resume once claude persists a turn. The resilient
+    // `pwsh -NoExit` wrapper (buildConductorArgv) is the M5 contract: a failed claude lands at a live
+    // shell in the repo, never a dead tab. Default permission mode, NOT through spawn.ts — human seam.
+    ipcMain.handle("conductor:launch", (_e, projectId: string, fresh: boolean): PtySession | null => {
+        const project = getProject(db, projectId);
+        if (!project) return null;
+        ensurePlanWatch(project);
+        const alive = liveConductor(projectId);
+        if (alive) { const { alive: _a, ...meta } = alive; return meta; }
+        const resume = !fresh && conductorResumable(project);
+        let sessionId = project.conductorSessionId;
+        if (!resume) {
+            sessionId = randomUUID();
+            recordConductorSession(db, projectId, sessionId);
+        }
+        return ptyManager.create({
+            cwd: project.repoPath,
+            argv: buildConductorArgv(sessionId, resume),
+            kind: "planner",
+            title: `${project.name} — conductor`,
+            projectId,
+        });
     });
 
     // M11 plan views (reads): the two joins the board's plan badge + plan-detail need. db/plans.ts already

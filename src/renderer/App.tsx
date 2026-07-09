@@ -28,7 +28,12 @@ let toastSeq = 0;
 interface ToastItem { id: number; tone: ToastTone; title: string; msg: ReactNode }
 
 const loadRoute = (): Route => {
-    try { return (JSON.parse(localStorage.getItem("helm-route") ?? "") as Route) || { view: "fleet" }; } catch { return { view: "fleet" }; }
+    try {
+        const r = (JSON.parse(localStorage.getItem("helm-route") ?? "") as Route) || { view: "fleet" };
+        // M16: the planner tab became the conductor — migrate a route persisted before the rename.
+        if (r.view === "project" && (r as { tab?: string }).tab === "planner") r.tab = "conductor";
+        return r;
+    } catch { return { view: "fleet" }; }
 };
 const loadLayout = (): BoardLayout => {
     const l = localStorage.getItem("helm-layout");
@@ -47,7 +52,8 @@ export function App() {
     const [sessions, setSessions] = useState<PtySessionInfo[]>([]);
     const [dismissedSessions, setDismissedSessions] = useState<Set<string>>(new Set());
     const [activeSession, setActiveSession] = useState<string | null>(null);
-    const [plannerSessions, setPlannerSessions] = useState<Record<string, PtySession>>({});
+    const [conductorSessions, setConductorSessions] = useState<Record<string, PtySession>>({});
+    const [conductorResumable, setConductorResumable] = useState<Record<string, boolean>>({});
     const [railStates, setRailStates] = useState<Record<string, PlanRailState>>({});
     const [route, setRoute] = useState<Route>(loadRoute);
     const [layout, setLayout] = useState<BoardLayout>(loadLayout);
@@ -156,13 +162,22 @@ export function App() {
         void window.helm.ptyCreate({ cwd: p.repoPath, argv: FREE_SHELL_ARGV, kind: "free", title: `${p.name} — shell`, projectId: p.id }).then(showSession);
     }, [projects, showSession]);
 
-    /* ---------- planner ---------- */
-    const openPlanner = useCallback((project: Project) => {
-        void window.helm.openPlanner(project.id).then((r) => {
+    /* ---------- conductor (the planner absorbed, M16) ---------- */
+    // Read-only hydration on tab mount: a still-alive session, the rail state, the resume-guard verdict.
+    const hydrateConductor = useCallback((project: Project) => {
+        void window.helm.openConductor(project.id).then((r) => {
             if (!r) return;
             setRailStates((m) => ({ ...m, [project.id]: r.state }));
-            setPlannerSessions((m) => ({ ...m, [project.id]: r.session }));
-            void refreshSessions(); // the planner PTY also shows in the Terminals list
+            setConductorResumable((m) => ({ ...m, [project.id]: r.resumable }));
+            if (r.session) setConductorSessions((m) => ({ ...m, [project.id]: r.session! }));
+        });
+    }, []);
+    // The explicit launch click (Resume iff the guard holds — main re-checks; Fresh always works).
+    const launchConductor = useCallback((project: Project, fresh: boolean) => {
+        void window.helm.launchConductor(project.id, fresh).then((s) => {
+            if (!s) return;
+            setConductorSessions((m) => ({ ...m, [project.id]: s }));
+            void refreshSessions(); // the conductor PTY also shows in the Terminals list
         });
     }, [refreshSessions]);
     const onPlanApproved = useCallback((projectId: string, count: number, warnings: string[], skipped: boolean) => {
@@ -299,9 +314,11 @@ export function App() {
                         <ProjectView
                             project={routeProject} tasks={tasks} plans={plans} layout={layout} onLayout={setBoardLayout}
                             route={route} go={go}
-                            plannerSession={plannerSessions[routeProject.id] ?? null}
-                            plannerRail={railStates[routeProject.id]}
-                            onOpenPlanner={() => openPlanner(routeProject)}
+                            conductorSession={conductorSessions[routeProject.id] ?? null}
+                            conductorRail={railStates[routeProject.id]}
+                            conductorResumable={conductorResumable[routeProject.id] ?? false}
+                            onHydrateConductor={() => hydrateConductor(routeProject)}
+                            onLaunchConductor={(fresh) => launchConductor(routeProject, fresh)}
                             onApproved={(count, warnings, skipped) => onPlanApproved(routeProject.id, count, warnings, skipped)}
                             onNewTask={() => setDialogs((d) => ({ ...d, newTask: true, newTaskProject: routeProject.id }))}
                             onPromote={() => setDialogs((d) => ({ ...d, promote: routeProject.id }))}

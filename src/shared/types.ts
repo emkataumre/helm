@@ -125,6 +125,18 @@ export type ApprovePlanResult =
     | { ok: true; count: number; warnings: string[] }
     | { ok: false; errors: string[] };
 
+// ── M16 conductor (the planner pane absorbed) ─────────────────────────────────────────────────────
+// What conductor:open returns — a READ-ONLY hydration: any live conductor PTY (null = show the launch
+// panel), the current plan-rail state, and the resume-guard verdict. `resumable` is true iff the
+// project's recorded conductorSessionId has an actually-persisted claude session on disk (the M5
+// "recorded ⇔ resumable" kernel, conductor edition) — it drives the [Resume conductor] enabled state,
+// and conductor:launch re-checks it main-side (a stale renderer can never force a --resume).
+export interface ConductorOpenResult {
+    session: PtySession | null;
+    state: PlanRailState;
+    resumable: boolean;
+}
+
 // ── M11 dynamic pre-flight (spec §3/§6) ───────────────────────────────────────────────────────────
 // The DYNAMIC verdict for ONE deduped acceptance command, run once in a throwaway worktree off the
 // integration tip (static pre-flight only reads names; this executes). Three levels the approve grill fixed:
@@ -384,10 +396,14 @@ export interface HelmApi {
     onPtyExit: (cb: (id: string, code: number) => void) => () => void;
     onTasksChanged: (cb: () => void) => void;
     onSnapshotChanged: (cb: (taskId: string) => void) => void;
-    // M10 plan ingestion. openPlanner ensures .helm/plan/ + the git-exclude, starts the live watcher, and
-    // creates/reuses the HUMAN planner PTY (kind "planner"); returns that session + the initial rail state.
+    // M16 conductor (absorbs M10's openPlanner). openConductor is READ-ONLY hydration: ensures
+    // .helm/plan/ + the git-exclude + the live watcher, and reports {live session, rail state,
+    // resumable} WITHOUT spawning anything. launchConductor is the explicit human click: fresh=false
+    // resumes the recorded session (only if the guard holds — main re-checks), fresh=true starts a new
+    // conversation with a forced --session-id recorded up front. Returns the (possibly reused) PTY.
     // onPlanChanged pushes the live rail state (per project) as the session writes prd.md/tasks.json.
-    openPlanner: (projectId: string) => Promise<{ session: PtySession; state: PlanRailState } | null>;
+    openConductor: (projectId: string) => Promise<ConductorOpenResult | null>;
+    launchConductor: (projectId: string, fresh: boolean) => Promise<PtySession | null>;
     onPlanChanged: (cb: (projectId: string, state: PlanRailState) => void) => void;
     // M11 dynamic pre-flight: re-read + re-validate from disk, then EXECUTE each acceptance command once in a
     // throwaway worktree off the integration tip and classify it. Errors on a still-invalid draft (never a

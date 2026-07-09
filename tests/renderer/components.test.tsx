@@ -17,7 +17,7 @@ import { TaskCard } from "../../src/renderer/views/Board";
 import { FeedView, Inspector, IterationsTable, ProgressView } from "../../src/renderer/views/TaskDetail";
 import { StatusBar, Titlebar } from "../../src/renderer/views/shell";
 import { PromoteOutcome } from "../../src/renderer/views/dialogs";
-import { PlannerTab, PreflightReportPanel, StageRail, unackedWarns } from "../../src/renderer/views/Planner";
+import { ConductorLaunch, ConductorTab, PreflightReportPanel, StageRail, unackedWarns } from "../../src/renderer/views/Conductor";
 import { PlansTab } from "../../src/renderer/views/Plans";
 import { TerminalsView } from "../../src/renderer/views/Terminals";
 import type { EngineSnapshot, PlanRailState, PreflightReport, Project, PromoteResponse, PtySession, PtySessionInfo, SchedulerState } from "../../src/shared/types";
@@ -334,15 +334,21 @@ describe("ProgressView contract", () => {
     });
 });
 
-describe("Planner units (M10 rail + M11 two-phase approval)", () => {
-    const session: PtySession = { id: "pl", kind: "planner", title: "alpha — plan", cwd: "C:\\repo" };
+describe("Conductor units (M10 rail + M11 two-phase approval, absorbed into the M16 conductor)", () => {
+    const session: PtySession = { id: "pl", kind: "planner", title: "alpha — conductor", cwd: "C:\\repo" };
     const rail = (over: Partial<PlanRailState> = {}): PlanRailState =>
         ({ stage: "tasks", prdText: "# PRD", parse: null, verdicts: [], ...over });
     const draft = {
         planTitle: "Plan A",
         tasks: [{ slug: "t1", title: "First", intent: "do it", acceptance: ["npm run x"], scopeHint: null, dependsOn: [] }],
     };
-    const plannerProps = { project: project(), session, onOpen: noop, onApproved: noop };
+    const conductorProps = { project: project(), session, resumable: false, onHydrate: noop, onLaunch: noop, onApproved: noop };
+    // The static markup of the button that contains `text` (renderToStaticMarkup emits `disabled=""`).
+    const buttonTagFor = (html: string, text: string): string => {
+        const at = html.indexOf(text);
+        expect(at).toBeGreaterThan(-1);
+        return html.slice(html.lastIndexOf("<button", at), at);
+    };
 
     it("StageRail stamps the stage and renders the three steps", () => {
         const html = render(<StageRail stage="prd" />);
@@ -352,7 +358,7 @@ describe("Planner units (M10 rail + M11 two-phase approval)", () => {
     });
 
     it("a valid draft renders its cards + the static ⚠ with did-you-mean, and offers Run pre-flight", () => {
-        const html = render(<PlannerTab {...plannerProps} rail={rail({
+        const html = render(<ConductorTab {...conductorProps} rail={rail({
             parse: { ok: true, draft },
             verdicts: [{ taskSlug: "t1", command: "npm run x", level: "warn", reason: 'no npm script "x"', suggestion: "check" }],
         })} />);
@@ -364,16 +370,33 @@ describe("Planner units (M10 rail + M11 two-phase approval)", () => {
     });
 
     it("PROBE: a parse-invalid draft lists the errors verbatim and offers NO approval path", () => {
-        const html = render(<PlannerTab {...plannerProps} rail={rail({ parse: { ok: false, errors: ["tasks[0].acceptance must be non-empty"] } })} />);
+        const html = render(<ConductorTab {...conductorProps} rail={rail({ parse: { ok: false, errors: ["tasks[0].acceptance must be non-empty"] } })} />);
         expect(html).toContain('data-verify-parse-ok="false"');
         expect(html).toContain("tasks[0].acceptance must be non-empty");
         expect(html).not.toContain(">Run pre-flight<");
         expect(html).not.toContain("Confirm &amp; queue");
     });
 
-    it("without a session, the tab offers only Open the planner", () => {
-        const html = render(<PlannerTab {...plannerProps} session={null} rail={undefined} />);
-        expect(html).toContain("Open the planner");
+    // ── M16 launch panel: the resume-guard's cockpit face ─────────────────────────────────────────
+    it("without a session, the tab renders the launch panel with Resume + Fresh (never the pane)", () => {
+        const html = render(<ConductorTab {...conductorProps} session={null} rail={undefined} />);
+        expect(html).toContain('data-verify-unit="ConductorLaunch"');
+        expect(html).toContain("Resume conductor");
+        expect(html).toContain("Fresh session");
+    });
+
+    it("a resumable recorded session enables Resume (and stamps the contract)", () => {
+        const html = render(<ConductorLaunch project={project()} resumable={true} onLaunch={noop} />);
+        expect(html).toContain('data-verify-resumable="true"');
+        expect(buttonTagFor(html, "Resume conductor")).not.toContain("disabled");
+        expect(buttonTagFor(html, "Fresh session")).not.toContain("disabled");
+    });
+
+    it("PROBE: no resumable session → Resume is DISABLED (the guard's face: a dead id must not offer --resume), Fresh stays available", () => {
+        const html = render(<ConductorLaunch project={project()} resumable={false} onLaunch={noop} />);
+        expect(html).toContain('data-verify-resumable="false"');
+        expect(buttonTagFor(html, "Resume conductor")).toContain("disabled");
+        expect(buttonTagFor(html, "Fresh session")).not.toContain("disabled");
     });
 });
 
