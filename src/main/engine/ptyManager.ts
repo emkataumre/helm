@@ -26,7 +26,10 @@ export interface PtyHandle {
 export type PtyFactory = (
     cmd: string,
     args: string[],
-    opts: { cwd: string; cols: number; rows: number },
+    // env (M16): the full environment for the session, or undefined = inherit the process env. The
+    // manager forwards its injected human-PTY overlay here — the ctl pipe + shim PATH live ONLY in
+    // this env, never in process.env (agents at the spawn.ts chokepoint stay pipe-blind).
+    opts: { cwd: string; cols: number; rows: number; env?: Record<string, string> },
 ) => PtyHandle;
 
 export interface PtyManager {
@@ -69,14 +72,18 @@ interface Session {
     listener: ((data: string) => void) | null;
 }
 
-export function createPtyManager(factory: PtyFactory): PtyManager {
+// env (M16): the optional human-PTY environment overlay — the FULL env every session here spawns with
+// (in practice: process.env + HELM_CTL_PIPE + the ctl shim-dir PATH prepend, built once by buildCtlEnv
+// at the ipc edge). This manager is the humans-only seam, so injecting here reaches the conductor pane,
+// drop-in tabs and free terminals and NOTHING else — the agent chokepoint (spawn.ts) never sees it.
+export function createPtyManager(factory: PtyFactory, env?: Record<string, string>): PtyManager {
     const sessions = new Map<string, Session>();
     const exitListeners: Array<(id: string, code: number) => void> = [];
 
     const create = (opts: CreatePtyOptions): PtySession => {
         const id = randomUUID();
         const meta: PtySession = { id, kind: opts.kind, title: opts.title, cwd: opts.cwd, taskId: opts.taskId, projectId: opts.projectId };
-        const handle = factory(opts.argv[0], opts.argv.slice(1), { cwd: opts.cwd, cols: DEFAULT_COLS, rows: DEFAULT_ROWS });
+        const handle = factory(opts.argv[0], opts.argv.slice(1), { cwd: opts.cwd, cols: DEFAULT_COLS, rows: DEFAULT_ROWS, env });
         const session: Session = { meta, handle, alive: true, ring: "", listener: null };
 
         handle.onData((chunk) => {

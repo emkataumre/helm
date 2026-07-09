@@ -23,7 +23,9 @@ export const nodePtyFactory: PtyFactory = (cmd, args, opts) => {
         cols: opts.cols,
         rows: opts.rows,
         cwd: opts.cwd,
-        env: process.env as Record<string, string>,
+        // M16: the manager passes the human-PTY env overlay (ctl pipe + shim PATH); absent → plain
+        // process.env, byte-identical to before. process.env itself is never mutated.
+        env: opts.env ?? (process.env as Record<string, string>),
         useConptyDll: true,
     });
     let killed = false;

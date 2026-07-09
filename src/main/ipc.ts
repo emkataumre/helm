@@ -3,7 +3,8 @@ import { ipcMain, Notification, type BrowserWindow } from "electron";
 import { app } from "electron";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject, deleteProject } from "./db/projects";
 import { insertPlan, listPlans, getPlan } from "./db/plans";
@@ -40,6 +41,9 @@ import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
 import { createPtyManager } from "./engine/ptyManager";
 import { nodePtyFactory } from "./engine/nodePtyFactory";
 import { deriveTrayCounts, formatTrayTooltip } from "./engine/trayCounts";
+import { pipeNameFor, buildShims, buildCtlEnv } from "./ctl/protocol";
+import { buildCtlVerbs, type CtlActions, type ProjectSelector } from "./ctl/verbs";
+import { startCtlServer } from "./ctl/server";
 import type { NewProjectInput, NewTaskInput, ProjectConfigPatch, Project, Task, TaskStatus, PromoteResponse, CreatePtyOptions, PtySession, PlanRailState, ApprovePlanResult, PreflightRunResult, ApproveOptions } from "../shared/types";
 
 const CHECKIN_POLL_MS = 60_000; // re-evaluate the check-in cadence each minute
@@ -86,11 +90,26 @@ export function registerIpc(
     // One live EngineSnapshot per active task; each dispatch nudges the renderer's detail view.
     const snapshots = createSnapshotStore((taskId) => getWindow()?.webContents.send("snapshot:changed", taskId));
 
+    // M16 blessed CLI, boot half: the per-instance pipe name (derived from userData — an accept-harness
+    // app on a throwaway HELM_USER_DATA gets its own pipe), the PATH shims written fresh each boot
+    // (helm.cmd / helm.ps1 → node out/main/cli.js, resolved relative to this bundle so dev and packaged
+    // agree), and the human-PTY env overlay. process.env is NEVER mutated — the pipe is visible ONLY
+    // inside PtyManager sessions (the humans-only seam below); the spawn.ts chokepoint keeps plain
+    // process.env, so agents can never steer their own scheduler (spec §6).
+    const ctlPipeName = pipeNameFor(app.getPath("userData"));
+    const ctlShimDir = join(app.getPath("userData"), "ctl");
+    try {
+        mkdirSync(ctlShimDir, { recursive: true });
+        for (const shim of buildShims(join(import.meta.dirname, "cli.js"))) writeFileSync(join(ctlShimDir, shim.name), shim.content);
+    } catch (e) { console.log(`[helm] ctl shim generation failed (helm CLI unavailable in terminals): ${e instanceof Error ? e.message : String(e)}`); }
+    const ctlEnv = buildCtlEnv(process.env, ctlPipeName, ctlShimDir);
+
     // M7 embedded terminal: ONE PtyManager for the whole app, with the real node-pty factory (the only
     // place node-pty is imported). SIBLING seam to spawn.ts — humans-only; agents keep the chokepoint.
     // A session's exit pushes pty:exit to the renderer; attach (below) pushes pty:data. Killed on Quit
     // (disposePtys, returned to index.ts) — a window-hide must NOT kill them (main-process residency).
-    const ptyManager = createPtyManager(nodePtyFactory);
+    // M16: every session spawns with the ctl env overlay (pipe + shim PATH) — human PTYs only.
+    const ptyManager = createPtyManager(nodePtyFactory, ctlEnv);
     ptyManager.onExit((id, code) => getWindow()?.webContents.send("pty:exit", id, code));
 
     // M10 plan ingestion: one live .helm/plan/ watcher per project (dispose fns), started lazily by
@@ -298,22 +317,28 @@ export function registerIpc(
     // is exactly what tasks:dropIn uses, so the button's enabled state matches what the click will actually do.
     // Plus the M9 derived merged-gate view: `blocked` + the `waitingOn` parents (waitingOnFor over the whole
     // board), so the cockpit can render "waiting on X" without the renderer knowing the gate rule.
-    ipcMain.handle("tasks:list", () => {
+    // M16: hoisted to a shared fn — the ctl `status` verb reads the SAME board the cockpit reads.
+    const listTaskItems = () => {
         const tasks = listTasks(db);
         const byId = new Map(tasks.map((t) => [t.id, t]));
         return tasks.map((t) => {
             const waitingOn = waitingOnFor(t, (id) => byId.get(id));
             return { ...t, resumable: latestSessionId(listIterations(db, t.id)) != null, blocked: waitingOn.length > 0, waitingOn };
         });
-    });
+    };
+    ipcMain.handle("tasks:list", () => listTaskItems());
     // M9: replace a task's dependency edges — the cockpit's Clear-dependencies affordance on a stuck card
     // passes []. Clearing may unblock the task, so kick the scheduler after (honours pause).
-    ipcMain.handle("tasks:setDependsOn", (_e, taskId: string, ids: string[]) => { setDependsOn(db, taskId, ids); notify(); scheduler.kick(); });
+    // M16: hoisted — the ctl `clear-deps` verb calls THIS fn with [] (one implementation, two transports).
+    const setDeps = (taskId: string, ids: string[]): void => { setDependsOn(db, taskId, ids); notify(); scheduler.kick(); };
+    ipcMain.handle("tasks:setDependsOn", (_e, taskId: string, ids: string[]) => { setDeps(taskId, ids); });
 
     // M4 scheduler IPC: paused-mode manual single-start, the live cockpit indicator state, pause toggle.
+    // M16: the pause body hoisted — the ctl `pause`/`resume` verbs call THIS fn (the button path).
+    const setSchedulerPaused = (paused: boolean): void => { scheduler.setPaused(paused); notify(); };
     ipcMain.handle("tasks:startNow", (_e, taskId: string) => { scheduler.startNow(taskId); });
     ipcMain.handle("scheduler:state", () => scheduler.state());
-    ipcMain.handle("scheduler:setPaused", (_e, paused: boolean) => { scheduler.setPaused(paused); notify(); });
+    ipcMain.handle("scheduler:setPaused", (_e, paused: boolean) => { setSchedulerPaused(paused); });
 
     // ── M5 drop-in handoff (spec §8), M7-retrofitted onto the in-app terminal ──────────────────────
     // Grab a running or needs-human task: hard-interrupt the live claude (freeing the slot), flip it to
@@ -403,7 +428,9 @@ export function registerIpc(
     });
 
     // Abandon: reap the retained worktree + branch, flag abandoned.
-    ipcMain.handle("tasks:abandon", async (_e, taskId: string) => {
+    // M16: hoisted — the ctl `abandon` verb calls THIS fn, so a pipe-steered abandon goes through the
+    // exact same mutex-wrapped handback (+ jail reap) as the cockpit button.
+    const abandonTask = async (taskId: string): Promise<void> => {
         const task = getTask(db, taskId);
         if (!task) return;
         const project = getProject(db, task.projectId);
@@ -413,7 +440,8 @@ export function registerIpc(
         await abandon(project, task, taskBranch, buildHandbackDeps(config));
         if (project.jailImage) await reapJailResources(task.id); // M13: reap the jail container+volume+exchange
         notify();
-    });
+    };
+    ipcMain.handle("tasks:abandon", (_e, taskId: string) => abandonTask(taskId));
 
     // Observability reads. getVerifyState prefers the live snapshot (with its in-memory feed) and
     // falls back to one rebuilt from durable DB rows (empty feed) for inactive/restarted tasks.
@@ -545,6 +573,87 @@ export function registerIpc(
         return { ok: true, count: approved.plan.inserts.length, warnings };
     });
 
+    // ── M16 blessed CLI: the shared actions + the pipe server (spec §3/§6) ─────────────────────────
+    // ONE implementation, TWO transports: the steer verbs below ARE the button paths (the exact fns the
+    // ipc handlers call — pause/resume = scheduler:setPaused, abandon = the mutex-wrapped tasks:abandon
+    // body, clear-deps = tasks:setDependsOn with []); the reads compose the same db/rail reads the
+    // cockpit uses. No verb creates tasks/projects — intake stays on the .helm/plan/ ack-gated seam.
+    const resolveProjectSel = (sel: ProjectSelector): Project | undefined => {
+        const projects = listProjects(db);
+        if (sel.project) {
+            const name = sel.project.toLowerCase();
+            return projects.find((p) => p.name.toLowerCase() === name);
+        }
+        if (sel.cwd) {
+            // The conductor session runs at the project's repo root — scope by the caller's cwd.
+            const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+            const cwd = norm(sel.cwd);
+            return projects.find((p) => cwd === norm(p.repoPath) || cwd.startsWith(norm(p.repoPath) + "/"));
+        }
+        return undefined;
+    };
+    const taskCostUsd = (taskId: string): number =>
+        Math.round(listIterations(db, taskId).reduce((a, it) => a + (it.costUsd ?? 0), 0) * 100) / 100;
+    const ctlActions: CtlActions = {
+        status: (sel) => {
+            const scoped = resolveProjectSel(sel);
+            if (sel.project && !scoped) throw new Error(`unknown project "${sel.project}"`);
+            const names = new Map(listProjects(db).map((p) => [p.id, p.name]));
+            const rows = listTaskItems().filter((t) => !scoped || t.projectId === scoped.id);
+            return {
+                paused: scheduler.state().paused,
+                project: scoped?.name ?? null,
+                tasks: rows.map((t) => ({
+                    id: t.id, title: t.title, project: names.get(t.projectId) ?? t.projectId, status: t.status,
+                    blocked: t.blocked, waitingOn: t.waitingOn.map((w) => `${w.title} (${w.status})`),
+                    failureReason: t.failureReason, costUsd: taskCostUsd(t.id),
+                })),
+            };
+        },
+        taskDetail: (id) => {
+            const task = getTask(db, id);
+            if (!task) throw new Error(`unknown task ${id}`);
+            return {
+                ...task,
+                costUsd: taskCostUsd(id),
+                iterations: listIterations(db, id).map((it) => ({
+                    index: it.index, verdict: it.gateVerdict, costUsd: it.costUsd, durationMs: it.durationMs,
+                    tail: it.outputTail ? it.outputTail.slice(-400) : null,
+                })),
+            };
+        },
+        progressTail: (id) => {
+            const task = getTask(db, id);
+            if (!task) throw new Error(`unknown task ${id}`);
+            if (!task.worktreePath) return { taskId: id, progress: null, note: "worktree gone (terminal cleanup) — no progress file" };
+            try {
+                const lines = readFileSync(join(task.worktreePath, ".ralph", "progress.md"), "utf8").split(/\r?\n/);
+                return { taskId: id, progress: lines.slice(-60).join("\n") };
+            } catch { return { taskId: id, progress: null, note: "no progress.md yet" }; }
+        },
+        planStatus: (sel) => {
+            const project = resolveProjectSel(sel);
+            if (!project) throw new Error("no project matched — pass --project <name> or run inside a registered repo");
+            const state = readPlanRailState(project.repoPath);
+            return {
+                project: project.name,
+                plans: listPlans(db, project.id).map((p) => ({ id: p.id, title: p.title, createdAt: p.createdAt })),
+                draft: {
+                    stage: state.stage,
+                    parse: state.parse == null ? null : state.parse.ok
+                        ? { ok: true as const, tasks: state.parse.draft.tasks.map((c) => ({ slug: c.slug, title: c.title, dependsOn: c.dependsOn })) }
+                        : { ok: false as const, errors: state.parse.errors },
+                    verdicts: state.verdicts,
+                },
+            };
+        },
+        pause: () => setSchedulerPaused(true),
+        resume: () => setSchedulerPaused(false),
+        abandonTask,
+        clearDeps: (id) => setDeps(id, []),
+    };
+    const ctlServer = startCtlServer(ctlPipeName, buildCtlVerbs(ctlActions));
+
     // ── M6 ① boot reconcile (spec §4 "process death is cheap") ────────────────────────────────────
     // Close out the interrupted turn's still-open iteration: mark it FAILED, and — critically — leave
     // sessionId NULL (the M5 resume-guard: a crash-killed turn persisted no resumable claude session, so
@@ -667,5 +776,5 @@ export function registerIpc(
     // keep running in the main process.
     // M13: on quit, best-effort fire-and-forget reap of any running jail container (a quit leaves the
     // daemon-owned container running — the reliable cleanup is the boot reap next launch; this is a courtesy).
-    return { disposePtys: () => { for (const dispose of planWatchers.values()) dispose(); planWatchers.clear(); ptyManager.disposeAll(); void reapOrphanJailContainers().catch(() => {}); } };
+    return { disposePtys: () => { ctlServer.close(); for (const dispose of planWatchers.values()) dispose(); planWatchers.clear(); ptyManager.disposeAll(); void reapOrphanJailContainers().catch(() => {}); } };
 }
