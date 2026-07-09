@@ -28,6 +28,8 @@ export interface Project {
     autoModeEnvironment: string | null; // M6-② auto-mode trusted-env (spec §10); raw TEXT; NULL = ["$defaults"]
     promotionMode: "pr" | "direct" | "strict"; // M6-③ batch-Promote graduation strategy (spec §13/§3); NOT NULL, default "pr"
     jailImage: string | null;        // M13 Docker-jail opt-in; NULL = host mode, non-null = jailed spawns with that image
+    conductorSessionId: string | null; // M16 conductor pane's persistent claude session — recorded at fresh
+                                       // launch; Resume offered only once claude's session file exists on disk
 }
 
 export interface Task {

@@ -50,7 +50,7 @@ const project = (over: Partial<Project> = {}): Project => ({
     targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees",
     setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null,
     model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null,
-    promotionMode: "pr", jailImage: null, ...over,
+    promotionMode: "pr", jailImage: null, conductorSessionId: null, ...over,
 });
 
 describe("verifyAttrs", () => {

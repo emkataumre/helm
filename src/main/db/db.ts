@@ -103,6 +103,13 @@ const STEPS: Array<(db: Db) => void> = [
     (db) => {
         db.exec(`ALTER TABLE projects ADD COLUMN jailImage TEXT`);
     },
+    // Step 11 — M16 conductor: the per-project persistent conductor session id (nullable; NULL = none
+    // recorded). Written at FRESH launch (the forced `--session-id`, known before claude writes a byte);
+    // the resume-guard treats it as resumable only once claude's persisted session file exists on disk
+    // (engine/conductor.ts) — the M5 "recorded ⇔ resumable" kernel, conductor edition.
+    (db) => {
+        db.exec(`ALTER TABLE projects ADD COLUMN conductorSessionId TEXT`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.

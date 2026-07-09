@@ -1,6 +1,6 @@
 // tests/db/projects.test.ts
 import { openDb } from "../../src/main/db/db";
-import { insertProject, listProjects, getProject, updateProject, deleteProject } from "../../src/main/db/projects";
+import { insertProject, listProjects, getProject, updateProject, deleteProject, recordConductorSession } from "../../src/main/db/projects";
 import { insertTask, getTask } from "../../src/main/db/tasks";
 import { addIteration, listIterations } from "../../src/main/db/iterations";
 
@@ -129,6 +129,22 @@ it("round-trips a set concurrencyCap, and updateProject patches it", () => {
     expect(getProject(db, p.id)?.concurrencyCap).toBe(5);
     updateProject(db, p.id, { concurrencyCap: null }); // explicit null clears it back to the default
     expect(getProject(db, p.id)?.concurrencyCap).toBeNull();
+    db.close();
+});
+
+// M16: conductorSessionId is owned by the conductor launch path — NULL at registration, recorded by
+// recordConductorSession (a fresh launch overwrites; null clears), and NOT a config field: updateProject
+// must never touch it (the config form can't clobber a live conductor conversation).
+it("conductorSessionId: null on insert, recordConductorSession round-trips, updateProject can't touch it", () => {
+    const db = openDb(":memory:");
+    const p = insertProject(db, { name: "Cond", repoPath: "/r", targetBranch: "main", checkCommand: "c" });
+    expect(getProject(db, p.id)?.conductorSessionId).toBeNull();
+    recordConductorSession(db, p.id, "sess-abc");
+    expect(getProject(db, p.id)?.conductorSessionId).toBe("sess-abc");
+    updateProject(db, p.id, { model: "opus" }); // a config patch leaves the recorded session alone
+    expect(getProject(db, p.id)?.conductorSessionId).toBe("sess-abc");
+    recordConductorSession(db, p.id, null); // explicit clear
+    expect(getProject(db, p.id)?.conductorSessionId).toBeNull();
     db.close();
 });
 

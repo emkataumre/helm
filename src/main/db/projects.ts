@@ -33,14 +33,22 @@ export function insertProject(db: Db, input: NewProjectInput): Project {
         autoModeEnvironment: opt(input.autoModeEnvironment),
         promotionMode: input.promotionMode ?? "pr", // NOT NULL — the safe default (nothing pushed to target)
         jailImage: opt(input.jailImage), // M13 — blank/absent → NULL → host mode
+        conductorSessionId: null, // M16 — recorded only by a fresh conductor launch, never at registration
     };
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir,
-                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,costCapUsd,model,concurrencyCap,terminalCommand,autoModeEnvironment,promotionMode,jailImage)
+                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,costCapUsd,model,concurrencyCap,terminalCommand,autoModeEnvironment,promotionMode,jailImage,conductorSessionId)
          VALUES (@id,@name,@repoPath,@integrationBranch,@targetBranch,@branchPrefix,@checkCommand,@worktreeDir,
-                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@costCapUsd,@model,@concurrencyCap,@terminalCommand,@autoModeEnvironment,@promotionMode,@jailImage)`,
+                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@costCapUsd,@model,@concurrencyCap,@terminalCommand,@autoModeEnvironment,@promotionMode,@jailImage,@conductorSessionId)`,
     ).run(p);
     return p;
+}
+
+// M16: record the conductor pane's claude session id for a project (a fresh launch overwrites the old
+// one — one conductor conversation per project). NOT a config field — the launch path owns it, so it
+// stays out of CONFIG_FIELDS/updateProject and the config form can never clobber it.
+export function recordConductorSession(db: Db, id: string, sessionId: string | null): void {
+    db.prepare("UPDATE projects SET conductorSessionId = ? WHERE id = ?").run(sessionId, id);
 }
 
 // Patch the editable config columns (the project-config form). Only the config fields are

@@ -20,7 +20,7 @@ export const mkProject = (promotionMode: Project["promotionMode"], over: Partial
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main",
     branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees",
     setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null,
-    concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode, jailImage: null, ...over,
+    concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode, jailImage: null, conductorSessionId: null, ...over,
 });
 
 // The gates the scenario controls — the deterministic stand-ins for the real git/check outcomes.
