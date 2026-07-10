@@ -11,6 +11,8 @@
 // M14 cockpit deltas: verdict labels are "expected red" / "already green" / "could not run"; evidence tails
 // sit behind a per-row [Show output tail] toggle; ack checkboxes hide their inputs (click the .helm-check
 // label); Run pre-flight only exists once the draft parses.
+// M16 delta: the planner pane became the CONDUCTOR — the tab is "Conductor" and the pane is launched via
+// the explicit [Fresh session] click (Resume is disabled: a throwaway userData has no recorded session).
 import { describe, it, expect } from "vitest";
 import type { Page } from "playwright-core";
 import { writeFileSync, mkdirSync, readdirSync } from "node:fs";
@@ -57,10 +59,10 @@ describe("preflight", () => {
             // Pause BEFORE anything queues — Confirm kicks the scheduler; a queued+eligible task would auto-spawn.
             await pauseFleet(page);
 
-            // Open the planner via the real UI (project view → Planner tab → Open the planner; idle PTY + rail).
+            // Open the conductor via the real UI (project view → Conductor tab → Fresh session; idle PTY + rail).
             await page.locator(".helm-sidebar").getByText("PreflightProj").click();
-            await page.getByRole("tab", { name: "Planner" }).click();
-            await page.getByRole("button", { name: "Open the planner", exact: true }).click();
+            await page.getByRole("tab", { name: "Conductor" }).click();
+            await page.getByRole("button", { name: "Fresh session", exact: true }).click();
             await until(async () => (await stageNow(page)).includes("conversing"), { timeoutMs: 30_000, label: "stage = conversing" });
             mkdirSync(planDir, { recursive: true });
 

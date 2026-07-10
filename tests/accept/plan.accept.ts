@@ -6,9 +6,11 @@
 // approve — approve kicks it, and an unpaused queued task would auto-spawn a real claude; (2) the planner PTY
 // sits idle — the test NEVER writes to it (no real claude conversation). try/finally-closes the app.
 //
-// M14 cockpit deltas: the planner is a project-view tab opened via [Open the planner]; the stage tracker
-// marks the active step with the `.seg.now` class (lowercase labels); a parse-invalid draft lists its errors
-// and offers NO approval path at all; Skip pre-flight confirms via dialog.
+// M14 cockpit deltas: the stage tracker marks the active step with the `.seg.now` class (lowercase labels);
+// a parse-invalid draft lists its errors and offers NO approval path at all; Skip pre-flight confirms via dialog.
+// M16 delta: the planner pane became the CONDUCTOR — the tab is "Conductor" and launching is explicit:
+// [Fresh session] (always available) beside [Resume conductor] (disabled here — a throwaway userData has no
+// recorded, persisted conductor session, which itself exercises the resume-guard's cockpit face).
 import { describe, it, expect } from "vitest";
 import type { Page } from "playwright-core";
 import { writeFileSync, mkdirSync, readdirSync } from "node:fs";
@@ -50,13 +52,18 @@ describe("plan", () => {
             // Pause BEFORE anything queues — approve kicks the scheduler; a queued+eligible task would auto-spawn.
             await pauseFleet(page);
 
-            // Open the planner via the real UI: project view → Planner tab → [Open the planner]. The planner
-            // PTY spawns idle; the test never writes to it. openPlanner creates .helm/plan/ + the watcher.
+            // Open the conductor via the real UI: project view → Conductor tab → [Fresh session]. The
+            // conductor PTY spawns idle; the test never writes to it. The tab's mount hydration + the
+            // launch both ensure .helm/plan/ + the watcher. Resume must be DISABLED (no recorded session
+            // in a throwaway userData — the resume-guard's face).
             await page.locator(".helm-sidebar").getByText("PlanProj").click();
-            await page.getByRole("tab", { name: "Planner" }).click();
-            await page.getByRole("button", { name: "Open the planner", exact: true }).click();
+            await page.getByRole("tab", { name: "Conductor" }).click();
+            const resume = page.getByRole("button", { name: "Resume conductor", exact: true });
+            await resume.waitFor({ state: "visible", timeout: 15_000 });
+            expect(await resume.isDisabled()).toBe(true);
+            await page.getByRole("button", { name: "Fresh session", exact: true }).click();
             await until(async () => (await stageNow(page)).includes("conversing"), { timeoutMs: 30_000, label: "stage = conversing" });
-            mkdirSync(planDir, { recursive: true }); // defensive — openPlanner already made it
+            mkdirSync(planDir, { recursive: true }); // defensive — conductor open/launch already made it
 
             // Stage flips to PRD when prd.md lands (the watcher fires; assert the stage tracker's active seg).
             writeFileSync(join(planDir, "prd.md"), "# Accept PRD\n\nA small 2-task feature with one dependency edge.\n");
