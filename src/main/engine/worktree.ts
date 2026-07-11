@@ -1,6 +1,6 @@
 // src/main/engine/worktree.ts
 import { join } from "node:path";
-import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { run, type ExecFn } from "./exec";
 import { createKeyedMutex } from "./mutex";
 import type { WorktreeInfo } from "./reconcile";
@@ -17,7 +17,7 @@ function sanitize(branch: string): string {
 }
 
 // The canonical on-disk location for a branch's worktree: <repoRoot>/<worktreeDir>/<sanitized-branch>.
-// Single source of truth shared by createWorktree (-b, fresh) and the M6 rebuild executor
+// Single source of truth shared by createWorktree (-B, create-or-reset) and the M6 rebuild executor
 // (addWorktreeForBranch, from a surviving branch) so both land at the same path.
 export function worktreePathFor(repoRoot: string, worktreeDir: string, branch: string): string {
     return join(repoRoot, worktreeDir, sanitize(branch));
@@ -47,10 +47,27 @@ export async function checkoutBranch(repoRoot: string, name: string, exec: ExecF
     await git(repoRoot, ["checkout", name], exec);
 }
 
+// The on-disk twin of `-B`: a prior partial cleanup can leave debris at the target path — usually an
+// unregistered junk dir (a node_modules `git worktree remove` couldn't fully delete), rarely a still-
+// registered worktree. Either fails `git worktree add` with "already exists", which blocked a requeued
+// task's merge stage. Clear both forms before adding. Best-effort on each step (`worktree add` itself
+// is the loud postcondition); assumes the caller holds the repoLock.
+async function preCleanWorktreePath(repoRoot: string, path: string, exec: ExecFn): Promise<void> {
+    if (!existsSync(path)) return;
+    await exec("git", ["-C", repoRoot, "worktree", "remove", "--force", path]); // the registered case
+    forceRemoveDir(path);                                                       // the junk case (long-path rmrf)
+    await exec("git", ["-C", repoRoot, "worktree", "prune"]);                   // reconcile the admin dir
+}
+
 export async function createWorktree(repoRoot: string, fromBranch: string, branch: string, worktreeDir: string, exec: ExecFn = run): Promise<string> {
     const path = worktreePathFor(repoRoot, worktreeDir, branch);
     await repoLock.withLock(repoRoot, async () => {
-        await git(repoRoot, ["worktree", "add", "-b", branch, path, fromBranch], exec);
+        // `-B` (create-or-reset), not `-b`: a stale throwaway branch left by a prior partial cleanup
+        // (e.g. `helm/merge-<id>`) must not fail worktree creation with "branch already exists" — that
+        // collision re-wedged a requeued task. For a fresh task branch the branch doesn't exist, so -B
+        // behaves exactly like -b.
+        await preCleanWorktreePath(repoRoot, path, exec);
+        await git(repoRoot, ["worktree", "add", "-B", branch, path, fromBranch], exec);
         await installTrunkGuard(repoRoot, path, exec);
     });
     return path;
@@ -84,10 +101,42 @@ export async function installTrunkGuard(repoRoot: string, worktreePath: string, 
     }
 }
 
-export async function removeWorktree(repoRoot: string, worktreePath: string, branch: string, keepBranch: boolean, exec: ExecFn = run): Promise<void> {
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// Long-path-aware, best-effort recursive delete. Windows deep node_modules paths exceed MAX_PATH (260);
+// the \\?\ prefix opts into the Win32 long-path API so rmSync can delete them. NEVER throws — a leftover
+// directory is cosmetic, and cleanup must never wedge the caller.
+export function forceRemoveDir(dir: string): void {
+    try {
+        const target = process.platform === "win32" && !dir.startsWith("\\\\?\\")
+            ? "\\\\?\\" + dir.replace(/\//g, "\\")
+            : dir;
+        rmSync(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    } catch { /* best-effort — a leftover throwaway dir never blocks the loop */ }
+}
+
+// Remove a worktree and (optionally) its branch. RESILIENT by contract: `git worktree remove` fails on
+// Windows when a deep node_modules path exceeds MAX_PATH ("Filename too long") or a lock is transiently
+// held, so retry, then fall back to pruning the registration + a long-path-aware rmrf. Best-effort and
+// MUST NOT throw: a failed removal here previously propagated up and wedged the task loop in "running"
+// (the merge had already advanced integration, but the throwaway cleanup threw in mergeStage's finally).
+export async function removeWorktree(
+    repoRoot: string, worktreePath: string, branch: string, keepBranch: boolean,
+    exec: ExecFn = run, rmDir: (dir: string) => void = forceRemoveDir,
+): Promise<void> {
     await repoLock.withLock(repoRoot, async () => {
-        await git(repoRoot, ["worktree", "remove", "--force", worktreePath], exec);
-        if (!keepBranch) await git(repoRoot, ["branch", "-D", branch], exec);
+        let removed = false;
+        for (let attempt = 0; attempt < 3 && !removed; attempt++) {
+            const r = await exec("git", ["-C", repoRoot, "worktree", "remove", "--force", worktreePath]);
+            removed = r.code === 0;
+            if (!removed && attempt < 2) await delay(200);
+        }
+        if (!removed) {
+            await exec("git", ["-C", repoRoot, "worktree", "prune"]); // drop the registration git couldn't
+            rmDir(worktreePath);                                      // force-delete the on-disk dir (long-path)
+            await exec("git", ["-C", repoRoot, "worktree", "prune"]); // reconcile the admin dir post-delete
+        }
+        if (!keepBranch) await exec("git", ["-C", repoRoot, "branch", "-D", branch]); // best-effort
     });
 }
 
@@ -126,6 +175,9 @@ export async function listBranches(repoRoot: string, exec: ExecFn = run): Promis
 // createWorktree). Used when a crash left the task's branch alive but its worktree gone.
 export async function addWorktreeForBranch(repoRoot: string, path: string, branch: string, exec: ExecFn = run): Promise<void> {
     await repoLock.withLock(repoRoot, async () => {
+        // A half-reaped worktree (dir survives, registration gone) is precisely the rebuild scenario —
+        // pre-clean the debris or the add fails "already exists" (same hazard as createWorktree).
+        await preCleanWorktreePath(repoRoot, path, exec);
         await git(repoRoot, ["worktree", "add", path, branch], exec);
         await installTrunkGuard(repoRoot, path, exec); // the rebuilt worktree gets the same guard as a fresh one
     });

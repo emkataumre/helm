@@ -1,5 +1,5 @@
 // tests/engine/worktree.test.ts
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run, type ExecFn, type ExecResult } from "../../src/main/engine/exec";
@@ -168,6 +168,79 @@ it("M4: concurrent ensureBranch + createWorktree on a fresh repo don't race", as
             createWorktree(repo, "integration/ralph", `ralph/task-${n}`, ".helm/worktrees")));
         for (const wt of wts) expect(existsSync(wt)).toBe(true);
         await Promise.all(wts.map((wt, i) => removeWorktree(repo, wt, `ralph/task-${i + 1}`, false)));
+    } finally {
+        rmSync(repo, { recursive: true, force: true });
+    }
+});
+
+// Layer-2 robustness: `git worktree remove` fails on Windows when a deep node_modules path exceeds
+// MAX_PATH ("Filename too long"). removeWorktree must retry, then prune + long-path force-remove, and
+// NEVER throw — a cleanup failure here previously wedged the whole task loop in "running".
+it("HARDENING: removeWorktree retries a failing `worktree remove`, then prunes + force-removes, and never throws", async () => {
+    const argv: string[][] = [];
+    let removeAttempts = 0;
+    const fakeExec: ExecFn = async (_cmd, args = []) => {
+        argv.push(args);
+        if (args.includes("remove")) { removeAttempts++; return { code: 1, stdout: "", stderr: "fatal: Filename too long", timedOut: false }; }
+        return ok("");
+    };
+    let removedDir = "";
+    const rmDir = (dir: string) => { removedDir = dir; };
+    await expect(removeWorktree("/repo", "/repo/.helm/worktrees/x", "helm/merge-1", false, fakeExec, rmDir)).resolves.toBeUndefined();
+    expect(removeAttempts).toBe(3);                     // retried the git remove before falling back
+    expect(removedDir).toBe("/repo/.helm/worktrees/x"); // fell back to the long-path force-remove
+    const flat = argv.map((a) => a.join(" "));
+    expect(flat.some((c) => c.includes("worktree prune"))).toBe(true);
+    expect(flat.some((c) => c.includes("branch -D helm/merge-1"))).toBe(true);
+});
+
+// A stale throwaway branch (left by a prior partial cleanup) must not block a fresh throwaway worktree:
+// createWorktree uses `-B` (create-or-reset), so `git worktree add` never fails with "branch already exists".
+it("HARDENING: createWorktree force-recreates a stale throwaway branch (no 'already exists' failure)", async () => {
+    const repo = await tempRepo();
+    try {
+        await ensureBranch(repo, "integration/ralph", "main");
+        await run("git", ["-C", repo, "branch", "helm/merge-1", "integration/ralph"]); // stale leftover
+        const wt = await createWorktree(repo, "integration/ralph", "helm/merge-1", ".helm/worktrees");
+        expect(existsSync(wt)).toBe(true);
+        await removeWorktree(repo, wt, "helm/merge-1", false);
+    } finally {
+        rmSync(repo, { recursive: true, force: true });
+    }
+});
+
+// The on-disk twin of the stale-branch case: a prior partial cleanup can leave a non-empty JUNK dir
+// (unregistered, no .git — e.g. a node_modules `git worktree remove` couldn't delete) at the target
+// path, which fails `git worktree add` with "already exists". Both creators must pre-clean the debris —
+// this exact collision wedged a requeued task's merge stage (equilibrium, 2026-07-10).
+it("HARDENING: createWorktree pre-cleans a non-empty junk dir at the target path (no 'already exists' failure)", async () => {
+    const repo = await tempRepo();
+    try {
+        await ensureBranch(repo, "integration/ralph", "main");
+        const path = worktreePathFor(repo, ".helm/worktrees", "helm/merge-1");
+        mkdirSync(join(path, "node_modules"), { recursive: true });     // the debris
+        writeFileSync(join(path, "node_modules", "junk.js"), "x");
+        const wt = await createWorktree(repo, "integration/ralph", "helm/merge-1", ".helm/worktrees");
+        expect(wt).toBe(path);
+        expect(existsSync(join(wt, ".git"))).toBe(true);                // a real worktree now
+        expect(existsSync(join(wt, "node_modules"))).toBe(false);       // debris gone, fresh checkout
+        await removeWorktree(repo, wt, "helm/merge-1", false);
+    } finally {
+        rmSync(repo, { recursive: true, force: true });
+    }
+});
+
+it("HARDENING: addWorktreeForBranch (the rebuild path) pre-cleans a non-empty junk dir at the target path", async () => {
+    const repo = await tempRepo();
+    try {
+        await ensureBranch(repo, "ralph/task-1", "main");
+        const path = worktreePathFor(repo, ".helm/worktrees", "ralph/task-1");
+        mkdirSync(join(path, "node_modules"), { recursive: true });     // half-reaped worktree: dir survives, registration gone
+        writeFileSync(join(path, "node_modules", "junk.js"), "x");
+        await addWorktreeForBranch(repo, path, "ralph/task-1");
+        expect(existsSync(join(path, ".git"))).toBe(true);
+        expect(existsSync(join(path, "node_modules"))).toBe(false);
+        await removeWorktree(repo, path, "ralph/task-1", false);
     } finally {
         rmSync(repo, { recursive: true, force: true });
     }
