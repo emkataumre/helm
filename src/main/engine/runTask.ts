@@ -1,8 +1,8 @@
 // src/main/engine/runTask.ts
-import type { Project, Task, TaskStatus, IterationVerdict, SnapshotEvent, TokenTotals } from "../../shared/types";
+import type { Project, Task, TaskStatus, IterationVerdict, SnapshotEvent, TokenTotals, FailureKind, FailureNote } from "../../shared/types";
 import type { LoopConfig } from "./loopConfig";
 import type { MergeStageResult } from "./mergeStage";
-import { buildGoalPrompt, buildInstructions, buildTaskDirective, seedProgress } from "./prompt";
+import { buildGoalPrompt, buildInstructions, buildTaskDirective, seedProgress, type PriorFailure } from "./prompt";
 
 // Re-export so the reducer, the loop, and the M2 verify slice (which imports it from here) share
 // the single definition now living in shared/types.ts.
@@ -29,7 +29,9 @@ export interface RunTaskDeps {
     // tip re-check). The real wiring (ipc.ts) wraps this in the project's merge mutex; the loop is
     // mutex-agnostic. squashMergeInto/diffStat stay available as merge-stage building blocks.
     mergeStage: (project: Project, task: Task, taskBranch: string) => Promise<MergeStageResult>;
-    setStatus: (taskId: string, status: TaskStatus, extra?: { branchName?: string; worktreePath?: string; diffstat?: string; failureReason?: string | null }) => void;
+    // M17: a needs-human write carries `failure` — the structured {kind, iterationIndex} note the DB
+    // chokepoint appends to the durable failure ledger (absent → the chokepoint records kind 'unknown').
+    setStatus: (taskId: string, status: TaskStatus, extra?: { branchName?: string; worktreePath?: string; diffstat?: string; failureReason?: string | null; failure?: FailureNote }) => void;
     addIteration: (taskId: string, index: number) => { id: string };
     finishIteration: (id: string, patch: { gateVerdict: "green" | "failed" | "hang"; outputTail: string; commitSha?: string | null; sessionId?: string | null; inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; costUsd?: number | null; durationMs?: number | null }) => void;
     emit?: (e: SnapshotEvent) => void; // feeds the live EngineSnapshot; absent → no-op (e.g. the M2 slice)
@@ -50,6 +52,10 @@ export interface RunTaskDeps {
     // M13 jail reap: remove the per-task container + volume + bare exchange on a TERMINAL teardown
     // (merged/abandoned — where the worktree is also removed). Absent ⇒ host mode / nothing to reap.
     reapJail?: (taskId: string) => Promise<void>;
+    // M18: an in-place merge-loss recycle never writes needs-human, so the DB chokepoint's ledger
+    // capture can't see it — this hook keeps recycled losses ledger-visible (the edge wires it to a
+    // pre-stamped 'recycled' insert). OPTIONAL: absent (existing fakes, M2 slice) ⇒ no-op.
+    recordRecycled?: (taskId: string, reason: string, note: FailureNote) => void;
     log: (msg: string) => void;
 }
 
@@ -73,7 +79,7 @@ const tail = (s: string): string => (s.length > TAIL ? `…(truncated)\n${s.slic
 // Layer A (check) then Layer B (acceptance). Green requires agent-ok AND check AND acceptance.
 export async function runIteration(
     project: Project, task: Task,
-    ctx: { index: number; worktreePath: string; branch: string; priorFailure?: string },
+    ctx: { index: number; worktreePath: string; branch: string; priorFailure?: PriorFailure },
     config: LoopConfig, d: RunTaskDeps,
 ): Promise<IterationOutcome> {
     const prompt = buildGoalPrompt(project, task, ctx.priorFailure);
@@ -150,7 +156,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
             worktreePath = await d.createWorktree(project.repoPath, project.integrationBranch, branch, project.worktreeDir);
         } catch (e) {
             const reason = `worktree setup failed: ${e instanceof Error ? e.message : String(e)}`;
-            d.setStatus(task.id, "needs-human", { failureReason: reason });
+            d.setStatus(task.id, "needs-human", { failureReason: reason, failure: { kind: "worktree-setup", iterationIndex: null } });
             d.emit?.({ type: "status", status: "needs-human", terminalReason: reason });
             d.log(`task ${task.id} needs-human: ${reason}`);
             return "needs-human";
@@ -162,14 +168,22 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     // handed-off (it's in use for drop-in — reaped later by Abandon or a green Verify-&-merge); REMOVE it
     // (and delete its branch) for merged/abandoned. Deriving removal from the status keeps the retention
     // rule in one place; keepBranch only matters on the removal path.
-    const terminate = async (status: TaskStatus, reason: string | undefined, keepBranch: boolean, diffstat?: string): Promise<TaskStatus> => {
-        const extra: { diffstat?: string; failureReason?: string | null } = {};
-        if (diffstat !== undefined) extra.diffstat = diffstat;
+    // M17: the most recent COMPLETED iteration's DB index (null before any) — the locus terminate stamps
+    // into each ledger entry. On resume the prior run's last iteration is startIndex - 1; walls that fire
+    // between iterations (cost cap, iteration cap) thereby name the last iteration that actually ran.
+    let lastIndex: number | null = resume && resume.startIndex > 0 ? resume.startIndex - 1 : null;
+
+    const terminate = async (status: TaskStatus, reason: string | undefined, keepBranch: boolean, opts?: { diffstat?: string; kind?: FailureKind }): Promise<TaskStatus> => {
+        const extra: { diffstat?: string; failureReason?: string | null; failure?: FailureNote } = {};
+        if (opts?.diffstat !== undefined) extra.diffstat = opts.diffstat;
         if (reason !== undefined) extra.failureReason = reason;
         // Clear any stale failureReason on a terminal SUCCESS: a task that was needs-human (reason set),
         // then resumed to a green merge (or was abandoned), must not keep its old red reason on the card.
         // DB-authoritative — the merged card reflects the final DB row, not a leftover.
         if (status === "merged" || status === "abandoned") extra.failureReason = null;
+        // M17: every needs-human exit carries its structured kind into the ledger ('unknown' if a future
+        // call site forgets — the index still lands either way).
+        if (status === "needs-human") extra.failure = { kind: opts?.kind ?? "unknown", iterationIndex: lastIndex };
         d.setStatus(task.id, status, extra);
         d.emit?.({ type: "status", status, terminalReason: reason });
         if (status === "merged" || status === "abandoned") {
@@ -185,7 +199,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
 
     // Layer B is mandatory; an empty acceptance list can never prove "done".
     if (task.acceptance.length === 0) {
-        return terminate("needs-human", "no acceptance commands (Layer B is mandatory)", true);
+        return terminate("needs-human", "no acceptance commands (Layer B is mandatory)", true, { kind: "no-acceptance" });
     }
 
     // Fresh start only: seed .ralph and install deps. On resume the worktree already has the .ralph
@@ -200,7 +214,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         // empty-acceptance guard. NULL setupCommand → skip.
         if (project.setupCommand) {
             const setup = await d.runSetup(worktreePath, project.setupCommand, config.checkTimeoutMs);
-            if (!setup.ok) return terminate("needs-human", `setup command failed:\n${tail(setup.output)}`, true);
+            if (!setup.ok) return terminate("needs-human", `setup command failed:\n${tail(setup.output)}`, true, { kind: "setup-command" });
         }
     }
 
@@ -208,7 +222,12 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     // after a restart reuses it). Host mode → no-op.
     if (d.jailSync) await d.jailSync.prepare();
 
-    let priorFailure: string | undefined;
+    // M18 informed resume: the parked failureReason persists through drop-in → handed-off → resume
+    // (only merged/abandoned null it), so a resumed run's first iteration learns why it was parked.
+    // Resume-only by construction: a fresh start ignores any stale reason; a clean drop-in (never
+    // failed → reason null) seeds nothing.
+    let priorFailure: PriorFailure | undefined =
+        resume && task.failureReason ? { framing: "parked", body: task.failureReason } : undefined;
     let lastGateSummary = ""; // one-liner from the most recent failing gate — folded into the terminal reason
     let prevSha = await d.headSha(worktreePath); // baseSha — the worktree tip before any iteration
     let noProgress = 0;
@@ -237,13 +256,17 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     // still merges below.
     let spend = 0;
 
+    // M18: merge-stage losses recycled in-place this RUN (a local, like the split counters above — a
+    // human resume grants a fresh recycle budget along with the fresh iteration/cost budgets).
+    let recyclesUsed = 0;
+
     for (let i = 0; i < config.iterationCap; i++) {
         // Top-of-loop guard: a drop-in that lands between iterations bails before spawning the next one.
         if (d.signal?.aborted) return handOff();
         // Cost-cap breaker: once this run's spend reaches the ceiling, stop spawning (BEFORE addIteration/spawn).
         // A 0 cap is honored — spend (0) >= cap (0) on the first pass, so a 0-cap project spawns nothing at all.
         if (spend >= config.costCapUsd) {
-            return terminate("needs-human", `cost cap reached ($${spend.toFixed(2)} of $${config.costCapUsd} cap)`, true);
+            return terminate("needs-human", `cost cap reached ($${spend.toFixed(2)} of $${config.costCapUsd} cap)`, true, { kind: "cost-cap" });
         }
         const dbIndex = startIndex + i;
         d.emit?.({ type: "iteration-start", index: dbIndex });
@@ -257,6 +280,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         });
         // Accumulate this iteration's spend for the next top-of-loop cost-cap check (null/absent → 0).
         spend += o.usage.costUsd ?? 0;
+        lastIndex = dbIndex; // this iteration COMPLETED — it's the locus any wall below stamps into the ledger
         d.emit?.({ type: "iteration-end", index: dbIndex, verdict: o.verdict, commitSha: o.commitSha, tail: o.gateOutput });
 
         // Post-iteration guard: a drop-in killed the in-flight session DURING this iteration. runIteration
@@ -268,12 +292,35 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
             // Hand landing to the isolated merge stage: it rebases on the fresh integration tip and
             // re-checks in a throwaway worktree, advancing integration only on a green re-check. A
             // failed re-check (or conflict) loses the race → needs-human (worktree kept for drop-in).
-            const r = await d.mergeStage(project, task, branch);
-            if (r.outcome === "merged") return terminate("merged", undefined, false, r.diffstat);
-            return terminate("needs-human", r.reason, true);
+            let r: MergeStageResult;
+            try {
+                r = await d.mergeStage(project, task, branch);
+            } catch (e) {
+                // A THROWN merge stage (a git failure creating/removing the throwaway worktree, etc.) must
+                // never leave the task wedged in "running" — an unhandled rejection here did exactly that.
+                // Land it visibly in needs-human (worktree retained for drop-in), like every other wall.
+                return terminate("needs-human", `merge stage threw: ${e instanceof Error ? e.message : String(e)}`, true, { kind: "merge-error" });
+            }
+            if (r.outcome === "merged") return terminate("merged", undefined, false, { diffstat: r.diffstat });
+            // M18: an agent-fixable loss (textual conflict, or work that no longer composes with the
+            // moved tip) recycles in-place while budget remains — the next iteration gets the cause AND
+            // a /goal condition extended to demonstrate the integration merge (the no-op trap). Merge-
+            // setup failures (config faults) and exhausted budgets park exactly as before. The recycle
+            // never writes a status: the card stays "running"; the feed event is the visibility.
+            if ((r.kind === "merge-conflict" || r.kind === "recheck-failed")
+                && recyclesUsed < config.mergeRecycleK && i + 1 < config.iterationCap) {
+                recyclesUsed += 1;
+                priorFailure = { framing: "merge-loss", kind: r.kind, body: r.reason };
+                lastGateSummary = r.kind === "merge-conflict" ? "merge conflict (auto-recycled)" : "merge re-check failed (auto-recycled)";
+                d.recordRecycled?.(task.id, r.reason, { kind: r.kind, iterationIndex: lastIndex });
+                d.emit?.({ type: "gate", index: dbIndex, label: `merge: lost race — recycled (${r.kind})` });
+                d.log(`task ${task.id} merge loss recycled (${r.kind}), ${config.mergeRecycleK - recyclesUsed} recycle(s) left`);
+                continue;
+            }
+            return terminate("needs-human", r.reason, true, { kind: r.kind });
         }
 
-        priorFailure = o.gateOutput;
+        priorFailure = { framing: "gate", body: o.gateOutput };
         lastGateSummary = o.gateSummary;
 
         // M12 deny fail-fast: update the per-key consecutive-iteration deny streak. A key NOT reported this
@@ -288,7 +335,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
             const n = (denyStreak.get(key) ?? 0) + 1;
             denyStreak.set(key, n);
             if (n >= config.denyWallK) {
-                return terminate("needs-human", `deny wall: "${key}" denied on ${n} consecutive iterations`, true);
+                return terminate("needs-human", `deny wall: "${key}" denied on ${n} consecutive iterations`, true, { kind: "deny-wall" });
             }
         }
 
@@ -298,8 +345,8 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
             // Courtesy: if the latest iteration was also blocked by a wall (that just hadn't reached denyWallK
             // yet), fold the denied command(s) into the no-progress reason so the card names the real blocker.
             const denyNote = denied.length ? ` — denied: ${denied.join(", ")}` : "";
-            return terminate("needs-human", `no progress for ${config.noProgressK} iterations${lastGateSummary ? ` — last gate: ${lastGateSummary}` : ""}${denyNote}`, true);
+            return terminate("needs-human", `no progress for ${config.noProgressK} iterations${lastGateSummary ? ` — last gate: ${lastGateSummary}` : ""}${denyNote}`, true, { kind: "no-progress" });
         }
     }
-    return terminate("needs-human", `iteration cap reached (${config.iterationCap})${lastGateSummary ? ` — last gate: ${lastGateSummary}` : ""}`, true);
+    return terminate("needs-human", `iteration cap reached (${config.iterationCap})${lastGateSummary ? ` — last gate: ${lastGateSummary}` : ""}`, true, { kind: "iteration-cap" });
 }

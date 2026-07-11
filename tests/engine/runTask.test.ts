@@ -170,13 +170,100 @@ describe("runTaskLoop — bounds & retry", () => {
         let removeCalled = false;
         let reason = "";
         const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, scriptedDeps([{}], {
-            mergeStage: async () => ({ outcome: "needs-human", reason: "re-check failed after rebase on integration tip" }),
+            mergeStage: async () => ({ outcome: "needs-human", reason: "re-check failed after rebase on integration tip", kind: "recheck-failed" }),
             removeWorktree: async () => { removeCalled = true; },
             setStatus: (_i, _s, extra) => { if (extra?.failureReason) reason = extra.failureReason; },
         }));
         expect(status).toBe("needs-human");
         expect(removeCalled).toBe(false); // M5: needs-human RETAINS the worktree for drop-in (not removed)
         expect(reason).toContain("re-check failed after rebase on integration tip");
+    });
+
+    it("PROBE: a THROWN mergeStage terminates needs-human, never wedged in running (Windows cleanup crash)", async () => {
+        // A merge stage that REJECTS (e.g. git worktree add/remove failed) must be caught and landed in
+        // needs-human — an unhandled rejection here previously stranded the task in "running" forever.
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, scriptedDeps([{}], {
+            mergeStage: async () => { throw new Error("fatal: Filename too long"); },
+        }));
+        expect(status).toBe("needs-human");
+    });
+});
+
+// M18: a merge-stage loss whose cause is agent-fixable (merge-conflict / recheck-failed) no longer
+// parks at needs-human — the loop continues in-place with the cause injected into the next prompt,
+// bounded by mergeRecycleK + the remaining iteration budget. Everything else still parks immediately.
+describe("runTaskLoop — merge-loss auto-recycle (M18)", () => {
+    it("recycles a merge-conflict loss: continues in-place with the cause injected, merges on the retry", async () => {
+        const prompts: string[] = [];
+        const recycled: Array<{ reason: string; kind: string; iterationIndex: number | null }> = [];
+        const statuses: string[] = [];
+        const gateLabels: string[] = [];
+        let losses = 0;
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            spawnAgent: async (_wt, prompt) => { prompts.push(prompt); return { ok: true, output: "ok", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+            mergeStage: async () => (losses++ === 0
+                ? { outcome: "needs-human", reason: "merge conflict", kind: "merge-conflict" }
+                : { outcome: "merged", diffstat: "+1 -0" }),
+            recordRecycled: (_id, reason, note) => recycled.push({ reason, kind: note.kind, iterationIndex: note.iterationIndex }),
+            setStatus: (_id, s) => statuses.push(s),
+            emit: (e) => { if (e.type === "gate") gateLabels.push(e.label); },
+        }));
+        expect(status).toBe("merged");
+        expect(statuses).not.toContain("needs-human");              // the loss never parked the task
+        expect(prompts).toHaveLength(2);                            // the loop retried in-place
+        expect(prompts[1]).toContain("lost the merge race");        // …with the merge-loss framing
+        expect(prompts[1]).toContain("git merge integration/ralph"); // …and the condition extension
+        expect(recycled).toEqual([{ reason: "merge conflict", kind: "merge-conflict", iterationIndex: 0 }]); // ledger-visible
+        expect(gateLabels.some((l) => l.includes("recycled"))).toBe(true); // cockpit-visible feed event
+    });
+
+    it("PROBE: loss #mergeRecycleK+1 parks at needs-human with the real kind and reason (bounded)", async () => {
+        let mergeAttempts = 0;
+        let parked: { reason?: string | null; kind?: string } = {};
+        const status = await runTaskLoop(project, task, { ...DEFAULT_LOOP_CONFIG, mergeRecycleK: 2 }, deps({
+            mergeStage: async () => { mergeAttempts += 1; return { outcome: "needs-human", reason: "merge conflict", kind: "merge-conflict" }; },
+            setStatus: (_id, s, extra) => { if (s === "needs-human") parked = { reason: extra?.failureReason, kind: extra?.failure?.kind }; },
+        }));
+        expect(status).toBe("needs-human");
+        expect(mergeAttempts).toBe(3);                 // 2 recycles + the parking loss
+        expect(parked.reason).toBe("merge conflict");  // the terminal reason is the real merge cause
+        expect(parked.kind).toBe("merge-conflict");    // the ledger kind stays faithful
+    });
+
+    it("PROBE: a non-recyclable merge-setup loss parks immediately — zero recycles", async () => {
+        let recycles = 0;
+        let mergeAttempts = 0;
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            mergeStage: async () => { mergeAttempts += 1; return { outcome: "needs-human", reason: "merge setup failed:\nnpm ci exploded", kind: "setup-command" }; },
+            recordRecycled: () => { recycles += 1; },
+        }));
+        expect(status).toBe("needs-human");
+        expect(mergeAttempts).toBe(1); // config faults are not the agent's to fix
+        expect(recycles).toBe(0);
+    });
+
+    it("a loss on the LAST iteration parks (no budget to fix it) even with recycle budget left", async () => {
+        let recycles = 0;
+        const status = await runTaskLoop(project, task, { ...DEFAULT_LOOP_CONFIG, iterationCap: 1 }, deps({
+            mergeStage: async () => ({ outcome: "needs-human", reason: "merge conflict", kind: "merge-conflict" }),
+            recordRecycled: () => { recycles += 1; },
+        }));
+        expect(status).toBe("needs-human");
+        expect(recycles).toBe(0); // recycling into a spent budget would be a silent no-op
+    });
+
+    it("a recheck-failed loss recycles with the composes-framing and the red evidence in the prompt", async () => {
+        const prompts: string[] = [];
+        let losses = 0;
+        const status = await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            spawnAgent: async (_wt, prompt) => { prompts.push(prompt); return { ok: true, output: "ok", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+            mergeStage: async () => (losses++ === 0
+                ? { outcome: "needs-human", reason: "re-check failed after rebase on integration tip — check red:\nassert(false)", kind: "recheck-failed" }
+                : { outcome: "merged", diffstat: "+1 -0" }),
+        }));
+        expect(status).toBe("merged");
+        expect(prompts[1]).toContain("no longer composes");
+        expect(prompts[1]).toContain("assert(false)");
     });
 });
 
@@ -374,6 +461,33 @@ describe("runTaskLoop — resume mode (M5)", () => {
             { addIteration: (_t, idx) => { indices.push(idx); return { id: `it${idx}` }; } },
         ), { worktreePath: "/wt", branch: "ralph/task-abc", startIndex: 3 });
         expect(indices).toEqual([3, 4, 5]); // continues from the 3 prior iterations
+    });
+
+    // M18 informed resume: the parked reason survives drop-in → handed-off → resume (only merged/
+    // abandoned null it), so the resumed run's FIRST prompt carries it — the agent learns why it parked.
+    it("seeds the first resumed prompt with the parked failureReason (parked framing)", async () => {
+        const prompts: string[] = [];
+        await runTaskLoop(project, { ...task, failureReason: "deny wall: \"Bash(git push:*)\" denied on 3 consecutive iterations" }, DEFAULT_LOOP_CONFIG, deps({
+            spawnAgent: async (_wt, prompt) => { prompts.push(prompt); return { ok: true, output: "ok", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+        }), resume);
+        expect(prompts[0]).toContain("previously parked");
+        expect(prompts[0]).toContain("deny wall");
+    });
+
+    it("a clean resume (no failureReason — plain drop-in) seeds nothing", async () => {
+        const prompts: string[] = [];
+        await runTaskLoop(project, task, DEFAULT_LOOP_CONFIG, deps({
+            spawnAgent: async (_wt, prompt) => { prompts.push(prompt); return { ok: true, output: "ok", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+        }), resume);
+        expect(prompts[0]).not.toContain("previously parked");
+    });
+
+    it("a FRESH start ignores a stale failureReason (parked framing is resume-only)", async () => {
+        const prompts: string[] = [];
+        await runTaskLoop(project, { ...task, failureReason: "stale reason" }, DEFAULT_LOOP_CONFIG, deps({
+            spawnAgent: async (_wt, prompt) => { prompts.push(prompt); return { ok: true, output: "ok", sessionId: "s", stalled: false, usage: ZERO_USAGE, durationMs: null }; },
+        }));
+        expect(prompts[0]).not.toContain("previously parked");
     });
 
     it("gets a FRESH budget: runs up to iterationCap MORE iterations regardless of prior count", async () => {

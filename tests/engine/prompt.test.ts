@@ -19,7 +19,7 @@ describe("buildGoalPrompt", () => {
     });
 
     it("injects only the most recent prior-gate failure when retrying", () => {
-        const p = buildGoalPrompt(project, task, "Error: 1 failing test\nassert(false)");
+        const p = buildGoalPrompt(project, task, { framing: "gate", body: "Error: 1 failing test\nassert(false)" });
         expect(p).toContain("previous iteration's gate failed");
         expect(p).toContain("1 failing test");
     });
@@ -29,7 +29,7 @@ describe("buildGoalPrompt", () => {
     // and every retry became a synthetic zero-work turn. The prompt must NEVER exceed the budget.
     it("stays under the CLI's 4000-char /goal cap even with a huge intent and a full retry tail", () => {
         const huge = { ...task, intent: "x".repeat(6000) };
-        const p = buildGoalPrompt(project, huge, "e".repeat(1500));
+        const p = buildGoalPrompt(project, huge, { framing: "gate", body: "e".repeat(1500) });
         expect(p.length).toBeLessThanOrEqual(4000);
         expect(p).toContain(".ralph/TASK.md");                     // the directive still reachable
         expect(p).toContain("previous iteration's gate failed");   // the evidence survived intact
@@ -37,10 +37,58 @@ describe("buildGoalPrompt", () => {
     });
 
     it("clamps oversized retry evidence to the budget, keeping the tail (most recent output)", () => {
-        const p = buildGoalPrompt(project, task, "e".repeat(5000));
+        const p = buildGoalPrompt(project, task, { framing: "gate", body: "e".repeat(5000) });
         expect(p.length).toBeLessThanOrEqual(4000);
         expect(p).toContain("…(truncated)");
         expect(p.endsWith("e".repeat(50) + "\n```\nFix this before anything else.")).toBe(true); // tail kept, head dropped
+    });
+
+    // M18 merge-loss framing: a merge-loser's gates STILL PASS in its worktree, so the /goal condition
+    // itself must demand the integration merge be demonstrated — otherwise a lazy agent re-runs the
+    // gates, exits with no work, and burns a mutex-serialized merge round (the no-op trap).
+    it("merge-loss: the /goal CONDITION itself demands the integration merge, not just the guidance", () => {
+        const p = buildGoalPrompt(project, task, { framing: "merge-loss", kind: "merge-conflict", body: "merge conflict" });
+        const conditionLine = p.split("\n")[0]; // "/goal <condition>"
+        expect(conditionLine).toContain("git merge integration/ralph");
+        expect(conditionLine).toContain("npm test"); // the original gates stay in the condition too
+    });
+
+    it("merge-loss (conflict): guidance names the conflict and tells the agent to merge + resolve", () => {
+        const p = buildGoalPrompt(project, task, { framing: "merge-loss", kind: "merge-conflict", body: "merge conflict" });
+        expect(p).toContain("lost the merge race");
+        expect(p.toLowerCase()).toContain("resolve");
+        expect(p).toContain("git merge integration/ralph");
+        expect(p).not.toContain("previous iteration's gate failed"); // not the gate framing
+    });
+
+    it("merge-loss (recheck-failed): guidance says integration advanced and carries the red output", () => {
+        const p = buildGoalPrompt(project, task, { framing: "merge-loss", kind: "recheck-failed", body: "re-check failed after rebase on integration tip — check red:\nassert(false)" });
+        expect(p.toLowerCase()).toContain("no longer composes");
+        expect(p).toContain("assert(false)"); // the merge stage's evidence rides along
+        expect(p).toContain("git merge integration/ralph");
+    });
+
+    it("merge-loss: clamps oversized evidence and never exceeds the /goal cap", () => {
+        const p = buildGoalPrompt(project, task, { framing: "merge-loss", kind: "recheck-failed", body: "e".repeat(5000) });
+        expect(p.length).toBeLessThanOrEqual(4000);
+        expect(p).toContain("…(truncated)");
+        expect(p).toContain("git merge integration/ralph"); // the condition extension is never clamped away
+    });
+
+    // M18 parked framing: a resumed run's first iteration learns why the task was parked.
+    it("parked: carries the parked reason and tells the agent a human has intervened", () => {
+        const p = buildGoalPrompt(project, task, { framing: "parked", body: "deny wall: \"Bash(git push:*)\" denied on 3 consecutive iterations" });
+        expect(p).toContain("previously parked");
+        expect(p).toContain("deny wall");
+        expect(p.toLowerCase()).toContain("human");
+        expect(p.split("\n")[0]).not.toContain("git merge"); // parked does NOT extend the condition
+    });
+
+    it("parked: clamps oversized reasons under the /goal cap", () => {
+        const p = buildGoalPrompt(project, task, { framing: "parked", body: "e".repeat(5000) });
+        expect(p.length).toBeLessThanOrEqual(4000);
+        expect(p).toContain("…(truncated)");
+        expect(p).toContain("previously parked");
     });
 
     it("adds the no-out-of-scope clause to the /goal condition when scopeHint is set", () => {

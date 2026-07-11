@@ -9,6 +9,7 @@ import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject, deleteProject, recordConductorSession } from "./db/projects";
 import { insertPlan, listPlans, getPlan } from "./db/plans";
 import { insertTask, insertPlanTask, listTasks, getTask, updateTask, setDependsOn } from "./db/tasks";
+import { listFailures, recordRecycledFailure, summarizeFailures } from "./db/failures";
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "./engine/worktree";
 import { reconcile, isUnderWorktreeDir } from "./engine/reconcile";
@@ -249,6 +250,10 @@ export function registerIpc(
                 return scheduler.mutexFor(p.id).withLock(() => runMergeStage(p, t, taskBranch, buildMergeDeps(t.id, config)));
             },
             setStatus: (id, status, extra) => { updateTask(db, id, { status, ...extra }); notify(); },
+            // M18: an in-place merge-loss recycle never writes a status, so the updateTask chokepoint
+            // can't ledger it — this hook keeps recycled losses visible in `helm failures` (pre-stamped
+            // 'recycled', so they never read as open/waiting-on-a-human).
+            recordRecycled: (id, reason, note) => recordRecycledFailure(db, id, reason, note),
             addIteration: (tid, idx) => addIteration(db, tid, idx),
             // notify() after each finish: a completed iteration records a sessionId, flipping the task's
             // `resumable` true mid-run → the board re-fetches and enables Drop-in without a status change.
@@ -682,6 +687,25 @@ export function registerIpc(
                 },
             };
         },
+        // M17: the failure-ledger read (read-only — the 9th blessed verb mutates nothing). Scopes to the
+        // selected project like every other scoped read; --all widens to the fleet. Returns the by-kind
+        // rollup + the recent rows (task titles joined in) — deeper slicing is the conductor's job.
+        failures: (q) => {
+            const scoped = resolveProjectSel(q);
+            if (q.project && !scoped) throw new Error(`unknown project "${q.project}"`);
+            if (!q.all && !scoped) throw new Error("no project matched — pass --project <name>, run inside a registered repo, or pass --all");
+            const filter = { projectId: q.all ? undefined : scoped!.id, open: q.open, kind: q.kind };
+            const titles = new Map(listTasks(db).map((t) => [t.id, t.title]));
+            return {
+                project: q.all ? null : scoped!.name,
+                summary: summarizeFailures(db, filter),
+                recent: listFailures(db, filter).map((f) => ({
+                    kind: f.kind, taskId: f.taskId, task: titles.get(f.taskId) ?? "(deleted task)",
+                    iteration: f.iterationIndex, reason: f.reason, createdAt: f.createdAt,
+                    resolution: f.resolution, resolvedAt: f.resolvedAt,
+                })),
+            };
+        },
         pause: () => setSchedulerPaused(true),
         resume: () => setSchedulerPaused(false),
         abandonTask,
@@ -740,7 +764,9 @@ export function registerIpc(
                 }
                 case "to-needs-human": {
                     closeOutDangling(action.taskId);
-                    updateTask(db, action.taskId, { status: "needs-human", failureReason: action.reason });
+                    // M17: the kind is stamped HERE (the apply site), not in the pure planner — every
+                    // to-needs-human reconcile action means worktree+branch both gone, nothing to resume.
+                    updateTask(db, action.taskId, { status: "needs-human", failureReason: action.reason, failure: { kind: "boot-unrecoverable", iterationIndex: null } });
                     break;
                 }
                 case "prune-worktree": {

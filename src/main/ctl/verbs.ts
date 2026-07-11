@@ -10,7 +10,7 @@
 // recording actions (invariants ctl-verbs-are-blessed + mutations-route-through-mutex).
 import type { CtlRequest, CtlResponse } from "./protocol";
 
-export const CTL_READ_VERBS = ["status", "task", "progress", "plan-status"] as const;
+export const CTL_READ_VERBS = ["status", "task", "progress", "plan-status", "failures"] as const;
 export const CTL_STEER_VERBS = ["pause", "resume", "abandon", "clear-deps"] as const;
 export const CTL_VERBS = [...CTL_READ_VERBS, ...CTL_STEER_VERBS] as const;
 export type CtlVerb = (typeof CTL_VERBS)[number];
@@ -22,6 +22,15 @@ export interface ProjectSelector {
     cwd?: string;
 }
 
+// M17 `helm failures` filters: defaults to the selected project's ledger (the read-verb scoping every
+// other scoped read uses); --open narrows to unresolved rows, --kind to one FailureKind, --all widens
+// past the project to the whole fleet. Deeper slicing stays conversational (the conductor's job).
+export interface FailureQuery extends ProjectSelector {
+    open?: boolean;
+    kind?: string;
+    all?: boolean;
+}
+
 // The shared actions, built in ipc.ts closing over db/scheduler/handback exactly like the ipc handlers:
 // pause/resume = the scheduler:setPaused body; abandonTask = the tasks:abandon body (mutex-wrapped
 // handback + jail reap); clearDeps = the tasks:setDependsOn body with []. Reads compose the same db/rail
@@ -31,6 +40,7 @@ export interface CtlActions {
     taskDetail(id: string): unknown;
     progressTail(id: string): unknown;
     planStatus(sel: ProjectSelector): unknown;
+    failures(q: FailureQuery): unknown;
     pause(): void | Promise<void>;
     resume(): void | Promise<void>;
     abandonTask(id: string): unknown | Promise<unknown>;
@@ -50,6 +60,7 @@ export function buildCtlVerbs(actions: CtlActions): Record<CtlVerb, CtlHandler> 
         "task": (r) => actions.taskDetail(id(r)),
         "progress": (r) => actions.progressTail(id(r)),
         "plan-status": (r) => actions.planStatus(sel(r)),
+        "failures": (r) => actions.failures({ ...sel(r), open: r.args.open === "true", kind: r.args.kind, all: r.args.all === "true" }),
         "pause": () => actions.pause(),
         "resume": () => actions.resume(),
         "abandon": (r) => actions.abandonTask(id(r)),

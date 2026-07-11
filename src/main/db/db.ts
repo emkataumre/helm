@@ -110,6 +110,22 @@ const STEPS: Array<(db: Db) => void> = [
     (db) => {
         db.exec(`ALTER TABLE projects ADD COLUMN conductorSessionId TEXT`);
     },
+    // Step 12 — M17 failure ledger: the durable, append-only history of terminal needs-human failures
+    // (tasks.failureReason is one mutable field — overwritten by the next failure, nulled on recovery;
+    // this table is what survives). Captured at the DB status-write chokepoint (tasks.updateTask): one
+    // row per needs-human write, all still-open rows stamped resolved/abandoned on the task's terminal
+    // outcome. Indexed on the two read paths: per-project listing + per-task resolution stamping.
+    (db) => {
+        db.exec(`
+            CREATE TABLE IF NOT EXISTS failures (
+                id TEXT PRIMARY KEY, taskId TEXT NOT NULL, projectId TEXT NOT NULL,
+                kind TEXT NOT NULL, reason TEXT NOT NULL, iterationIndex INTEGER,
+                createdAt INTEGER NOT NULL, resolvedAt INTEGER, resolution TEXT
+            );
+            CREATE INDEX IF NOT EXISTS failures_projectId ON failures(projectId);
+            CREATE INDEX IF NOT EXISTS failures_taskId ON failures(taskId);
+        `);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.

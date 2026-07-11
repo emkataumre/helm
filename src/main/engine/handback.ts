@@ -8,13 +8,13 @@
 // Pure DI (no Electron, no direct git) so they unit-test with fakes. The mutex wrap + fire-and-forget
 // live in ipc.ts (Task 7): verify-&-merge takes NO concurrency slot (drop-in freed it) — only the
 // project's merge mutex, so it can't violate the cap or corrupt integration.
-import type { Project, Task, TaskStatus } from "../../shared/types";
+import type { Project, Task, TaskStatus, FailureNote } from "../../shared/types";
 import type { MergeStageResult } from "./mergeStage";
 
 export interface HandbackDeps {
     commitAll: (repo: string, message: string) => Promise<void>;
     runMergeStage: (project: Project, task: Task, taskBranch: string) => Promise<MergeStageResult>;
-    setStatus: (taskId: string, status: TaskStatus, extra?: { diffstat?: string; failureReason?: string | null }) => void;
+    setStatus: (taskId: string, status: TaskStatus, extra?: { diffstat?: string; failureReason?: string | null; failure?: FailureNote }) => void;
     removeWorktree: (repo: string, path: string, branch: string, keepBranch: boolean) => Promise<void>;
 }
 
@@ -29,7 +29,9 @@ export async function verifyAndMerge(project: Project, task: Task, taskBranch: s
         d.setStatus(task.id, "merged", { diffstat: r.diffstat, failureReason: null });
         if (task.worktreePath) await d.removeWorktree(project.repoPath, task.worktreePath, taskBranch, false);
     } else {
-        d.setStatus(task.id, "needs-human", { failureReason: r.reason });
+        // M17: the merge stage's structured kind rides into the ledger; iterationIndex is null — this
+        // failure belongs to the human's hand-back, not to any loop iteration.
+        d.setStatus(task.id, "needs-human", { failureReason: r.reason, failure: { kind: r.kind, iterationIndex: null } });
         // Retain the worktree — the human can drop in again (or abandon it).
     }
     return r;

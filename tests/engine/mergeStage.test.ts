@@ -48,7 +48,7 @@ describe("runMergeStage", () => {
     it("PROBE: a merge conflict → needs-human, integration NOT advanced", async () => {
         const { deps, calls } = fakeDeps({ squashMergeInto: async () => ({ merged: false, conflict: true }) });
         const r = await runMergeStage(PROJECT, TASK, "ralph/task-abc", deps);
-        expect(r).toEqual({ outcome: "needs-human", reason: "merge conflict" });
+        expect(r).toEqual({ outcome: "needs-human", reason: "merge conflict", kind: "merge-conflict" });
         expect(calls).not.toContain("advanceBranch");
         expect(calls).toContain("removeWorktree"); // still cleaned up
     });
@@ -69,11 +69,50 @@ describe("runMergeStage", () => {
         expect(calls).not.toContain("advanceBranch");
     });
 
+    // OBSERVABILITY: the needs-human reason must carry the evidence, not a bare fixed string — a
+    // cold-cache test flake took two incidents to diagnose because the re-check discarded its output
+    // (and a timeout was indistinguishable from a red check). Prefix stays stable for existing matchers.
+    it("a red re-check carries the check output tail in the needs-human reason", async () => {
+        const { deps } = fakeDeps({ runCheck: async () => ({ green: false, timedOut: false, output: "Exceeded timeout of 5000 ms\nFAIL __tests__/result.test.tsx" }) });
+        const r = await runMergeStage(PROJECT, TASK, "ralph/task-abc", deps);
+        expect(r.outcome).toBe("needs-human");
+        if (r.outcome === "needs-human") {
+            expect(r.reason).toContain("re-check failed after rebase on integration tip");
+            expect(r.reason).toContain("FAIL __tests__/result.test.tsx"); // the evidence rides along
+        }
+    });
+
+    it("a timed-out re-check names the timeout — not indistinguishable from a red check", async () => {
+        const { deps } = fakeDeps({ runCheck: async () => ({ green: false, timedOut: true, output: "" }) });
+        const r = await runMergeStage(PROJECT, TASK, "ralph/task-abc", deps);
+        expect(r.outcome).toBe("needs-human");
+        if (r.outcome === "needs-human") expect(r.reason).toMatch(/timed out \(1000ms\)/);
+    });
+
+    it("a red acceptance names the failed command and carries its output tail", async () => {
+        const { deps } = fakeDeps({ runAcceptance: async () => ({ ok: false, failedCommand: "npm run e2e", output: "expected 3 bins, got 0" }) });
+        const r = await runMergeStage(PROJECT, TASK, "ralph/task-abc", deps);
+        expect(r.outcome).toBe("needs-human");
+        if (r.outcome === "needs-human") {
+            expect(r.reason).toContain("npm run e2e");
+            expect(r.reason).toContain("expected 3 bins, got 0");
+        }
+    });
+
     it("removes the throwaway worktree even when an injected dep throws (finally cleanup)", async () => {
         const { deps, calls } = fakeDeps({ runCheck: async () => { throw new Error("check exploded"); } });
         await expect(runMergeStage(PROJECT, TASK, "ralph/task-abc", deps)).rejects.toThrow("check exploded");
         expect(calls).toContain("removeWorktree"); // cleanup ran despite the throw
         expect(calls).not.toContain("advanceBranch");
+    });
+
+    it("HARDENING: a cleanup FAILURE does NOT wedge the stage — still returns merged (integration already advanced)", async () => {
+        // The wedge that stranded a task in "running": the merge advanced integration, then the throwaway
+        // removal threw ("Filename too long") in the finally, overriding the return and rejecting the stage.
+        const { deps, calls } = fakeDeps({ removeWorktree: async () => { throw new Error("fatal: Filename too long"); } });
+        const r = await runMergeStage(PROJECT, TASK, "ralph/task-abc", deps);
+        expect(r).toEqual({ outcome: "merged", diffstat: "+3 -1" }); // the cleanup throw is swallowed
+        expect(calls).toContain("advanceBranch");
     });
 
     it("runs setupCommand before the re-check when set, and skips it when NULL", async () => {

@@ -1,7 +1,8 @@
 // src/main/db/tasks.ts
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db";
-import type { Task, NewTaskInput } from "../../shared/types";
+import type { Task, NewTaskInput, FailureNote } from "../../shared/types";
+import { recordFailure, resolveFailures } from "./failures";
 
 interface Row extends Omit<Task, "acceptance" | "dependsOn"> { acceptance: string; dependsOn: string | null; }
 
@@ -68,11 +69,25 @@ export function listTasks(db: Db): Task[] {
     return (db.prepare("SELECT * FROM tasks ORDER BY createdAt DESC").all() as Row[]).map(toTask);
 }
 
-export function updateTask(db: Db, id: string, patch: Partial<Pick<Task, "status" | "branchName" | "worktreePath" | "diffstat" | "failureReason">>): void {
-    const fields = Object.keys(patch);
+// M17: `failure` is the structured ledger note riding a needs-human write — NOT a tasks column. It
+// MUST be peeled off before the SET clause is built from Object.keys (spreading it through would hit
+// "no such column: failure" INSIDE the engine's terminal path — the merge-wedge class of bug).
+export type TaskPatch = Partial<Pick<Task, "status" | "branchName" | "worktreePath" | "diffstat" | "failureReason">> & {
+    failure?: FailureNote;
+};
+
+// The single status-write chokepoint — every needs-human/merged/abandoned write in the app funnels
+// through here (the engine's setStatus deps, handback, AND the boot-reconcile's direct calls), so the
+// M17 ledger capture lives here and completeness is structural: a needs-human write whose caller
+// supplied no note still lands a row (kind 'unknown'); a terminal success stamps every open row.
+export function updateTask(db: Db, id: string, patch: TaskPatch): void {
+    const { failure, ...cols } = patch;
+    const fields = Object.keys(cols);
     if (fields.length === 0) return;
     const set = fields.map((f) => `${f} = @${f}`).join(", ");
-    db.prepare(`UPDATE tasks SET ${set}, updatedAt = @updatedAt WHERE id = @id`).run({ ...patch, id, updatedAt: Date.now() });
+    db.prepare(`UPDATE tasks SET ${set}, updatedAt = @updatedAt WHERE id = @id`).run({ ...cols, id, updatedAt: Date.now() });
+    if (cols.status === "needs-human") recordFailure(db, id, cols.failureReason ?? "", failure);
+    else if (cols.status === "merged" || cols.status === "abandoned") resolveFailures(db, id, cols.status === "merged" ? "resolved" : "abandoned");
 }
 
 // M9: replace a task's dependency edges (the cockpit's Clear-dependencies affordance passes []). Serialized

@@ -2,7 +2,17 @@
 // Builds the three things the engine feeds each iteration (spec §5.5): the /goal directive
 // (the -p arg), the static ritual (.ralph/INSTRUCTIONS.md), and the progress.md seed. Pure —
 // no IO — so runTask imports it directly rather than taking it as a dependency.
-import type { Project, Task } from "../../shared/types";
+import type { FailureKind, Project, Task } from "../../shared/types";
+
+// M18: what the retry block is ABOUT changes how it must be framed — a failed gate ("fix this"), a
+// lost merge race ("integration advanced; merge it in"), or a resumed task's parked reason ("a human
+// intervened; verify it's addressed"). The loop constructs these; the framing picks the wrap text,
+// and merge-loss additionally extends the /goal condition itself (see buildGoalPrompt).
+export interface PriorFailure {
+    framing: "gate" | "merge-loss" | "parked";
+    body: string; // the evidence: gate output tail, merge-stage reason, or the parked failureReason
+    kind?: Extract<FailureKind, "merge-conflict" | "recheck-failed">; // merge-loss only
+}
 
 // The CLI hard-caps a /goal condition at 4000 characters — and it counts EVERYTHING after "/goal "
 // in the -p string (pinned live 2026-07-07, the M12 dogfood incident: a 3.4k self-contained intent
@@ -66,13 +76,19 @@ ${accLines}
 }
 
 // The -p argument: the /goal condition + a short frame pointing at the .ralph files, plus the
-// engine's ground-truth prior-gate failure on retry — the whole string kept under PROMPT_BUDGET
-// (an oversized /goal is rejected outright by the CLI, wasting the iteration).
-export function buildGoalPrompt(project: Project, task: Task, priorFailure?: string): string {
+// engine's ground-truth prior failure on retry (framing-aware, M18) — the whole string kept under
+// PROMPT_BUDGET (an oversized /goal is rejected outright by the CLI, wasting the iteration).
+export function buildGoalPrompt(project: Project, task: Task, priorFailure?: PriorFailure): string {
     const accInline = task.acceptance.join("; ");
     // Re-enable the spec §5.5 no-out-of-scope clause from the per-task scopeHint (M2 deferred it).
     const scopeClause = task.scopeHint ? `. No files outside \`${task.scopeHint}\` are changed` : "";
-    const condition = `The project check \`${project.checkCommand}\` exits 0 AND every one of these acceptance commands exits 0, all demonstrated in this transcript: ${accInline}${scopeClause}`;
+    // M18 no-op trap: a merge-loser's gates STILL PASS in its worktree, so on a merge-loss retry the
+    // condition itself must demand the integration merge be demonstrated — otherwise "goal met" is
+    // satisfiable with zero work and the loop burns a mutex-serialized merge round per wasted retry.
+    const mergeClause = priorFailure?.framing === "merge-loss"
+        ? `\`git merge ${project.integrationBranch}\` has completed in this worktree with every conflict resolved, AND `
+        : "";
+    const condition = `${mergeClause}The project check \`${project.checkCommand}\` exits 0 AND every one of these acceptance commands exits 0, all demonstrated in this transcript: ${accInline}${scopeClause}`;
     const frame = `/goal ${condition}
 
 You are working task "${task.title}".
@@ -80,12 +96,19 @@ You are working task "${task.title}".
 Your full directive is in .ralph/TASK.md — read it first, then .ralph/INSTRUCTIONS.md and .ralph/progress.md, and follow the ritual.`;
     if (!priorFailure) return frame;
 
-    const wrap = (body: string) => `\n\nThe previous iteration's gate failed. The engine re-ran it independently and got:\n\`\`\`\n${body}\n\`\`\`\nFix this before anything else.`;
+    const wraps: Record<PriorFailure["framing"], (body: string) => string> = {
+        gate: (body) => `\n\nThe previous iteration's gate failed. The engine re-ran it independently and got:\n\`\`\`\n${body}\n\`\`\`\nFix this before anything else.`,
+        "merge-loss": (body) => priorFailure.kind === "merge-conflict"
+            ? `\n\nYour work went green but lost the merge race: integration advanced while you worked, and your branch now conflicts with the current \`${project.integrationBranch}\` tip. The merge stage reported:\n\`\`\`\n${body}\n\`\`\`\nRun \`git merge ${project.integrationBranch}\`, resolve every conflict, then make the gates green again.`
+            : `\n\nYour work went green but lost the merge race: integration advanced while you worked, and your work no longer composes with the new tip — the engine's re-check on the merged result failed:\n\`\`\`\n${body}\n\`\`\`\nRun \`git merge ${project.integrationBranch}\`, reproduce the red locally, and fix it before anything else.`,
+        parked: (body) => `\n\nThis task was previously parked for a human with this failure:\n\`\`\`\n${body}\n\`\`\`\nA human has since intervened in this worktree — verify the issue is addressed before continuing.`,
+    };
+    const wrap = wraps[priorFailure.framing];
     const marker = "…(truncated)\n";
     const room = PROMPT_BUDGET - frame.length - wrap("").length;
     if (room <= marker.length) return frame; // pathological frame — drop the evidence, never the budget
-    const body = priorFailure.length > room
-        ? `${marker}${priorFailure.slice(-(room - marker.length))}`
-        : priorFailure;
+    const body = priorFailure.body.length > room
+        ? `${marker}${priorFailure.body.slice(-(room - marker.length))}`
+        : priorFailure.body;
     return `${frame}${wrap(body)}`;
 }

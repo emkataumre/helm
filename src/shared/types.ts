@@ -171,6 +171,49 @@ export type PreflightRunResult =
 // re-runs pre-flight from disk and re-asserts every warn is acked — the renderer's report is never trusted.
 export interface ApproveOptions { acks?: string[]; skipPreflight?: boolean }
 
+// ── M17 failure ledger ────────────────────────────────────────────────────────────────────────────
+// tasks.failureReason is a single MUTABLE field — overwritten by the next failure, nulled on recovery.
+// The ledger is the durable, append-only history behind it: one row per terminal needs-human write,
+// stamped resolved/abandoned when the task later reaches a terminal outcome. `kind` is derived at each
+// terminal site (never parsed from the reason string); 'unknown' is the structural default the DB
+// writer applies when a caller supplies no note, so completeness never depends on discipline.
+export type FailureKind =
+    | "worktree-setup"      // pre-loop clone/branch failure (runTask, before the loop)
+    | "no-acceptance"       // empty acceptance list (Layer B is mandatory)
+    | "setup-command"       // setup command failed (fresh-worktree install OR merge-stage install)
+    | "cost-cap"            // the run's USD spend reached the ceiling
+    | "merge-conflict"      // squash onto the fresh integration tip conflicted
+    | "recheck-failed"      // the merge stage's rebase-on-tip re-check went red
+    | "merge-error"         // the merge stage THREW (git failure around the throwaway worktree)
+    | "deny-wall"           // the same permissions.deny key blocked K consecutive iterations
+    | "no-progress"         // K consecutive iterations with no new commit
+    | "iteration-cap"       // the per-run attempt budget ran out
+    | "boot-unrecoverable"  // boot reconcile: worktree AND branch both gone — nothing to resume
+    | "unknown";            // the DB writer's completeness default (caller supplied no note)
+
+// The structured note a needs-human status write carries into the DB chokepoint. iterationIndex is the
+// most recent COMPLETED iteration's DB index when the wall hit (null = pre-loop / boot — no iteration).
+export interface FailureNote {
+    kind: FailureKind;
+    iterationIndex: number | null;
+}
+
+// One ledger row. resolution/resolvedAt are null while the failure is still open; the task's later
+// terminal write stamps them ('resolved' on merged, 'abandoned' on abandoned). 'recycled' rows (M18)
+// land pre-stamped: the loop fed the merge loss back to the agent and retried in-place — nothing was
+// ever open for a human, and the 'recycled' vs 'resolved' split answers "fixed itself vs needed me".
+export interface FailureRecord {
+    id: string;
+    taskId: string;
+    projectId: string;   // denormalized from the task row at insert → per-project reads with no join
+    kind: FailureKind;
+    reason: string;      // the full human failureReason string as written at the time
+    iterationIndex: number | null;
+    createdAt: number;
+    resolvedAt: number | null;
+    resolution: "resolved" | "abandoned" | "recycled" | null;
+}
+
 export interface Iteration {
     id: string;
     taskId: string;

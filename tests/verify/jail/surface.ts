@@ -55,7 +55,7 @@ const mkTask = (): Task => ({
     id: "t1", projectId: "p1", title: "T", intent: "do", acceptance: ["run the proof"], status: "queued", scopeHint: null,
     dependsOn: [], planId: null, branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0,
 });
-const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, costCapUsd: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
+const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, mergeRecycleK: 0, costCapUsd: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
 
 export async function realLoopGateRecording(): Promise<JailRecording> {
     const gateCwds: string[] = [];

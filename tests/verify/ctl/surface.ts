@@ -37,7 +37,7 @@ export async function runCtlScenario(): Promise<CtlRecording> {
     const recVoid = (name: string) => (): void => { invoked.add(name); };
     const actions: CtlActions = {
         status: rec("status"), taskDetail: rec("taskDetail"), progressTail: rec("progressTail"),
-        planStatus: rec("planStatus"), pause: recVoid("pause"), resume: recVoid("resume"),
+        planStatus: rec("planStatus"), failures: rec("failures"), pause: recVoid("pause"), resume: recVoid("resume"),
         abandonTask: rec("abandonTask"), clearDeps: rec("clearDeps"),
     };
     const verbs = buildCtlVerbs(actions);

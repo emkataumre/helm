@@ -9,4 +9,8 @@ describe("DEFAULT_LOOP_CONFIG", () => {
         expect(DEFAULT_LOOP_CONFIG.stallTimeoutMs).toBe(40 * 60 * 1000);
         expect(DEFAULT_LOOP_CONFIG.checkTimeoutMs).toBe(30 * 60 * 1000);
     });
+
+    it("encodes the M18 merge-recycle bound", () => {
+        expect(DEFAULT_LOOP_CONFIG.mergeRecycleK).toBe(2);
+    });
 });

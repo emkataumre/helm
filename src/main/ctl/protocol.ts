@@ -33,6 +33,9 @@ reads
   helm task <id>                        one task's detail + failureReason + iteration summaries
   helm progress <id>                    the task's progress.md tail
   helm plan status [--project <name>]   plans + the live .helm/plan/ draft state
+  helm failures [--project <name>] [--open] [--kind <k>] [--all]
+                                        the durable failure ledger: by-kind counts + recent entries
+                                        (--open = unresolved only; --all = every project)
 
 steers (each maps onto an existing cockpit button — the CLI has no new authority)
   helm pause | helm resume              the global scheduler pause
@@ -57,6 +60,15 @@ export function parseCliArgs(argv: string[]): ParsedCli {
     switch (first) {
         case "status":
             return { ok: true, request: { verb: "status", args: takeProject(rest) } };
+        case "failures": {
+            // Flags → string args (the wire's Record<string,string>); the verb registry re-types them.
+            const args = takeProject(rest);
+            if (rest.includes("--open")) args.open = "true";
+            if (rest.includes("--all")) args.all = "true";
+            const ki = rest.indexOf("--kind");
+            if (ki >= 0 && rest[ki + 1]) args.kind = rest[ki + 1];
+            return { ok: true, request: { verb: "failures", args } };
+        }
         case "plan":
             if (rest[0] !== "status") return { ok: false, error: `unknown plan subcommand "${rest[0] ?? ""}" — try: helm plan status` };
             return { ok: true, request: { verb: "plan-status", args: takeProject(rest.slice(1)) } };

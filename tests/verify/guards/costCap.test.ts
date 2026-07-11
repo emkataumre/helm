@@ -23,7 +23,7 @@ const ZERO: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0,
 // noProgressK is comfortably high AND every scripted step lands a fresh commit, so the no-progress breaker
 // never pre-empts the cost cap; no denied keys, so the deny wall never fires either — the cost cap is the
 // sole breaker under observation.
-const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 5, denyWallK: 99, costCapUsd: 25, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
+const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 5, denyWallK: 99, mergeRecycleK: 0, costCapUsd: 25, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
 
 // One iteration's scripted world: what the spawn cost (USD) and whether the gate went green.
 interface CostStep { costUsd: number; checkGreen?: boolean }

@@ -45,7 +45,7 @@ describe("verifyAndMerge", () => {
     });
 
     it("PROBE: a needs-human result → setStatus(needs-human, reason) + worktree RETAINED (not removed)", async () => {
-        const { deps, calls } = fakeDeps({ runMergeStage: async () => ({ outcome: "needs-human", reason: "re-check failed after rebase on integration tip" }) });
+        const { deps, calls } = fakeDeps({ runMergeStage: async () => ({ outcome: "needs-human", reason: "re-check failed after rebase on integration tip", kind: "recheck-failed" }) });
         const r = await verifyAndMerge(PROJECT, TASK, "ralph/task-abc", deps);
         expect(r.outcome).toBe("needs-human");
         expect(calls.some((c) => c.startsWith("setStatus:needs-human"))).toBe(true);

@@ -8,11 +8,14 @@
 //
 // Pure DI — no Electron, no direct git — so it unit-tests with fake deps. The real engine fns are
 // wired in ipc.ts behind the per-project merge mutex (Task 6). emit feeds the live cockpit snapshot.
-import type { Project, Task, SnapshotEvent } from "../../shared/types";
+import type { Project, Task, SnapshotEvent, FailureKind } from "../../shared/types";
 
+// M17: the needs-human variant carries a structured kind so the failure ledger records WHY without
+// parsing the reason string. Tied to the shared FailureKind union via Extract — only the three causes
+// this stage can actually produce.
 export type MergeStageResult =
     | { outcome: "merged"; diffstat: string }
-    | { outcome: "needs-human"; reason: string };
+    | { outcome: "needs-human"; reason: string; kind: Extract<FailureKind, "merge-conflict" | "setup-command" | "recheck-failed"> };
 
 export interface MergeStageDeps {
     createWorktree: (repo: string, from: string, branch: string, worktreeDir: string) => Promise<string>;
@@ -48,13 +51,13 @@ export async function runMergeStage(
 
         // Apply the task's squashed diff onto the fresh tip. A textual conflict → bail, never advance.
         const merge = await d.squashMergeInto(worktreePath, taskBranch, tempBranch);
-        if (merge.conflict) return { outcome: "needs-human", reason: "merge conflict" };
+        if (merge.conflict) return { outcome: "needs-human", reason: "merge conflict", kind: "merge-conflict" };
 
         // The fresh worktree has no gitignored deps (node_modules &c.) — install them before the
         // re-check or it would spuriously fail. A setup failure here is a config problem, not the task's.
         if (project.setupCommand) {
             const setup = await d.runSetup(worktreePath, project.setupCommand, d.checkTimeoutMs);
-            if (!setup.ok) return { outcome: "needs-human", reason: `merge setup failed:\n${tail(setup.output)}` };
+            if (!setup.ok) return { outcome: "needs-human", reason: `merge setup failed:\n${tail(setup.output)}`, kind: "setup-command" };
         }
 
         // The authoritative re-check against the fresh tip — check ∧ acceptance, mirroring the loop's
@@ -65,7 +68,13 @@ export async function runMergeStage(
         const acc = check.green ? await d.runAcceptance(worktreePath, task.acceptance, d.checkTimeoutMs) : null;
         if (!check.green || (acc && !acc.ok)) {
             d.emit?.(gate("merge re-check: failed"));
-            return { outcome: "needs-human", reason: "re-check failed after rebase on integration tip" };
+            // Name the culprit + carry the output tail (like the setup path): a bare fixed string made
+            // every re-check failure an on-site forensic job, and hid timeouts entirely — a cold-cache
+            // test flake took two incidents to diagnose. The prefix stays stable for existing matchers.
+            const detail = !check.green
+                ? (check.timedOut ? `check timed out (${d.checkTimeoutMs}ms)` : `check red:\n${tail(check.output)}`)
+                : `acceptance red (${acc!.failedCommand ?? "?"}):\n${tail(acc!.output)}`;
+            return { outcome: "needs-human", reason: `re-check failed after rebase on integration tip — ${detail}`, kind: "recheck-failed" };
         }
         d.emit?.(gate("merge re-check: passed"));
 
@@ -77,7 +86,16 @@ export async function runMergeStage(
         d.emit?.(gate("merge: merged"));
         return { outcome: "merged", diffstat };
     } finally {
-        // Always remove the throwaway worktree + temp branch — conflict, re-check fail, or thrown dep.
-        if (worktreePath) await d.removeWorktree(project.repoPath, worktreePath, tempBranch, false);
+        // Cleanup must NEVER wedge the task. By here integration is either already advanced (merged) or we
+        // returned needs-human, so a throwaway-removal failure (e.g. Windows long-path on deep node_modules)
+        // is cosmetic. Swallow it: a throw in `finally` would override the return and reject the whole stage,
+        // which previously stranded the task in "running" with its work already on integration.
+        if (worktreePath) {
+            try {
+                await d.removeWorktree(project.repoPath, worktreePath, tempBranch, false);
+            } catch {
+                d.emit?.(gate("merge cleanup: skipped (throwaway left behind)"));
+            }
+        }
     }
 }
