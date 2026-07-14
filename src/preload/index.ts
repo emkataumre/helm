@@ -37,6 +37,8 @@ const api: HelmApi = {
     launchConductor: (projectId, fresh) => ipcRenderer.invoke("conductor:launch", projectId, fresh),
     onPlanChanged: (cb) => { ipcRenderer.on("plan:changed", (_e, projectId: string, state) => cb(projectId, state)); },
     preflightPlan: (projectId) => ipcRenderer.invoke("plans:preflight", projectId),
+    cancelPreflight: (projectId) => ipcRenderer.invoke("plans:cancelPreflight", projectId),
+    onPreflightProgress: (cb) => { const h = (_e: unknown, projectId: string, p: Parameters<typeof cb>[1]) => cb(projectId, p); ipcRenderer.on("preflight:progress", h); return () => { ipcRenderer.removeListener("preflight:progress", h); }; },
     listPlans: (projectId) => ipcRenderer.invoke("plans:list", projectId),
     getPlan: (planId) => ipcRenderer.invoke("plans:get", planId),
     approvePlan: (projectId, opts) => ipcRenderer.invoke("plans:approve", projectId, opts),

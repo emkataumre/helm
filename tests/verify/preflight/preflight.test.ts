@@ -153,13 +153,69 @@ describe("verify/preflight Task 1: the verdict classification table (REAL runPre
         expect(rec.removedKeepBranch).toBe(false);
     });
 
-    it("a project setupCommand that FAILS → every command is unverifiable (warn-missing), no command spawned", async () => {
+    it("a project setupCommand that FAILS → the report is BLOCKED: nothing observed, no command spawned, never approvable", async () => {
+        // Overhaul 2026-07-14: pre-overhaul this dressed up as ackable warn-missing — a human could ack
+        // straight through a broken environment. BLOCKED is never a pass.
         const rec = recorder({ "npm run check": green() }, { setupOk: false });
         const report = await runPreflight(mkProject({ setupCommand: "npm ci" }), draftOf(task("t1", ["npm run check"])), [{ taskSlug: "t1", command: "npm run check", level: "ok" }], rec.deps);
-        expect(levelOf(report, "npm run check")).toBe("warn-missing");
-        expect(report.verdicts[0].exitCode).toBeNull();
+        expect(report.blocked?.setupTail).toContain("setup boom"); // the evidence is the setup tail
+        expect(report.verdicts).toEqual([]);
         expect(rec.ops).not.toContain("run:npm run check"); // never ran the command in a broken env
         expect(rec.ops).toContain("remove-worktree");
+        expect(approvalPermitted(report, [])).toBe(false); // no ack set exists that approves a blocked run
+    });
+
+    // ── The role-aware classification matrix (2026-07-14 vocabulary) ─────────────────────────────────
+    const roleTask = (slug: string, entries: Array<[string, "proof" | "regression" | null]>): PlanDraftTask => ({
+        slug, title: slug, intent: "i",
+        acceptance: entries.map(([c]) => c), acceptanceRoles: entries.map(([, r]) => r),
+        scopeHint: null, dependsOn: [],
+    });
+
+    it("role matrix: regression green→ok-pass · regression red→warn-tip-red · proof missing→ok-planned · proof green→warn-already-green · proof red→ok-red", async () => {
+        const rec = recorder({
+            "npm run check": green(), "npm run lint": red(),
+            "npm run verify:new": missing(), "npm run verify:green": green(), "npm run verify:red": red(),
+        });
+        const draft = draftOf(roleTask("t1", [
+            ["npm run check", "regression"], ["npm run lint", "regression"],
+            ["npm run verify:new", "proof"], ["npm run verify:green", "proof"], ["npm run verify:red", "proof"],
+        ]));
+        const staticV: PreflightVerdict[] = [{ taskSlug: "t1", command: "npm run verify:new", level: "warn", reason: "no npm script" }];
+        const report = await runPreflight(mkProject(), draft, staticV, rec.deps);
+
+        expect(levelOf(report, "npm run check")).toBe("ok-pass");
+        expect(levelOf(report, "npm run lint")).toBe("warn-tip-red");
+        expect(levelOf(report, "npm run verify:new")).toBe("ok-planned");
+        expect(levelOf(report, "npm run verify:green")).toBe("warn-already-green");
+        expect(levelOf(report, "npm run verify:red")).toBe("ok-red");
+        // Exactly the two REAL warns count — the equilibrium noise-collapse cure: expected states need no ack.
+        expect(report.warnCount).toBe(2);
+    });
+
+    it("a role conflict on a shared command resolves PROOF-wins (the stricter reading)", async () => {
+        const rec = recorder({ "npm run check": green() });
+        const draft = draftOf(roleTask("t1", [["npm run check", "regression"]]), roleTask("t2", [["npm run check", "proof"]]));
+        const report = await runPreflight(mkProject(), draft, [], rec.deps);
+        expect(levelOf(report, "npm run check")).toBe("warn-already-green"); // proof semantics, not ok-pass
+    });
+
+    it("a role-tagged task with NO proof command gets the synthetic warn-no-proof (ack key no-proof:<slug>); legacy drafts are exempt", async () => {
+        const rec = recorder({ "npm run check": green(), "npm run verify:t1": red() });
+        const draft = draftOf(
+            roleTask("t1", [["npm run verify:t1", "proof"]]),          // has a proof — no synthetic warn
+            roleTask("t2", [["npm run check", "regression"]]),          // no proof — warn-no-proof fires
+        );
+        const report = await runPreflight(mkProject(), draft, [], rec.deps);
+        const synthetic = report.verdicts.find((v) => v.level === "warn-no-proof");
+        expect(synthetic?.command).toBe("no-proof:t2");
+        expect(synthetic?.taskSlugs).toEqual(["t2"]);
+        expect(approvalPermitted(report, [])).toBe(false);                // the synthetic warn blocks until consented
+        expect(approvalPermitted(report, ["no-proof:t2"])).toBe(true);    // the ok-pass suite needs no ack — only the consent line does
+
+        // A fully-untagged draft is never taxed with the synthetic warn.
+        const legacy = await runPreflight(mkProject(), draftOf(task("t1", ["npm run check"])), [], recorder({ "npm run check": green() }).deps);
+        expect(legacy.verdicts.some((v) => v.level === "warn-no-proof")).toBe(false);
     });
 });
 

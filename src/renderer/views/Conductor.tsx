@@ -7,8 +7,9 @@
 // honesty (§8.7). New in M16: without a live session the pane offers [Resume conductor] (enabled iff
 // the recorded session is actually resumable — the M5 guard, re-checked main-side) beside
 // [Fresh session]; persistence is the CONVERSATION (via --resume), not the PTY process.
-import { useEffect, useState } from "react";
-import type { PlanDraftTask, PlanRailState, PlanStage, PreflightCommandVerdict, PreflightReport, PreflightVerdict, Project, PtySession } from "../../shared/types";
+import { useEffect, useRef, useState } from "react";
+import type { PlanDraftTask, PlanRailState, PlanStage, PreflightCommandVerdict, PreflightProgress, PreflightReport, PreflightVerdict, Project, PtySession } from "../../shared/types";
+import { isWarnLevel } from "../../shared/types";
 import { Badge, Button, Checkbox, Icon, IconButton, ProgressBar } from "../ds";
 import type { IconName } from "../ds";
 import { verifyAttrs } from "../components/verifyAttrs";
@@ -72,16 +73,20 @@ function DraftCard({ card, verdicts }: { card: PlanDraftTask; verdicts: Prefligh
     );
 }
 
-/* ---------- dynamic pre-flight report (§3.10) ---------- */
+/* ---------- dynamic pre-flight report (§3.10; role-aware vocabulary 2026-07-14) ---------- */
 const PRE_META: Record<PreflightCommandVerdict["level"], { color: string; icon: IconName; label: string; hint: string }> = {
     "ok-red": { color: "var(--green-400)", icon: "CircleCheck", label: "expected red", hint: "fails before any work exists — this proof can gate the task" },
+    "ok-pass": { color: "var(--green-400)", icon: "CircleCheck", label: "suite green", hint: "a standing regression gate — green before the work is exactly right" },
+    "ok-planned": { color: "var(--green-400)", icon: "CircleDot", label: "planned proof", hint: "doesn't exist yet — this task declares it will create it" },
     "warn-already-green": { color: "var(--amber-400)", icon: "TriangleAlert", label: "already green", hint: "passes before any work — it cannot prove the task" },
     "warn-missing": { color: "var(--amber-400)", icon: "TriangleAlert", label: "could not run", hint: "missing script/tool — the task may legitimately create it" },
+    "warn-tip-red": { color: "var(--amber-400)", icon: "TriangleAlert", label: "tip is red", hint: "a standing suite FAILS on the integration tip — the tip itself is broken" },
+    "warn-no-proof": { color: "var(--amber-400)", icon: "TriangleAlert", label: "no proof", hint: "no command can prove this task — done and not-started look identical to the gate" },
 };
-// The confirm gate's one number: warn verdicts not yet acknowledged. Exported so the panel,
-// the Confirm button, and the verify slice all read the same rule.
+// The confirm gate's one number: warn verdicts not yet acknowledged. Reads the SHARED isWarnLevel rule
+// (types.ts) so this counter can never disagree with the engine's ack gate. Exported for the render tests.
 export function unackedWarns(report: PreflightReport, acks: string[]): number {
-    return report.verdicts.filter((r) => r.level !== "ok-red" && !acks.includes(r.command)).length;
+    return report.verdicts.filter((r) => isWarnLevel(r.level) && !acks.includes(r.command)).length;
 }
 
 export function PreflightReportPanel({ report, acks, onAck }: {
@@ -95,13 +100,13 @@ export function PreflightReportPanel({ report, acks, onAck }: {
         <div {...verifyAttrs({ unit: "PreflightReport", commands: report.verdicts.length, warns: report.warnCount, unacked })} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {report.verdicts.map((row) => {
                 const m = PRE_META[row.level];
-                const isWarn = row.level !== "ok-red";
+                const isWarn = isWarnLevel(row.level);
                 return (
                     <div key={row.command} style={{ border: "1px solid " + (isWarn ? "color-mix(in oklab, var(--amber-500) 30%, transparent)" : "var(--border-subtle)"), borderRadius: 8, background: isWarn ? "var(--tint-warning)" : "var(--surface-card)", padding: "9px 11px", display: "flex", flexDirection: "column", gap: 6 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                             <Icon name={m.icon} size={13} style={{ color: m.color, flex: "none" }} />
-                            <Mono style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{row.command}</Mono>
-                            <Mono dim size="var(--text-2xs)" style={{ color: m.color, whiteSpace: "nowrap" }}>{m.label} · exit {row.exitCode ?? "—"}</Mono>
+                            <Mono style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{row.level === "warn-no-proof" ? `${row.taskSlugs[0]} — no proof command` : row.command}</Mono>
+                            <Mono dim size="var(--text-2xs)" style={{ color: m.color, whiteSpace: "nowrap" }}>{m.label} · exit {row.exitCode ?? "—"}{row.timedOut ? " · timed out" : ""}</Mono>
                             <IconButton size="sm" label="Show output tail" onClick={() => setOpenCmd(openCmd === row.command ? null : row.command)}>
                                 <Icon name={openCmd === row.command ? "ChevronUp" : "ChevronDown"} size={12} />
                             </IconButton>
@@ -155,6 +160,9 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
     onApproved: (count: number, warnings: string[], skipped: boolean) => void;
 }) {
     const [preflight, setPreflight] = useState<PreflightReport | "loading" | null>(null);
+    const [runId, setRunId] = useState<string | null>(null);
+    const [progress, setProgress] = useState<PreflightProgress | null>(null);
+    const [approving, setApproving] = useState(false);
     const [acks, setAcks] = useState<string[]>([]);
     const [error, setError] = useState<string | null>(null);
     const [confirmSkip, setConfirmSkip] = useState(false);
@@ -164,9 +172,18 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
     // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => { onHydrate(); }, [project.id]);
 
-    // Any plan:changed (a fresh rail-state object per fire) means the draft may have changed —
-    // reset the gate so a stale report/ack set can't be confirmed (the M11 rule).
-    useEffect(() => { setPreflight(null); setAcks([]); setError(null); }, [rail]);
+    // Reset the gate when the draft CONTENT changes (overhaul, 2026-07-14). The old effect keyed on the
+    // rail OBJECT — a fresh object per plan:changed fire — so watcher noise / tab-switch hydration wiped
+    // the report, the acks, AND the error explaining what happened. Content-keyed, a no-op fire keeps
+    // your acked panel; a real edit still resets it. Staleness is enforced server-side regardless (the
+    // stored run's draft hash) — this reset is UX honesty, not the safety mechanism.
+    const draftKey = rail?.parse ? (rail.parse.ok ? "ok:" + JSON.stringify(rail.parse.draft) : "err:" + rail.parse.errors.join("¦")) : "none";
+    const draftEpoch = useRef(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => { draftEpoch.current++; setPreflight(null); setRunId(null); setProgress(null); setAcks([]); setError(null); }, [draftKey]);
+
+    // Per-command progress while a run grinds (filtered to this project; unsubscribes on unmount).
+    useEffect(() => window.helm.onPreflightProgress((pid, p) => { if (pid === project.id) setProgress(p); }), [project.id]);
 
     if (!session || !rail) {
         return <ConductorLaunch project={project} resumable={resumable} onLaunch={onLaunch} />;
@@ -179,21 +196,29 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
     const uniqueCommands = draft ? new Set(draft.tasks.flatMap((c) => c.acceptance)).size : 0;
 
     const runPreflight = async () => {
-        setPreflight("loading"); setError(null);
+        setPreflight("loading"); setProgress(null); setError(null);
+        // If the draft changes while the run is in flight, the reset effect bumps the epoch — a report for
+        // a draft that no longer exists is dropped rather than rendered (approve would reject it anyway).
+        const epoch = draftEpoch.current;
         try {
             const r = await window.helm.preflightPlan(project.id);
-            if (r.ok) setPreflight(r.report);
+            if (epoch !== draftEpoch.current) return;
+            if (r.ok) { setPreflight(r.report); setRunId(r.runId); }
             else { setPreflight(null); setError(r.errors.join(" · ")); }
         } catch (err) {
+            if (epoch !== draftEpoch.current) return;
             setPreflight(null); setError(`pre-flight failed: ${(err as Error)?.message ?? String(err)}`);
-        }
+        } finally { setProgress(null); }
     };
     const approve = async (skip: boolean) => {
+        setApproving(true); setError(null);
         try {
-            const r = await window.helm.approvePlan(project.id, skip ? { skipPreflight: true } : { acks, skipPreflight: false });
-            if (r.ok) { setPreflight(null); setAcks([]); onApproved(r.count, r.warnings, skip); }
+            const r = await window.helm.approvePlan(project.id, skip ? { skipPreflight: true } : { runId: runId ?? undefined, acks, skipPreflight: false });
+            if (r.ok) { setPreflight(null); setRunId(null); setAcks([]); onApproved(r.count, r.warnings, skip); }
+            else if (r.stale) { setPreflight(null); setRunId(null); setAcks([]); setError(r.errors.join(" · ")); }
             else setError(r.errors.join(" · "));
         } catch (err) { setError(`approve failed: ${(err as Error)?.message ?? String(err)}`); }
+        finally { setApproving(false); }
     };
 
     return (
@@ -251,22 +276,41 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
                                         Pre-flight runs every unique acceptance command once in a throwaway worktree, proving each proof can actually gate its task.
                                     </div>
                                     <div style={{ display: "flex", gap: 8 }}>
-                                        <Button variant="primary" iconLeft={<Icon name="ShieldCheck" size={14} />} onClick={() => void runPreflight()}>Run pre-flight</Button>
-                                        <Button variant="ghost" onClick={() => setConfirmSkip(true)}>Skip pre-flight &amp; queue</Button>
+                                        <Button variant="primary" disabled={approving} iconLeft={<Icon name="ShieldCheck" size={14} />} onClick={() => void runPreflight()}>Run pre-flight</Button>
+                                        <Button variant="ghost" disabled={approving} onClick={() => setConfirmSkip(true)}>{approving ? "Queueing…" : "Skip pre-flight & queue"}</Button>
                                     </div>
                                 </>
                             )}
                             {preflight === "loading" && (
                                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                     <ProgressBar indeterminate size="sm" tone="primary" />
-                                    <Mono dim size="var(--text-2xs)">executing {uniqueCommands} unique command{uniqueCommands === 1 ? "" : "s"} in a throwaway worktree…</Mono>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                        <Mono dim size="var(--text-2xs)" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
+                                            {progress ? `command ${progress.index + 1}/${progress.total} — ${progress.command}` : `executing ${uniqueCommands} unique command${uniqueCommands === 1 ? "" : "s"} in a throwaway worktree…`}
+                                        </Mono>
+                                        <Button variant="ghost" onClick={() => void window.helm.cancelPreflight(project.id)}>Cancel</Button>
+                                    </div>
                                 </div>
                             )}
-                            {report && (
+                            {report && report.blocked && (
                                 <>
+                                    {/* BLOCKED is never a pass: setup failed, nothing was observed, no ack path exists. */}
+                                    <div className="helm-failure" {...verifyAttrs({ unit: "PreflightBlocked" })}>
+                                        pre-flight BLOCKED — the project setupCommand failed in the throwaway worktree, so nothing was observed. Fix setup, or Skip pre-flight.
+                                    </div>
+                                    <div className="helm-well">{report.blocked.setupTail || "(no output)"}</div>
+                                    <div style={{ display: "flex", gap: 8 }}>
+                                        <Button variant="primary" disabled={approving} iconLeft={<Icon name="ShieldCheck" size={14} />} onClick={() => void runPreflight()}>Run pre-flight again</Button>
+                                        <Button variant="ghost" disabled={approving} onClick={() => setConfirmSkip(true)}>Skip pre-flight &amp; queue</Button>
+                                    </div>
+                                </>
+                            )}
+                            {report && !report.blocked && (
+                                <>
+                                    {report.integrationSha && <Mono dim size="var(--text-2xs)">validated against integration tip {report.integrationSha.slice(0, 12)}</Mono>}
                                     <PreflightReportPanel report={report} acks={acks} onAck={(cmd) => setAcks((a) => (a.includes(cmd) ? a.filter((c) => c !== cmd) : [...a, cmd]))} />
-                                    <Button variant="primary" disabled={unacked > 0} iconLeft={<Icon name="Check" size={14} />} onClick={() => void approve(false)}>
-                                        {unacked > 0 ? `Confirm & queue — ${unacked} warning${unacked > 1 ? "s" : ""} unacknowledged` : `Confirm & queue ${draft.tasks.length} tasks`}
+                                    <Button variant="primary" disabled={unacked > 0 || approving} iconLeft={<Icon name="Check" size={14} />} onClick={() => void approve(false)}>
+                                        {approving ? "Queueing…" : unacked > 0 ? `Confirm & queue — ${unacked} warning${unacked > 1 ? "s" : ""} unacknowledged` : `Confirm & queue ${draft.tasks.length} tasks`}
                                     </Button>
                                 </>
                             )}

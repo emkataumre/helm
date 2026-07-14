@@ -100,7 +100,8 @@ describe("preflight", () => {
             await page.locator(".helm-check").nth(1).click();
             await until(async () => (await confirm.isDisabled()) ? null : true, { label: "confirm enabled once BOTH warns acked" });
 
-            // Confirm → the engine RE-RUNS pre-flight server-side, re-asserts the acks, births the row, clears the dir.
+            // Confirm → approve validates the acks against the SERVER-STORED run (overhaul 2026-07-14: no
+            // re-execution — the draft hash must still match disk), consumes it, births the row, clears the dir.
             await confirm.click();
             const tasks = await until(async () => { const ts = await listTasks(page); return ts.length === 1 ? ts : null; }, { timeoutMs: 60_000, label: "1 task queued after confirm" });
             expect(tasks[0].status).toBe("queued");   // paused → sits queued, never auto-spawns a real claude
@@ -117,6 +118,104 @@ describe("preflight", () => {
             // than hanging on its absence — the branch exists now, at exactly the tip the first task will use.
             expect(git(repo, ["branch", "--list", "integration/ralph"]).trim()).not.toBe("");
             expect(git(repo, ["rev-parse", "integration/ralph"]).trim()).toBe(git(repo, ["rev-parse", "main"]).trim());
+        } finally {
+            await helm.close();
+        }
+    });
+
+    // ── Overhaul (2026-07-14) — role-aware vocabulary in the LIVE app ────────────────────────────────
+    // A fully role-tagged draft: the regression suite is green (ok-pass, "suite green"), the proof gate is
+    // red (ok-red) and the to-be-created proof is missing (ok-planned) → ZERO warns, ZERO ack checkboxes,
+    // Confirm enabled IMMEDIATELY. The exact equilibrium noise-collapse cure, asserted end-to-end.
+    it("role-tagged draft: expected states need no acks — Confirm enabled with zero checkboxes", async () => {
+        const { repo, projectId, seed } = seededProject("RolesProj");
+        void projectId;
+        const planDir = join(repo, ".helm", "plan");
+        const helm = await launchHelm({ seed });
+        const { page } = helm;
+        try {
+            await pauseFleet(page);
+            await page.locator(".helm-sidebar").getByText("RolesProj").click();
+            await page.getByRole("tab", { name: "Conductor" }).click();
+            await page.getByRole("button", { name: "Fresh session", exact: true }).click();
+            await until(async () => (await stageNow(page)).includes("conversing"), { timeoutMs: 30_000, label: "stage = conversing" });
+            mkdirSync(planDir, { recursive: true });
+            writeFileSync(join(planDir, "tasks.json"), JSON.stringify({
+                planTitle: "roles-accept",
+                tasks: [{
+                    slug: "t1", title: "Roles task", intent: "exercise the role-aware verdicts; ships npm run verify:contnt",
+                    acceptance: [
+                        { cmd: "npm run verify:red", role: "proof" },      // exists, red → ok-red
+                        { cmd: "npm run verify:contnt", role: "proof" },   // missing → ok-planned (no did-you-mean tax)
+                        { cmd: "npm run check", role: "regression" },      // green → ok-pass
+                    ],
+                    scopeHint: null, dependsOn: [],
+                }],
+            }, null, 2));
+            await until(async () => (await stageNow(page)).includes("tasks drafted"), { timeoutMs: 30_000, label: "stage = tasks drafted" });
+
+            await page.getByRole("button", { name: /Run pre-flight/ }).click();
+            await page.getByText("suite green").first().waitFor({ state: "visible", timeout: 60_000 });   // ok-pass
+            await page.getByText("expected red").first().waitFor({ state: "visible", timeout: 30_000 });  // ok-red
+            await page.getByText("planned proof").first().waitFor({ state: "visible", timeout: 30_000 }); // ok-planned
+
+            // ZERO ack checkboxes (nothing warns) and Confirm is enabled straight away.
+            expect(await page.getByRole("checkbox").count()).toBe(0);
+            const confirm = page.getByRole("button", { name: /Confirm/ });
+            await until(async () => (await confirm.isDisabled()) ? null : true, { label: "confirm enabled with zero acks" });
+            await confirm.click();
+            const tasks = await until(async () => { const ts = await listTasks(page); return ts.length === 1 ? ts : null; }, { timeoutMs: 60_000, label: "1 task queued after confirm" });
+            expect(tasks[0].status).toBe("queued");
+            await until(() => readdirSync(planDir).length === 0 ? true : null, { label: ".helm/plan/ cleared after confirm" });
+        } finally {
+            await helm.close();
+        }
+    });
+
+    // ── Overhaul (2026-07-14) — the persisted-run server gates, driven through the REAL ipc ─────────
+    // The renderer can't normally send a stale approve (its panel resets on draft change), so these gates are
+    // asserted at the window.helm seam — the same plans:approve every button click lands on: a bogus runId is
+    // stale-rejected, a draft edited after the run is stale-rejected, and a double-Confirm inserts exactly once.
+    it("approve rejects stale runs and a double-Confirm inserts exactly one plan (window.helm seam)", async () => {
+        const { repo, projectId, seed } = seededProject("StaleProj");
+        const planDir = join(repo, ".helm", "plan");
+        const helm = await launchHelm({ seed });
+        const { page } = helm;
+        try {
+            await pauseFleet(page);
+            mkdirSync(planDir, { recursive: true });
+            const draft = (title: string) => JSON.stringify({
+                planTitle: "stale-accept",
+                tasks: [{ slug: "t1", title, intent: "i", acceptance: [{ cmd: "npm run verify:red", role: "proof" }], scopeHint: null, dependsOn: [] }],
+            }, null, 2);
+            writeFileSync(join(planDir, "tasks.json"), draft("v1"));
+
+            // A real run through the real ipc — REALLY executes verify:red in a throwaway worktree.
+            const r1 = await page.evaluate((pid) => window.helm.preflightPlan(pid), projectId);
+            if (!r1.ok) throw new Error(`preflight failed: ${r1.errors.join(" · ")}`);
+            expect(r1.report.verdicts[0].level).toBe("ok-red");
+
+            // Gate 1: a bogus runId → stale, nothing queued.
+            const bogus = await page.evaluate((pid) => window.helm.approvePlan(pid, { runId: "run-bogus", acks: [], skipPreflight: false }), projectId);
+            expect(bogus).toMatchObject({ ok: false, stale: true });
+
+            // Gate 2: the draft changes on disk AFTER the run → the stored run's hash no longer matches → stale.
+            writeFileSync(join(planDir, "tasks.json"), draft("v2-edited"));
+            const stale = await page.evaluate(({ pid, runId }) => window.helm.approvePlan(pid, { runId, acks: [], skipPreflight: false }), { pid: projectId, runId: r1.runId });
+            expect(stale).toMatchObject({ ok: false, stale: true });
+            expect(await listTasks(page)).toHaveLength(0);
+
+            // Gate 3: re-run against the edited draft, then fire TWO Confirms with the same runId — the run is
+            // CONSUMED by the winner; exactly one plan and one task exist afterwards (the ×2-plan lesson).
+            const r2 = await page.evaluate((pid) => window.helm.preflightPlan(pid), projectId);
+            if (!r2.ok) throw new Error(`preflight re-run failed: ${r2.errors.join(" · ")}`);
+            const [a, b] = await page.evaluate(({ pid, runId }) => Promise.all([
+                window.helm.approvePlan(pid, { runId, acks: [], skipPreflight: false }),
+                window.helm.approvePlan(pid, { runId, acks: [], skipPreflight: false }),
+            ]), { pid: projectId, runId: r2.runId });
+            expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+            expect(await listTasks(page)).toHaveLength(1);
+            expect(await page.evaluate((pid) => window.helm.listPlans(pid), projectId)).toHaveLength(1);
         } finally {
             await helm.close();
         }

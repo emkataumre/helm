@@ -21,7 +21,8 @@ import { runAcceptance } from "./engine/acceptance";
 import { ensureRalphExcluded, ensureHelmExcluded, writeRalphFiles } from "./engine/ralph";
 import { watchPlanDir, readPlanFiles, buildPlanRailState } from "./engine/planWatcher";
 import { approveFromTasksJson, parsePlanDraft, staticPreflight, type PreflightCtx } from "./engine/planDraft";
-import { runPreflight, unackedWarnCommands, type PreflightDeps } from "./engine/preflight";
+import { runPreflight, type PreflightDeps } from "./engine/preflight";
+import { createPreflightRunStore, hashDraft, validateApproval } from "./engine/preflightStore";
 import { runCheck } from "./engine/check";
 import { run } from "./engine/exec";
 import { spawnAgent } from "./engine/spawn";
@@ -118,6 +119,11 @@ export function registerIpc(
     // plans:openPlanner and torn down on Quit. The rail-state ctx reads package.json scripts + a fileExists
     // probe FRESH from the repo each fire (staticPreflight is a pure fn of that ctx).
     const planWatchers = new Map<string, () => void>();
+    // Overhaul (2026-07-14): the server-stored pre-flight run approve validates against (never re-executes),
+    // plus one AbortController per in-flight run (plans:cancelPreflight). Latest run per project, in-memory
+    // by design — a restart honestly reports "stale — re-run" (see preflightStore.ts).
+    const preflightRuns = createPreflightRunStore();
+    const preflightAborts = new Map<string, AbortController>();
     const planDirFor = (repoPath: string) => join(repoPath, ".helm", "plan");
     const planCtx = (repoPath: string): PreflightCtx => {
         let npmScripts: string[] = [];
@@ -179,10 +185,13 @@ export function registerIpc(
     // (shell true, like acceptance), always-cleanup. NOTE the surface has NO advanceBranch/pushBranch — the
     // stage physically cannot advance a ref (the structural never-advance). Uses the RAW removeWorktree (no PTY
     // can be cwd'd in a pre-flight throwaway, exactly like the merge/promote throwaways).
-    const buildPreflightDeps = (config: LoopConfig): PreflightDeps => ({
+    // The signal makes plans:cancelPreflight kill an IN-FLIGHT command too (exec.ts kills the child on
+    // abort); the between-commands abort lives in runPreflight itself. A cancel during runSetup only takes
+    // effect once setup finishes — runSetup is the shared merge/handback wiring and stays signal-free.
+    const buildPreflightDeps = (config: LoopConfig, signal?: AbortSignal): PreflightDeps => ({
         ensureBranch, revParse, createWorktree, runSetup, removeWorktree,
         runCommand: async (wt, cmd, t) => {
-            const r = await run(cmd, [], { cwd: wt, timeoutMs: t, shell: true });
+            const r = await run(cmd, [], { cwd: wt, timeoutMs: t, shell: true, signal });
             return { code: r.code, timedOut: r.timedOut, output: `${r.stdout}\n${r.stderr}`.trim() };
         },
         checkTimeoutMs: config.checkTimeoutMs,
@@ -550,19 +559,40 @@ export function registerIpc(
     ipcMain.handle("plans:preflight", async (_e, projectId: string): Promise<PreflightRunResult> => {
         const project = getProject(db, projectId);
         if (!project) return { ok: false, errors: [`unknown project ${projectId}`] };
+        // One run at a time per project — a second concurrent run would share the deterministic throwaway
+        // branch/path with the first and pre-clean it out from under the live commands.
+        if (preflightAborts.has(projectId)) return { ok: false, errors: ["a pre-flight is already running for this project"] };
         const files = readPlanFiles(planDirFor(project.repoPath));
         if (files.tasksJson == null) return { ok: false, errors: ["no tasks.json in .helm/plan/ to pre-flight"] };
         const parsed = parsePlanDraft(files.tasksJson);
         if (!parsed.ok) return { ok: false, errors: parsed.errors };
         const staticV = staticPreflight(parsed.draft, planCtx(project.repoPath));
-        // A thrown pre-flight (bad repo state, git failure) must reach the renderer as a STRUCTURED error, never
-        // an ipc rejection — the M10-acceptance finding: an uncaught rejection left the rail stuck on "loading".
+        const controller = new AbortController();
+        preflightAborts.set(projectId, controller);
+        // A thrown pre-flight (bad repo state, git failure, cancel) must reach the renderer as a STRUCTURED
+        // error, never an ipc rejection — the M10-acceptance finding: an uncaught rejection stuck "loading".
         try {
-            const report = await runPreflight(project, parsed.draft, staticV, buildPreflightDeps(resolveLoopConfig(project)));
-            return { ok: true, report };
+            const report = await runPreflight(project, parsed.draft, staticV, buildPreflightDeps(resolveLoopConfig(project), controller.signal), {
+                signal: controller.signal,
+                onProgress: (p) => getWindow()?.webContents.send("preflight:progress", projectId, p),
+            });
+            // Store the run server-side: approve validates acks against THIS report (draft-hash staleness),
+            // never re-executing. Latest run wins; the runId ties the renderer's acks to this exact report.
+            const runId = randomUUID();
+            preflightRuns.put(projectId, { runId, draftHash: hashDraft(files.tasksJson), integrationSha: report.integrationSha ?? "", report, createdAt: Date.now() });
+            return { ok: true, runId, report };
         } catch (err) {
             return { ok: false, errors: [`pre-flight failed: ${(err as Error)?.message ?? String(err)}`] };
+        } finally {
+            preflightAborts.delete(projectId);
         }
+    });
+
+    // Cancel an in-flight pre-flight run (the loading state's Cancel button). Abort kills the current
+    // command's child process AND trips the between-commands check; the run's finally still reaps the
+    // throwaway worktree, and the thrown cancel surfaces as the structured "pre-flight failed: … cancelled".
+    ipcMain.handle("plans:cancelPreflight", async (_e, projectId: string): Promise<void> => {
+        preflightAborts.get(projectId)?.abort();
     });
 
     // Approve the active plan: re-read + re-validate from disk (never the renderer's copy — it can be stale or
@@ -582,22 +612,15 @@ export function registerIpc(
         const approved = approveFromTasksJson(files.tasksJson, files.prdText, () => randomUUID());
         if (!approved.ok) return { ok: false, errors: approved.errors }; // parse-invalid → NO rows
 
-        // The ack gate. Skip is an explicit human escape (a hurry stays in control); otherwise re-run pre-flight
-        // on the SAME (just-parsed) draft and require every warn command to be in the acks. Parse-FAILs already bailed.
+        // The ack gate (overhauled 2026-07-14). Skip is an explicit human escape (a hurry stays in control);
+        // otherwise validate the acks against the SERVER-STORED run — approve NEVER executes commands. Stale
+        // (no run / superseded runId / tasks.json changed on disk since the run) → structured stale error, the
+        // renderer offers a re-run. Success CONSUMES the run: a double-Confirm finds nothing and fails stale
+        // instead of inserting the plan twice (the elektronik-and-pant ×2 lesson).
         if (!opts?.skipPreflight) {
-            const parsed = parsePlanDraft(files.tasksJson);
-            if (parsed.ok) {
-                const staticV = staticPreflight(parsed.draft, planCtx(project.repoPath));
-                let report;
-                try {
-                    report = await runPreflight(project, parsed.draft, staticV, buildPreflightDeps(resolveLoopConfig(project)));
-                } catch (err) {
-                    // Same structured-error rule as plans:preflight: a throw here must not reject the approve ipc.
-                    return { ok: false, errors: [`pre-flight failed: ${(err as Error)?.message ?? String(err)}`] };
-                }
-                const unacked = unackedWarnCommands(report, opts?.acks ?? []);
-                if (unacked.length) return { ok: false, errors: [`pre-flight has ${unacked.length} unacknowledged warning(s) — acknowledge each or Skip pre-flight:`, ...unacked] };
-            }
+            const v = validateApproval(preflightRuns.peek(projectId), { runId: opts?.runId, draftHashNow: hashDraft(files.tasksJson), acks: opts?.acks ?? [] });
+            if (!v.ok) return { ok: false, stale: v.stale, errors: v.errors };
+            preflightRuns.consume(projectId, opts!.runId!);
         }
 
         const warnings = files.prdText == null ? ["no prd.md in .helm/plan/ — stored an empty PRD for this plan"] : [];
@@ -607,6 +630,7 @@ export function registerIpc(
         })();
 
         clearPlanDir(dir);
+        preflightRuns.clear(projectId); // the drop dir is gone — any stored run (incl. the Skip path's) is moot
         getWindow()?.webContents.send("plan:changed", projectId, readPlanRailState(project.repoPath));
         notify();
         scheduler.kick();

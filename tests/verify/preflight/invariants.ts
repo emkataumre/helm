@@ -14,15 +14,20 @@ export interface InvariantResult { name: string; ok: boolean; detail?: string }
 const ALLOWED_OPS = new Set(["ensure-branch", "rev-parse", "create-worktree", "setup", "remove-worktree"]);
 const isAllowedOp = (op: string): boolean => ALLOWED_OPS.has(op) || op.startsWith("run:");
 
-// The verdict TABLE, declared here independently of the impl (the ground truth the classification must match):
-// exit 0 (not timed out) → already-green; else a spawn failure (code < 0) or a static-missing name → missing;
-// else a legit red.
+// The verdict TABLE, declared here independently of the impl (the ground truth the classification must
+// match) — ROLE-AWARE since the 2026-07-14 vocabulary overhaul. green = exit 0 not timed out; missing =
+// spawn failure (code < 0) or a static-missing name.
+//   regression: green → ok-pass · missing → warn-missing · red → warn-tip-red
+//   proof:      missing → ok-planned · green → warn-already-green · red → ok-red
+//   untagged:   green → warn-already-green · missing → warn-missing · red → ok-red   (legacy, unchanged)
 function expectedLevel(v: VerdictRecord): string {
-    if (v.code === 0 && !v.timedOut) return "warn-already-green";
-    if (v.code < 0 || v.staticWarn) return "warn-missing";
-    return "ok-red";
+    const green = v.code === 0 && !v.timedOut;
+    const missing = v.code < 0 || v.staticWarn;
+    if (v.role === "regression") return green ? "ok-pass" : missing ? "warn-missing" : "warn-tip-red";
+    if (v.role === "proof") return missing ? "ok-planned" : green ? "warn-already-green" : "ok-red";
+    return green ? "warn-already-green" : missing ? "warn-missing" : "ok-red";
 }
-const isWarn = (level: string): boolean => level === "warn-missing" || level === "warn-already-green";
+const isWarn = (level: string): boolean => level.startsWith("warn-");
 
 export const PREFLIGHT_INVARIANTS: PreflightInvariant[] = [
     // The fresh-project guarantee (M10-acceptance finding): pre-flight must CREATE-IF-ABSENT the integration
@@ -81,6 +86,28 @@ export const PREFLIGHT_INVARIANTS: PreflightInvariant[] = [
         name: "worktree-always-cleaned",
         holds: (r) => {
             if (r.worktreeCreated && !r.worktreeRemoved) return "the throwaway worktree was created but never removed (a leak)";
+            return true;
+        },
+    },
+    // BLOCKED is never a pass (2026-07-14): a setup-failed run observed nothing — no ack set can make it
+    // approvable, and no command may have been spawned inside the broken environment.
+    {
+        name: "blocked-never-approvable",
+        holds: (r) => {
+            if (!r.blocked) return true;
+            if (r.approved) return "a BLOCKED run (setup failed, nothing observed) was approved";
+            if (r.ops.some((op) => op.startsWith("run:"))) return "commands were spawned inside a broken (setup-failed) environment";
+            return true;
+        },
+    },
+    // The per-task consent warn (2026-07-14): a role-tagged draft whose task declares NO proof command must
+    // surface warn-no-proof — and a fully-legacy draft must NOT be taxed with the synthetic warn.
+    {
+        name: "no-proof-warn-fires",
+        holds: (r) => {
+            if (r.blocked) return true; // nothing was observed — the blocked hard-stop already covers it
+            if (r.rolesDeclared && !r.taskHasProof && !r.noProofWarned) return "a role-tagged task with no proof command raised no warn-no-proof (silent unprovable task)";
+            if (!r.rolesDeclared && r.noProofWarned) return "a legacy (untagged) draft was taxed with the synthetic no-proof warn";
             return true;
         },
     },

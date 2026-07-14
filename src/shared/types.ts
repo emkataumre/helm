@@ -82,11 +82,17 @@ export interface Plan {
 // A PlanDraft is the PARSED, validated in-memory shape of tasks.json — it lives file-side only (the DB never
 // holds drafts; rows are born at approve). Shared so the renderer's side rail renders it and the verify slice
 // asserts on it. `dependsOn` here is SIBLING SLUGS (unique within the file); approve resolves them to real ids.
+// A command's declared ROLE in the gate (overhaul, 2026-07-14). `proof` = this task creates it or makes it
+// pass (missing pre-work is EXPECTED; green pre-work is the real fake-green warn). `regression` = a standing
+// suite (green pre-work is expected; red means the integration tip itself is broken). Untagged commands keep
+// the original one-size semantics — a legacy draft never gets silently weaker gating.
+export type PreflightRole = "proof" | "regression";
 export interface PlanDraftTask {
     slug: string;              // unique within the file; the edge-graph node id
     title: string;
     intent: string;            // prose directive — what to build (the §6 intent)
     acceptance: string[];      // mandatory, non-empty, separately-runnable commands (the §6 mantra)
+    acceptanceRoles?: (PreflightRole | null)[]; // parallel to acceptance; absent/null entries = untagged (legacy)
     scopeHint: string | null;  // optional per-task scope clause
     dependsOn: string[];       // sibling slugs this task waits on (resolved to ids at approve)
 }
@@ -123,7 +129,7 @@ export interface PlanRailState {
 // trusted), which the pane lists verbatim. A parse-invalid draft never produces rows.
 export type ApprovePlanResult =
     | { ok: true; count: number; warnings: string[] }
-    | { ok: false; errors: string[] };
+    | { ok: false; errors: string[]; stale?: boolean }; // stale: the stored pre-flight run no longer matches disk — re-run
 
 // ── M16 conductor (the planner pane absorbed) ─────────────────────────────────────────────────────
 // What conductor:open returns — a READ-ONLY hydration: any live conductor PTY (null = show the launch
@@ -137,39 +143,56 @@ export interface ConductorOpenResult {
     resumable: boolean;
 }
 
-// ── M11 dynamic pre-flight (spec §3/§6) ───────────────────────────────────────────────────────────
+// ── M11 dynamic pre-flight (spec §3/§6; vocabulary overhauled 2026-07-14) ─────────────────────────
 // The DYNAMIC verdict for ONE deduped acceptance command, run once in a throwaway worktree off the
-// integration tip (static pre-flight only reads names; this executes). Three levels the approve grill fixed:
-//  · "ok-red"             — non-zero exit WITH real output: the EXPECTED good case (TDD-red — the proof fails
-//                           before any work exists, so it can actually gate the task). Never needs an ack.
-//  · "warn-already-green" — exit 0 BEFORE any work: the gate passes pre-work, so it can't prove the task (the
-//                           fake-green lesson, at the plan layer). Needs an explicit ack.
-//  · "warn-missing"       — the command couldn't run (spawn failure / shell not-found / npm missing-script,
-//                           disambiguated by cross-checking M10's static verdict): the task MAY create it.
-//                           Needs an explicit ack; carries the static reason/did-you-mean when it has one.
-export type PreflightLevel = "ok-red" | "warn-already-green" | "warn-missing";
+// integration tip (static pre-flight only reads names; this executes). Role-aware levels — `ok-*` never
+// needs an ack, every `warn-*` does:
+//  · "ok-red"             — a proof/untagged command fails pre-work: the EXPECTED good case (TDD-red).
+//  · "ok-pass"            — a REGRESSION suite is green pre-work: exactly what a standing suite should be.
+//  · "ok-planned"         — a PROOF command doesn't exist yet: the task declares it will create it.
+//  · "warn-already-green" — a proof/untagged command passes BEFORE any work: it cannot prove the task (the
+//                           fake-green lesson, at the plan layer).
+//  · "warn-missing"       — an untagged command couldn't run, or a declared REGRESSION suite is missing
+//                           (a misdeclared suite); carries the static reason/did-you-mean when it has one.
+//  · "warn-tip-red"       — a declared REGRESSION suite FAILS on the integration tip: the tip itself is red.
+//  · "warn-no-proof"      — synthetic, per TASK (ack key `no-proof:<slug>`): a role-tagged draft has a task
+//                           with no proof command — done and not-started look identical to the gate.
+export type PreflightLevel =
+    | "ok-red" | "ok-pass" | "ok-planned"
+    | "warn-already-green" | "warn-missing" | "warn-tip-red" | "warn-no-proof";
+// The ONE warn rule, shared so the engine's ack gate and the renderer's Confirm counter cannot diverge.
+export const isWarnLevel = (l: PreflightLevel): boolean => l.startsWith("warn-");
 export interface PreflightCommandVerdict {
     command: string;
     taskSlugs: string[];       // every task whose acceptance references this (deduped) command
     level: PreflightLevel;
     exitCode: number | null;   // the command's exit code; null = never spawned (a setup/spawn failure)
+    timedOut?: boolean;        // the command hit checkTimeoutMs and was killed (evidence, not a level)
     tail: string;              // a short evidence tail of the command's output
     reason?: string;           // warn-missing: the static reason (e.g. no npm script "X")
     suggestion?: string;       // warn-missing: the did-you-mean carried over from the static verdict
 }
 export interface PreflightReport {
     ran: boolean;              // false only if the run short-circuited (parse-invalid — never reaches here)
+    integrationSha?: string;   // the integration tip the run validated against (shown on the panel)
+    // setupCommand failed in the throwaway → NOTHING was observed. No verdicts, no ack path — Confirm
+    // hard-blocks (BLOCKED is never a pass); Skip pre-flight remains the only escape.
+    blocked?: { setupTail: string };
     verdicts: PreflightCommandVerdict[];
     warnCount: number;         // verdicts needing an ack (warn-*); Confirm unlocks only when all are acked
 }
+// One per-command progress tick streamed to the renderer while the throwaway run grinds (preflight:progress).
+export interface PreflightProgress { index: number; total: number; command: string }
 // plans:preflight re-reads + re-validates from disk before running; a still-invalid draft yields errors
-// (parse-FAILs hard-block, exactly like approve), never a half-built report.
+// (parse-FAILs hard-block, exactly like approve), never a half-built report. On ok it also returns the
+// runId of the SERVER-STORED run — approve validates acks against that stored run, never re-executing.
 export type PreflightRunResult =
-    | { ok: true; report: PreflightReport }
+    | { ok: true; runId: string; report: PreflightReport }
     | { ok: false; errors: string[] };
-// Approve's second phase carries the human's acks (by command string) + the explicit Skip escape. The ipc
-// re-runs pre-flight from disk and re-asserts every warn is acked — the renderer's report is never trusted.
-export interface ApproveOptions { acks?: string[]; skipPreflight?: boolean }
+// Approve's second phase carries the human's acks (by command string), the runId of the stored pre-flight
+// run those acks reference, and the explicit Skip escape. The ipc validates against the STORED run (draft
+// hash must still match disk) — it never re-executes commands and never trusts the renderer's report.
+export interface ApproveOptions { runId?: string; acks?: string[]; skipPreflight?: boolean }
 
 // ── M17 failure ledger ────────────────────────────────────────────────────────────────────────────
 // tasks.failureReason is a single MUTABLE field — overwritten by the next failure, nulled on recovery.
@@ -448,10 +471,15 @@ export interface HelmApi {
     openConductor: (projectId: string) => Promise<ConductorOpenResult | null>;
     launchConductor: (projectId: string, fresh: boolean) => Promise<PtySession | null>;
     onPlanChanged: (cb: (projectId: string, state: PlanRailState) => void) => void;
-    // M11 dynamic pre-flight: re-read + re-validate from disk, then EXECUTE each acceptance command once in a
-    // throwaway worktree off the integration tip and classify it. Errors on a still-invalid draft (never a
-    // half-built report). Runs nothing to completion — read-only validation; advances/pushes no ref.
+    // M11 dynamic pre-flight (overhauled 2026-07-14): re-read + re-validate from disk, then EXECUTE each
+    // acceptance command once in a throwaway worktree off the integration tip and classify it. The result is
+    // STORED server-side (latest run per project) and its runId returned — approve validates acks against that
+    // stored run. Errors on a still-invalid draft (never a half-built report); advances/pushes no ref.
     preflightPlan: (projectId: string) => Promise<PreflightRunResult>;
+    // Abort an in-flight pre-flight run (kills the current command; the throwaway worktree is still reaped).
+    cancelPreflight: (projectId: string) => Promise<void>;
+    // Per-command progress ticks while a pre-flight run grinds (preflight:progress). Returns an unsubscribe.
+    onPreflightProgress: (cb: (projectId: string, p: PreflightProgress) => void) => () => void;
     // M11 plan views: the plans of a project (newest first) + one plan by id (the board plan badge/filter +
     // the plan-detail view; member tasks are joined renderer-side off the existing tasks list by planId).
     listPlans: (projectId: string) => Promise<Plan[]>;
@@ -459,7 +487,8 @@ export interface HelmApi {
     // Approve the active plan: re-read + re-validate from disk (never the renderer's copy), then in ONE
     // transaction insert the plan (PRD copied) + its tasks in topological order, resolving slug edges to real
     // ids, and clear .helm/plan/. Returns queued count + warnings, or the parse errors on a still-invalid draft.
-    // M11: opts carry the human's per-command acks + the explicit Skip escape — unless skipped, approve RE-RUNS
-    // pre-flight from disk and re-asserts every warn is acked (the renderer's report is never trusted).
+    // M11 (overhauled): opts carry the runId of the stored pre-flight run, the human's per-command acks, and
+    // the explicit Skip escape — unless skipped, approve validates the acks against the STORED run (draft hash
+    // must still match disk; never re-executes) and CONSUMES it on success (a double-Confirm fails stale).
     approvePlan: (projectId: string, opts?: ApproveOptions) => Promise<ApprovePlanResult>;
 }

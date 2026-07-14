@@ -5,7 +5,7 @@
 // verify slice drives the REAL functions. Only PARSE failures block approve — static warns never do (a task
 // may legitimately create its own verify script; the grill's nuance), which is why staticPreflight only ever
 // returns ok | warn.
-import type { PlanDraft, PlanDraftTask, PreflightVerdict } from "../../shared/types";
+import type { PlanDraft, PlanDraftTask, PreflightRole, PreflightVerdict } from "../../shared/types";
 
 export type ParseResult = { ok: true; draft: PlanDraft } | { ok: false; errors: string[] };
 
@@ -40,13 +40,25 @@ export function parsePlanDraft(tasksJson: string): ParseResult {
         if (!isNonEmptyString(t.title)) errors.push(`${at}.title must be a non-empty string`);
         if (!isNonEmptyString(t.intent)) errors.push(`${at}.intent must be a non-empty string`);
 
-        let acceptance: string[] = [];
+        // Acceptance entries: a plain command string (legacy — untagged role), or the role-tagged form
+        // {"cmd": "...", "role": "proof"|"regression"} (overhaul 2026-07-14). Mixed within a task is fine;
+        // both arrays stay parallel so pre-flight can classify role-aware without changing any other consumer.
+        const acceptance: string[] = [];
+        const acceptanceRoles: (PreflightRole | null)[] = [];
         if (!Array.isArray(t.acceptance) || t.acceptance.length === 0) {
             errors.push(`${at}.acceptance must be a non-empty array of separately-runnable commands`);
-        } else if (!t.acceptance.every(isNonEmptyString)) {
-            errors.push(`${at}.acceptance must contain only non-empty command strings`);
         } else {
-            acceptance = t.acceptance.map((c) => (c as string).trim());
+            t.acceptance.forEach((entry, j) => {
+                if (isNonEmptyString(entry)) { acceptance.push(entry.trim()); acceptanceRoles.push(null); return; }
+                if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
+                    const e = entry as Record<string, unknown>;
+                    if (isNonEmptyString(e.cmd) && (e.role === "proof" || e.role === "regression")) {
+                        acceptance.push(e.cmd.trim()); acceptanceRoles.push(e.role);
+                        return;
+                    }
+                }
+                errors.push(`${at}.acceptance[${j}] must be a non-empty command string or {"cmd", "role"} with role "proof" | "regression"`);
+            });
         }
 
         let scopeHint: string | null = null;
@@ -70,7 +82,7 @@ export function parsePlanDraft(tasksJson: string): ParseResult {
             slug: isNonEmptyString(t.slug) ? t.slug.trim() : `«${at}»`,
             title: isNonEmptyString(t.title) ? t.title : "",
             intent: isNonEmptyString(t.intent) ? t.intent : "",
-            acceptance, scopeHint, dependsOn,
+            acceptance, acceptanceRoles, scopeHint, dependsOn,
         });
     });
 
