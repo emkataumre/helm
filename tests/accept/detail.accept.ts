@@ -16,7 +16,10 @@ describe("detail", () => {
         const helm = await launchHelm({ seed });
         const { page } = helm;
         try {
-            // The merged card renders in the done column; clicking it opens TaskDetail.
+            // UX-polish delta (2026-07-11): merged/abandoned cards live in the foldable "done" strip,
+            // COLLAPSED by default — expand it first, then the merged card is clickable and opens TaskDetail.
+            await page.locator(".helm-donefold-head").waitFor({ state: "visible", timeout: 30_000 });
+            await page.locator(".helm-donefold-head").click();
             await page.getByText(title).waitFor({ state: "visible", timeout: 30_000 });
             await page.getByText(title).click();
 
@@ -31,10 +34,13 @@ describe("detail", () => {
             await page.getByText("No progress file — the worktree is gone.").waitFor({ state: "visible", timeout: 15_000 });
             await page.getByText("acceptance — the per-task gate").waitFor({ state: "visible", timeout: 15_000 });
 
-            // Back returns to the project board (the card is visible again, the detail's back button gone).
+            // Back returns to the project board. The done fold remounts COLLAPSED (its default), so the
+            // strip's head is the visibility proxy — expand it again and the merged card is back.
             const back = page.getByRole("button", { name: "Back", exact: true });
             await back.waitFor({ state: "visible" });
             await back.click();
+            await page.locator(".helm-donefold-head").waitFor({ state: "visible", timeout: 15_000 });
+            await page.locator(".helm-donefold-head").click();
             await page.getByText(title).waitFor({ state: "visible", timeout: 15_000 });
             expect(await page.getByRole("button", { name: "Back", exact: true }).count()).toBe(0);
         } finally {
