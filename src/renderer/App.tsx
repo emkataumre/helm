@@ -180,6 +180,17 @@ export function App() {
             void refreshSessions(); // the conductor PTY also shows in the Terminals list
         });
     }, [refreshSessions]);
+    // The always-on in-pane restart (issue #1): main kills the dead-inside pwsh and respawns. Swap in the new
+    // session at once, then re-hydrate so `resumable` reflects the guard again (a Fresh restart forces a new
+    // unpersisted id → not resumable until it lands a turn; a Resume restart keeps the recorded id resumable).
+    const restartConductor = useCallback((project: Project, fresh: boolean) => {
+        void window.helm.restartConductor(project.id, fresh).then((s) => {
+            if (!s) return;
+            setConductorSessions((m) => ({ ...m, [project.id]: s }));
+            hydrateConductor(project);
+            void refreshSessions();
+        });
+    }, [hydrateConductor, refreshSessions]);
     const onPlanApproved = useCallback((projectId: string, count: number, warnings: string[], skipped: boolean) => {
         toast("success", `Queued ${count} task${count === 1 ? "" : "s"}`,
             (warnings.length ? warnings.join(" · ") + ". " : "PRD stored durably with the plan. ") +
@@ -319,6 +330,7 @@ export function App() {
                             conductorResumable={conductorResumable[routeProject.id] ?? false}
                             onHydrateConductor={() => hydrateConductor(routeProject)}
                             onLaunchConductor={(fresh) => launchConductor(routeProject, fresh)}
+                            onRestartConductor={(fresh) => restartConductor(routeProject, fresh)}
                             onApproved={(count, warnings, skipped) => onPlanApproved(routeProject.id, count, warnings, skipped)}
                             onNewTask={() => setDialogs((d) => ({ ...d, newTask: true, newTaskProject: routeProject.id }))}
                             onPromote={() => setDialogs((d) => ({ ...d, promote: routeProject.id }))}

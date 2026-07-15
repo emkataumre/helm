@@ -17,7 +17,7 @@ import { TaskCard } from "../../src/renderer/views/Board";
 import { FeedView, Inspector, IterationsTable, ProgressView } from "../../src/renderer/views/TaskDetail";
 import { StatusBar, Titlebar } from "../../src/renderer/views/shell";
 import { PromoteOutcome } from "../../src/renderer/views/dialogs";
-import { ConductorLaunch, ConductorTab, PreflightReportPanel, StageRail, unackedWarns } from "../../src/renderer/views/Conductor";
+import { ConductorLaunch, ConductorTab, PreflightReportPanel, RestartControl, StageRail, unackedWarns } from "../../src/renderer/views/Conductor";
 import { PlansTab } from "../../src/renderer/views/Plans";
 import { TerminalsView } from "../../src/renderer/views/Terminals";
 import type { EngineSnapshot, PlanRailState, PreflightReport, Project, PromoteResponse, PtySession, PtySessionInfo, SchedulerState } from "../../src/shared/types";
@@ -342,7 +342,7 @@ describe("Conductor units (M10 rail + M11 two-phase approval, absorbed into the 
         planTitle: "Plan A",
         tasks: [{ slug: "t1", title: "First", intent: "do it", acceptance: ["npm run x"], scopeHint: null, dependsOn: [] }],
     };
-    const conductorProps = { project: project(), session, resumable: false, onHydrate: noop, onLaunch: noop, onApproved: noop };
+    const conductorProps = { project: project(), session, resumable: false, onHydrate: noop, onLaunch: noop, onRestart: noop, onApproved: noop };
     // The static markup of the button that contains `text` (renderToStaticMarkup emits `disabled=""`).
     const buttonTagFor = (html: string, text: string): string => {
         const at = html.indexOf(text);
@@ -394,6 +394,21 @@ describe("Conductor units (M10 rail + M11 two-phase approval, absorbed into the 
 
     it("PROBE: no resumable session → Resume is DISABLED (the guard's face: a dead id must not offer --resume), Fresh stays available", () => {
         const html = render(<ConductorLaunch project={project()} resumable={false} onLaunch={noop} />);
+        expect(html).toContain('data-verify-resumable="false"');
+        expect(buttonTagFor(html, "Resume conductor")).toContain("disabled");
+        expect(buttonTagFor(html, "Fresh session")).not.toContain("disabled");
+    });
+
+    // ── issue #1: the always-on in-pane restart (the dead-session wedge escape) ────────────────────
+    it("the live pane always carries an in-pane RestartControl (Resume + Fresh), so a dead claude is never a wedge", () => {
+        const html = render(<ConductorTab {...conductorProps} resumable={true} rail={rail()} />);
+        expect(html).toContain('data-verify-unit="RestartControl"');
+        expect(html).toContain("Resume conductor");
+        expect(html).toContain("Fresh session");
+    });
+
+    it("PROBE: Restart's Resume is DISABLED when nothing is resumable (the guard's face), Fresh stays available", () => {
+        const html = render(<RestartControl resumable={false} onRestart={noop} />);
         expect(html).toContain('data-verify-resumable="false"');
         expect(buttonTagFor(html, "Resume conductor")).toContain("disabled");
         expect(buttonTagFor(html, "Fresh session")).not.toContain("disabled");

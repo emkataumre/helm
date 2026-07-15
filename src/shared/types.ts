@@ -470,6 +470,11 @@ export interface HelmApi {
     // onPlanChanged pushes the live rail state (per project) as the session writes prd.md/tasks.json.
     openConductor: (projectId: string) => Promise<ConductorOpenResult | null>;
     launchConductor: (projectId: string, fresh: boolean) => Promise<PtySession | null>;
+    // The always-on in-pane restart (issue #1): kills the live conductor pwsh (the -NoExit shell that
+    // outlives a dead `claude` — the wedge, where the pane looks alive but the conversation is gone) and
+    // respawns it, Resume vs Fresh per the SAME guard as launch. Distinct from launch's idempotent reuse:
+    // this is the explicit "relaunch this session" verb, reachable while a (dead-inside) session is live.
+    restartConductor: (projectId: string, fresh: boolean) => Promise<PtySession | null>;
     onPlanChanged: (cb: (projectId: string, state: PlanRailState) => void) => void;
     // M11 dynamic pre-flight (overhauled 2026-07-14): re-read + re-validate from disk, then EXECUTE each
     // acceptance command once in a throwaway worktree off the integration tip and classify it. The result is

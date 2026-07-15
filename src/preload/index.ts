@@ -35,6 +35,7 @@ const api: HelmApi = {
     // M16 conductor (absorbs M10's planner) + the M10 plan-rail push.
     openConductor: (projectId) => ipcRenderer.invoke("conductor:open", projectId),
     launchConductor: (projectId, fresh) => ipcRenderer.invoke("conductor:launch", projectId, fresh),
+    restartConductor: (projectId, fresh) => ipcRenderer.invoke("conductor:restart", projectId, fresh),
     onPlanChanged: (cb) => { ipcRenderer.on("plan:changed", (_e, projectId: string, state) => cb(projectId, state)); },
     preflightPlan: (projectId) => ipcRenderer.invoke("plans:preflight", projectId),
     cancelPreflight: (projectId) => ipcRenderer.invoke("plans:cancelPreflight", projectId),

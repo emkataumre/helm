@@ -510,6 +510,27 @@ export function registerIpc(
     const conductorResumable = (project: Project): boolean =>
         isConductorResumable(project.conductorSessionId, existsSync, homedir(), project.repoPath);
 
+    // The shared spawn body for launch + restart (NOT the reuse/kill decision — that's each caller's).
+    // fresh=false resumes ONLY when the guard holds (belt: a stale renderer can't force --resume); anything
+    // else forces a fresh --session-id and records it UP FRONT so the next open can offer Resume once claude
+    // persists a turn. The resilient `pwsh -NoExit` wrapper is the M5 contract; default permission mode,
+    // NOT through spawn.ts — the human seam.
+    const spawnConductor = (project: Project, fresh: boolean): PtySession => {
+        const resume = !fresh && conductorResumable(project);
+        let sessionId = project.conductorSessionId;
+        if (!resume) {
+            sessionId = randomUUID();
+            recordConductorSession(db, project.id, sessionId);
+        }
+        return ptyManager.create({
+            cwd: project.repoPath,
+            argv: buildConductorArgv(sessionId, resume),
+            kind: "planner",
+            title: `${project.name} — conductor`,
+            projectId: project.id,
+        });
+    };
+
     ipcMain.handle("conductor:open", (_e, projectId: string): ConductorOpenResult | null => {
         const project = getProject(db, projectId);
         if (!project) return null;
@@ -532,19 +553,22 @@ export function registerIpc(
         ensurePlanWatch(project);
         const alive = liveConductor(projectId);
         if (alive) { const { alive: _a, ...meta } = alive; return meta; }
-        const resume = !fresh && conductorResumable(project);
-        let sessionId = project.conductorSessionId;
-        if (!resume) {
-            sessionId = randomUUID();
-            recordConductorSession(db, projectId, sessionId);
-        }
-        return ptyManager.create({
-            cwd: project.repoPath,
-            argv: buildConductorArgv(sessionId, resume),
-            kind: "planner",
-            title: `${project.name} — conductor`,
-            projectId,
-        });
+        return spawnConductor(project, fresh);
+    });
+
+    // The always-on in-pane restart (issue #1). `-NoExit` keeps the conductor pwsh alive after `claude`
+    // exits, so the pane stays "live" and never falls back to the launch panel — the user is wedged at a
+    // dead shell with claude's "Resume this session with…" message and no button. Restart is the button:
+    // it KILLS the live conductor pwsh (unlike launch, which idempotently reuses it) and respawns a fresh
+    // or resumed session per the SAME guard. The kill sets alive=false synchronously, so spawnConductor's
+    // next liveConductor probe (in a following open) won't see the corpse; the new session is returned.
+    ipcMain.handle("conductor:restart", (_e, projectId: string, fresh: boolean): PtySession | null => {
+        const project = getProject(db, projectId);
+        if (!project) return null;
+        ensurePlanWatch(project);
+        const alive = liveConductor(projectId);
+        if (alive) ptyManager.kill(alive.id);
+        return spawnConductor(project, fresh);
     });
 
     // M11 plan views (reads): the two joins the board's plan badge + plan-detail need. db/plans.ts already

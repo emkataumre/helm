@@ -172,7 +172,7 @@ export function FleetView({ tasks, projects, layout, onLayout, onNewTask }: {
 }
 
 /* ================= project view ================= */
-export function ProjectView({ project, tasks, plans, layout, onLayout, route, go, conductorSession, conductorRail, conductorResumable, onHydrateConductor, onLaunchConductor, onApproved, onNewTask, onPromote, onSaveConfig, onDeleteProject }: {
+export function ProjectView({ project, tasks, plans, layout, onLayout, route, go, conductorSession, conductorRail, conductorResumable, onHydrateConductor, onLaunchConductor, onRestartConductor, onApproved, onNewTask, onPromote, onSaveConfig, onDeleteProject }: {
     project: Project;
     tasks: TaskVM[]; // the whole fleet — filtered per tab below
     plans: Plan[];
@@ -185,6 +185,7 @@ export function ProjectView({ project, tasks, plans, layout, onLayout, route, go
     conductorResumable: boolean;
     onHydrateConductor: () => void;
     onLaunchConductor: (fresh: boolean) => void;
+    onRestartConductor: (fresh: boolean) => void;
     onApproved: (count: number, warnings: string[], skipped: boolean) => void;
     onNewTask: () => void;
     onPromote: () => void;
@@ -241,7 +242,7 @@ export function ProjectView({ project, tasks, plans, layout, onLayout, route, go
                     )}
                     {tab === "conductor" && (
                         <ConductorTab project={project} session={conductorSession} rail={conductorRail} resumable={conductorResumable}
-                            onHydrate={onHydrateConductor} onLaunch={onLaunchConductor} onApproved={onApproved} />
+                            onHydrate={onHydrateConductor} onLaunch={onLaunchConductor} onRestart={onRestartConductor} onApproved={onApproved} />
                     )}
                     {tab === "plans" && (
                         <PlansTab project={project} plans={plans} tasks={tasks} initialPlanId={route.planId ?? null}

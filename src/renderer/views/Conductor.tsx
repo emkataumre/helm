@@ -149,14 +149,65 @@ export function ConductorLaunch({ project, resumable, onLaunch }: {
     );
 }
 
+/* ---------- always-on in-pane restart (issue #1 — the dead-session wedge) ---------- */
+// The `pwsh -NoExit` wrapper (the M5 resilient-shell contract) keeps the conductor pwsh alive after
+// `claude` exits, so the pane never falls back to the launch panel — the user is stranded at a dead shell
+// showing claude's "Resume this session with…" message, with no button. This IS the button: always present
+// in the live pane's header, a compact ⟳ menu that KILLS the pwsh and respawns — Resume (continue the
+// recorded conversation; disabled unless the guard holds, mirroring the launch panel's Resume) or Fresh
+// (a new conversation). Opening the menu is itself the two-step guard against an accidental restart of a
+// healthy session. Pure + prop-driven; the menu markup is ALWAYS rendered (hidden when closed) so the
+// render tests can probe the guard's face on the Resume item without driving interaction.
+export function RestartControl({ resumable, onRestart }: {
+    resumable: boolean;
+    onRestart: (fresh: boolean) => void;
+}) {
+    const [open, setOpen] = useState(false);
+    const ref = useRef<HTMLDivElement>(null);
+    const pick = (fresh: boolean) => { setOpen(false); onRestart(fresh); };
+    // Close on outside-click / Escape via a document listener (the Dialog's pattern). A fixed-position
+    // click-away backdrop was tried first and did NOT work: an ancestor (`.helm-fade-in` on the ProjectView
+    // root) animates `transform`, which establishes a containing block + stacking context that buries the
+    // backdrop so it never receives the click — the menu was un-closeable. A window listener is
+    // stacking-context-agnostic. Only mounted while open; the ref scopes "inside" to the trigger + menu.
+    useEffect(() => {
+        if (!open) return;
+        const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+        const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+        window.addEventListener("mousedown", onDown);
+        window.addEventListener("keydown", onKey);
+        return () => { window.removeEventListener("mousedown", onDown); window.removeEventListener("keydown", onKey); };
+    }, [open]);
+    return (
+        <div ref={ref} {...verifyAttrs({ unit: "RestartControl", resumable, open })} style={{ position: "relative", flex: "none" }}>
+            <IconButton size="sm" label="Restart conductor" active={open} onClick={() => setOpen((o) => !o)}>
+                <Icon name="RefreshCw" size={13} /><Icon name="ChevronDown" size={10} style={{ marginLeft: 1 }} />
+            </IconButton>
+            {/* Visibility is driven by inline `display`, NOT the `hidden` attribute: an inline `display`
+                overrides the UA `[hidden]{display:none}` rule, so `hidden` here would be a no-op and the
+                menu would show permanently (the "not closeable" bug). display:none still leaves the markup
+                in the DOM, so the render tests can probe the guard's face on the Resume item. */}
+            <div role="menu" style={{ display: open ? "flex" : "none", position: "absolute", right: 0, top: "calc(100% + 4px)", zIndex: 50, minWidth: 210, flexDirection: "column", gap: 2, padding: 4, background: "var(--surface-card)", border: "1px solid var(--border-default)", borderRadius: 10, boxShadow: "var(--elev-card)" }}>
+                <Button variant="ghost" fullWidth disabled={!resumable} iconLeft={<Icon name="Play" size={13} />} style={{ justifyContent: "flex-start" }} onClick={() => pick(false)}>
+                    Resume conductor{resumable ? "" : " — no persisted session"}
+                </Button>
+                <Button variant="ghost" fullWidth iconLeft={<Icon name="Plus" size={13} />} style={{ justifyContent: "flex-start" }} onClick={() => pick(true)}>
+                    Fresh session
+                </Button>
+            </div>
+        </div>
+    );
+}
+
 /* ---------- conductor tab ---------- */
-export function ConductorTab({ project, session, rail, resumable, onHydrate, onLaunch, onApproved }: {
+export function ConductorTab({ project, session, rail, resumable, onHydrate, onLaunch, onRestart, onApproved }: {
     project: Project;
     session: PtySession | null;
     rail: PlanRailState | undefined;
     resumable: boolean;
     onHydrate: () => void;        // read-only conductor:open — refresh session/rail/resumable; spawns nothing
     onLaunch: (fresh: boolean) => void;
+    onRestart: (fresh: boolean) => void; // kill the live conductor pwsh + respawn (the dead-session escape)
     onApproved: (count: number, warnings: string[], skipped: boolean) => void;
 }) {
     const [preflight, setPreflight] = useState<PreflightReport | "loading" | null>(null);
@@ -229,6 +280,7 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
                     <Overline>conductor — {project.repoPath}</Overline>
                     <span style={{ flex: 1 }}></span>
                     <Mono dim size="var(--text-2xs)">closing the tab keeps it alive</Mono>
+                    <RestartControl resumable={resumable} onRestart={onRestart} />
                 </div>
                 <div style={{ flex: 1, minHeight: 320 }}>
                     <TerminalPane key={session.id} session={session} />
