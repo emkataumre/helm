@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { NewProjectInput, NewTaskInput, Project, ProjectConfigPatch, PromoteResponse } from "../../shared/types";
-import { Button, Checkbox, Dialog, Icon, IconButton, Input, ProgressBar, Select, Textarea } from "../ds";
+import { Button, Checkbox, Dialog, Icon, IconButton, Input, ProgressBar, Select, type SelectOption, Textarea } from "../ds";
 import { verifyAttrs } from "../components/verifyAttrs";
 import { ConfirmDialog, CopyCmd, FailureBox, Mono, Overline, type TaskVM } from "./helpers";
 
@@ -270,6 +270,53 @@ export function RegisterProjectDialog({ open, onCreate, onClose }: {
     );
 }
 
+/* ---------- model override picker ---------- */
+// The `claude --model` override. These are the CLI's tier aliases (each resolves to the
+// latest model of that tier) plus "cli default" (empty) and a "custom…" escape hatch so
+// an exact model id like `claude-opus-4-8` can still be pinned.
+const MODEL_PRESETS = ["fable", "opus", "sonnet", "haiku"] as const;
+const MODEL_OPTIONS: SelectOption[] = [
+    { value: "", label: "cli default" },
+    ...MODEL_PRESETS.map((m) => ({ value: m, label: m })),
+    { value: "__custom__", label: "custom…" },
+];
+
+/** Keyed per project by the caller so a project switch re-derives custom-vs-preset. */
+function ModelField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+    const [customMode, setCustomMode] = useState<boolean>(() => value !== "" && !(MODEL_PRESETS as readonly string[]).includes(value));
+    const selValue = customMode ? "__custom__" : value;
+    return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <Select
+                value={selValue}
+                options={MODEL_OPTIONS}
+                onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "__custom__") setCustomMode(true);
+                    else { setCustomMode(false); onChange(v); }
+                }}
+            />
+            {customMode && (
+                <Input mono value={value} placeholder="e.g. claude-opus-4-8" autoFocus onChange={(e) => onChange(e.target.value)} />
+            )}
+        </div>
+    );
+}
+
+/* Explains every promotion mode at once — an inline card toggled by the ⓘ. Rendered
+ * outside the Field's <Overline> label so it's neither uppercased nor clipped by the
+ * scrolling config pane (both bit the hover-tooltip version). */
+function PromotionHelpCard() {
+    return (
+        <div className="helm-help-card">
+            {(["pr", "direct", "strict"] as const).map((m) => (
+                <div key={m}><span className="helm-help-term">{m}</span> — {MODE_BLURB[m].split("— ")[1] ?? MODE_BLURB[m]}</div>
+            ))}
+            <div style={{ color: "var(--text-faint)" }}>Trunk never advances without your explicit action — Helm never pushes it for you.</div>
+        </div>
+    );
+}
+
 /* ---------- project config tab (§5.1.2 / §5.1.3) ---------- */
 export function ProjectConfigTab({ project, onSave, onDelete }: {
     project: Project;
@@ -286,6 +333,7 @@ export function ProjectConfigTab({ project, onSave, onDelete }: {
     const [f, setF] = useState(() => toForm(project));
     const [dirty, setDirty] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [showPromoHelp, setShowPromoHelp] = useState(false);
     useEffect(() => { setF(toForm(project)); setDirty(false); }, [project.id]); // eslint-disable-line react-hooks/exhaustive-deps
     const set = (k: keyof ReturnType<typeof toForm>, v: string) => { setF((o) => ({ ...o, [k]: v })); setDirty(true); };
     const numOrNull = (v: string) => (v.trim() === "" ? null : Number(v));
@@ -324,7 +372,7 @@ export function ProjectConfigTab({ project, onSave, onDelete }: {
                 <Overline>gates &amp; bounds</Overline>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                     <Field label="setup command" hint="once per fresh worktree"><Input mono value={f.setupCommand} onChange={(e) => set("setupCommand", e.target.value)} placeholder="(none)" /></Field>
-                    <Field label="model" hint="claude --model override"><Input mono value={f.model} onChange={(e) => set("model", e.target.value)} placeholder="cli default" /></Field>
+                    <Field label="model" hint="claude --model override"><ModelField key={project.id} value={f.model} onChange={(v) => set("model", v)} /></Field>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
                     <Field label="iter cap"><Input mono type="number" value={f.iterationCap} onChange={(e) => set("iterationCap", e.target.value)} placeholder="8" /></Field>
@@ -339,13 +387,19 @@ export function ProjectConfigTab({ project, onSave, onDelete }: {
             <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                 <Overline>hand-off &amp; promotion</Overline>
                 <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", gap: 12 }}>
-                    <Field label="promotion mode" hint={MODE_BLURB[f.promotionMode as Project["promotionMode"]]}>
+                    <Field
+                        label={<span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>promotion mode
+                            <button type="button" className="helm-help-toggle" aria-label="How promotion modes work" aria-expanded={showPromoHelp} onClick={() => setShowPromoHelp((v) => !v)}><Icon name="Info" size={12} /></button>
+                        </span>}
+                        hint={MODE_BLURB[f.promotionMode as Project["promotionMode"]]}
+                    >
                         <Select value={f.promotionMode} onChange={(e) => set("promotionMode", e.target.value)} options={["pr", "direct", "strict"]} />
                     </Field>
                     <Field label="terminal command" hint="drop-in template with {worktree} / {resume} — empty = in-app terminal tabs">
                         <Input mono value={f.terminalCommand} onChange={(e) => set("terminalCommand", e.target.value)} placeholder="(in-app terminals)" />
                     </Field>
                 </div>
+                {showPromoHelp && <PromotionHelpCard />}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                     <Field label="jail image" hint="set = every agent run is jailed in Docker; gates still run host-side">
                         <Input mono value={f.jailImage} onChange={(e) => set("jailImage", e.target.value)} placeholder="(agents run on the host)" />

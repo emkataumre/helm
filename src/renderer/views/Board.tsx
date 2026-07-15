@@ -101,23 +101,75 @@ export function TaskCard({ task, project, showProject }: { task: TaskVM; project
 }
 
 /* ---------- kanban ---------- */
-function BoardKanban({ tasks, projById, showProject }: { tasks: TaskVM[]; projById: Record<string, Project>; showProject?: boolean }) {
+// The live pipeline is four columns; the terminal merged/abandoned pile grows without
+// bound, so it lives in a *foldable* strip below the board (collapsed by default). It's
+// there when you want it, and dropping it from the column row keeps 4 columns inside a
+// laptop width — no page-wide side-scroll. Opened, it previews a few and expands on demand.
+const LIVE_COLS = KANBAN_COLS.filter((c) => c.id !== "done");
+const DONE_STATUSES: TaskStatus[] = ["merged", "abandoned"];
+const DONE_PREVIEW = 3;
+
+function KanbanColumn({ col, tasks, projById, showProject }: {
+    col: { id: string; label: string; statuses: TaskStatus[] };
+    tasks: TaskVM[];
+    projById: Record<string, Project>;
+    showProject?: boolean;
+}) {
     return (
-        <div className="helm-kanban">
-            {KANBAN_COLS.map((col) => {
-                const colTasks = sortTasks(tasks.filter((t) => col.statuses.includes(t.status)));
-                return (
-                    <div key={col.id} className="helm-kanban-col" {...verifyAttrs({ unit: "KanbanCol", col: col.id, count: colTasks.length })}>
-                        <div className="helm-col-head">
-                            <StatusDot status={col.id === "done" ? "merged" : (col.id as TaskStatus)} size={7} />
-                            {col.label}
-                            <span style={{ color: "var(--text-faint)" }}>{colTasks.length}</span>
-                        </div>
-                        {colTasks.map((t) => <TaskCard key={t.id} task={t} project={projById[t.projectId]} showProject={showProject} />)}
-                        {!colTasks.length && <div style={{ border: "1px dashed var(--border-subtle)", borderRadius: 10, padding: "18px 0", textAlign: "center", color: "var(--text-faint)", fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)" }}>empty</div>}
+        <div className="helm-kanban-col" {...verifyAttrs({ unit: "KanbanCol", col: col.id, count: tasks.length })}>
+            <div className="helm-col-head">
+                <StatusDot status={col.id as TaskStatus} size={7} />
+                {col.label}
+                <span style={{ color: "var(--text-faint)" }}>{tasks.length}</span>
+            </div>
+            {tasks.map((t) => <TaskCard key={t.id} task={t} project={projById[t.projectId]} showProject={showProject} />)}
+            {!tasks.length && <div style={{ border: "1px dashed var(--border-subtle)", borderRadius: 10, padding: "18px 0", textAlign: "center", color: "var(--text-faint)", fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)" }}>empty</div>}
+        </div>
+    );
+}
+
+// The foldable terminal strip. Collapsed by default; opened it previews DONE_PREVIEW
+// cards with a show-more expander so it never balloons the board's height.
+function DoneFold({ tasks, projById, showProject }: { tasks: TaskVM[]; projById: Record<string, Project>; showProject?: boolean }) {
+    const [open, setOpen] = useState(false);
+    const [showAll, setShowAll] = useState(false);
+    if (!tasks.length) return null;
+    const shown = showAll ? tasks : tasks.slice(0, DONE_PREVIEW);
+    const hidden = tasks.length - shown.length;
+    return (
+        <div className="helm-donefold" {...verifyAttrs({ unit: "DoneFold", count: tasks.length, open, shown: open ? shown.length : 0 })}>
+            <button className="helm-donefold-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+                <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} />
+                <StatusDot status="merged" size={7} />
+                done <span className="helm-donefold-count">{tasks.length}</span>
+                {!open && <span className="helm-donefold-hint">merged &amp; abandoned — click to show</span>}
+            </button>
+            {open && (
+                <div className="helm-donefold-body">
+                    <div className="helm-donefold-grid">
+                        {shown.map((t) => <TaskCard key={t.id} task={t} project={projById[t.projectId]} showProject={showProject} />)}
                     </div>
-                );
-            })}
+                    {tasks.length > DONE_PREVIEW && (
+                        <button className="helm-col-more" onClick={() => setShowAll((v) => !v)}>
+                            {showAll ? "Show fewer" : `Show ${hidden} more`}
+                        </button>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+function BoardKanban({ tasks, projById, showProject }: { tasks: TaskVM[]; projById: Record<string, Project>; showProject?: boolean }) {
+    const done = sortTasks(tasks.filter((t) => DONE_STATUSES.includes(t.status)));
+    return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+            <div className="helm-kanban">
+                {LIVE_COLS.map((col) => (
+                    <KanbanColumn key={col.id} col={col} tasks={sortTasks(tasks.filter((t) => col.statuses.includes(t.status)))} projById={projById} showProject={showProject} />
+                ))}
+            </div>
+            <DoneFold tasks={done} projById={projById} showProject={showProject} />
         </div>
     );
 }

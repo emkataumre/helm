@@ -12,7 +12,7 @@ import { Board, LayoutSwitch, type BoardLayout } from "./Board";
 import { ConductorTab } from "./Conductor";
 import { PlansTab } from "./Plans";
 import { ProjectConfigTab } from "./dialogs";
-import { Heatmap, Mono, Overline, fmtUsd, type TaskVM } from "./helpers";
+import { ActivityPanel, Mono, Overline, fmtUsd, type TaskVM } from "./helpers";
 
 export interface FleetCounts { running: number; needsHuman: number; merged: number }
 export const countTasks = (tasks: TaskVM[]): FleetCounts => ({
@@ -223,7 +223,7 @@ export function ProjectView({ project, tasks, plans, layout, onLayout, route, go
                                 <summary style={{ padding: "9px 12px", cursor: "pointer", fontSize: "var(--text-xs)", color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--font-mono)" }}>
                                     <Icon name="CalendarRange" size={13} style={{ display: "inline-block" }} /> activity — {mergedAt.length} merged all-time
                                 </summary>
-                                <div style={{ padding: "4px 12px 12px", overflowX: "auto" }}><Heatmap mergedAt={mergedAt} /></div>
+                                <div style={{ padding: "4px 12px 14px" }}><ActivityPanel tasks={myTasks} /></div>
                             </details>
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                 {planFilter && (

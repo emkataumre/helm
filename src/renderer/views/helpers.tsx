@@ -3,7 +3,7 @@
 // (app/helpers.jsx) onto the real window.helm data plane. The design's derived flags
 // (blocked / waitingOn) come straight off TaskListItem (the ipc computes them); `stuck`
 // is derived here exactly like the engine's cockpit rule: a parent needs-human/abandoned.
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, Fragment, useContext, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import type { ActivityEntry, EngineSnapshot, TaskListItem, TaskStatus } from "../../shared/types";
 import { Button, Dialog, Icon, IconButton, Input, StatusDot, StatusPill, Tooltip } from "../ds";
@@ -223,31 +223,84 @@ export function Heatmap({ mergedAt, weeks = 26 }: { mergedAt: number[]; weeks?: 
 
     const dayLabel = ["Mon", "", "Wed", "", "Fri", "", ""];
     const level = (n: number) => (n <= 0 ? 0 : Math.min(4, n));
+    // CSS grid with fixed-size tracks keeps every cell a perfect square — the month
+    // labels ride a separate `auto` header row and overflow to the right without ever
+    // widening a week column (the <table> layout let "Jan"/"Feb" stretch the columns).
     return (
         <div className="helm-heatmap" {...verifyAttrs({ unit: "Heatmap", merged: mergedAt.length })}>
-            <table>
-                <tbody>
-                    <tr>
-                        <td className="lab"></td>
-                        {monthLabels.map((m, i) => <td key={i} style={{ fontSize: 10, color: "var(--text-faint)", padding: 0 }}>{m}</td>)}
-                    </tr>
-                    {[0, 1, 2, 3, 4, 5, 6].map((d) => (
-                        <tr key={d}>
-                            <td className="lab">{dayLabel[d]}</td>
-                            {grid.map((col, w) => {
-                                const lvl = level(col[d]);
-                                return <td key={w} className="cell" title={col[d] ? `${col[d]} merged` : ""} style={lvl ? { background: HEAT_LEVELS[lvl] } : undefined}></td>;
-                            })}
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-            <div style={{ display: "flex", alignItems: "center", gap: 5, paddingLeft: 34 }}>
+            <div
+                className="helm-heatmap-grid"
+                style={{ gridTemplateColumns: `auto repeat(${weeks}, var(--heat-cell))`, gridTemplateRows: `auto repeat(7, var(--heat-cell))` }}
+            >
+                <span className="helm-heat-corner" />
+                {monthLabels.map((m, i) => <span key={"m" + i} className="helm-heat-mon">{m}</span>)}
+                {[0, 1, 2, 3, 4, 5, 6].map((d) => (
+                    <Fragment key={d}>
+                        <span className="helm-heat-lab">{dayLabel[d]}</span>
+                        {grid.map((col, w) => {
+                            const lvl = level(col[d]);
+                            return <span key={w} className="helm-heat-cell" title={col[d] ? `${col[d]} merged` : ""} style={lvl ? { background: HEAT_LEVELS[lvl] } : undefined} />;
+                        })}
+                    </Fragment>
+                ))}
+            </div>
+            <div className="helm-heatmap-legend">
                 <span>Less</span>
-                {HEAT_LEVELS.map((c, i) => <span key={i} style={{ width: 9, height: 9, borderRadius: 2, background: c, display: "inline-block" }}></span>)}
+                {HEAT_LEVELS.map((c, i) => <span key={i} className="helm-heat-cell" style={{ background: c }} />)}
                 <span>More</span>
                 <span style={{ marginLeft: "auto", color: "var(--text-faint)" }}>merged tasks · last 6 months</span>
             </div>
+        </div>
+    );
+}
+
+/* ---------- activity panel — fleet stats + the heatmap (fills the wide activity strip) ---------- */
+function StatTile({ value, label, sub }: { value: ReactNode; label: string; sub?: ReactNode }) {
+    return (
+        <div className="helm-stat">
+            <b>{value}</b>
+            <span>{label}</span>
+            {sub != null && <small>{sub}</small>}
+        </div>
+    );
+}
+
+const dayStart = (ts: number) => { const d = new Date(ts); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
+
+export function ActivityPanel({ tasks }: { tasks: TaskVM[] }) {
+    const s = useMemo(() => {
+        const merged = tasks.filter((t) => t.status === "merged");
+        const mergedAt = merged.map((t) => t.updatedAt);
+        const abandoned = tasks.filter((t) => t.status === "abandoned").length;
+        let costUsd = 0, tokens = 0, sessions = 0;
+        for (const t of tasks) {
+            const tot = t.snap?.totals;
+            if (tot) { costUsd += tot.costUsd; tokens += tot.input + tot.output + tot.cacheRead + tot.cacheCreation; }
+            sessions += t.snap?.iterations.length ?? 0;
+        }
+        // Per-day merge counts drive the streaks and the busiest-day stat.
+        const perDay = new Map<number, number>();
+        for (const ts of mergedAt) { const k = dayStart(ts); perDay.set(k, (perDay.get(k) ?? 0) + 1); }
+        const busiest = perDay.size ? Math.max(...perDay.values()) : 0;
+        const days = [...perDay.keys()].sort((a, b) => a - b);
+        let best = 0, run = 0, prev = 0;
+        for (const d of days) { run = prev && d - prev === DAY_MS ? run + 1 : 1; best = Math.max(best, run); prev = d; }
+        let current = 0;
+        for (let d = dayStart(Date.now()); perDay.has(d); d -= DAY_MS) current++;
+        return { merged: merged.length, mergedAt, abandoned, costUsd, tokens, sessions, busiest, best, current };
+    }, [tasks]);
+
+    return (
+        <div className="helm-activity-panel">
+            <div className="helm-actstats">
+                <StatTile value={s.merged} label="merged" sub={s.abandoned ? `${s.abandoned} abandoned` : "all-time"} />
+                <StatTile value={fmtUsd(s.costUsd)} label="spent" />
+                <StatTile value={fmtTok(s.tokens)} label="tokens" />
+                <StatTile value={s.sessions} label="sessions" sub="claude runs" />
+                <StatTile value={`${s.current}d`} label="streak" sub={`best ${s.best}d`} />
+                <StatTile value={s.busiest} label="busiest day" sub={s.busiest ? "merges/day" : "—"} />
+            </div>
+            <div className="helm-activity-cal"><Heatmap mergedAt={s.mergedAt} /></div>
         </div>
     );
 }
