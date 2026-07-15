@@ -1,15 +1,22 @@
 // src/main/engine/planWatcher.ts
-// The .helm/plan/ side-rail engine (spec §3). watchPlanDir watches the single FLAT drop dir (no recursion →
+// The .helm/plan/ side-rail engine (spec §3). watchPlanDir watches the FLAT drop dir (no recursion →
 // no chokidar), DEBOUNCEs a burst of fs events (editors + a `claude` writing a file fire storms), does an
 // initial read, and is tolerant of the dir not existing yet. The debounce/read logic + the pure rail-state
 // composition are unit-tested with an injected fs (the fs.watch edge is thin and Windows-flaky). buildPlanRailState
 // composes the REAL parsePlanDraft + staticPreflight into the shape the renderer renders.
-import { readFileSync, watch as fsWatch } from "node:fs";
+// The dir holds MANY drafts at once: every <slug>/ subdir is a named draft (its own prd.md + tasks.json) and
+// the loose root files stay the single anonymous back-compat draft — readPlanDrafts + buildPlanQueueState are
+// that multi-draft read (tests/verify/planqueue/read.test.ts is its proof).
+import { readFileSync, readdirSync, watch as fsWatch } from "node:fs";
 import { join } from "node:path";
 import { parsePlanDraft, staticPreflight, type PreflightCtx } from "./planDraft";
 import type { PlanRailState, PlanStage, PreflightVerdict } from "../../shared/types";
 
 export interface PlanFiles { prdText: string | null; tasksJson: string | null; }
+
+// One entry of the multi-draft read: a <slug>/ subdir is a named draft; the loose root files are the single
+// anonymous (name: null) N=1 draft — the pre-queue back-compat shape.
+export interface PlanDraftFiles extends PlanFiles { name: string | null; }
 
 export const DEBOUNCE_MS = 200;
 
@@ -32,6 +39,40 @@ export function readPlanFiles(dir: string, readFile: (p: string) => string | nul
         prdText: blankToNull(readFile(join(dir, "prd.md"))),
         tasksJson: blankToNull(readFile(join(dir, "tasks.json"))),
     };
+}
+
+// List the <slug>/ subdirs of the plan dir. Dot-prefixed names are skipped (hidden/system dirs are not draft
+// slugs); a missing or unreadable dir → [] (same ENOENT tolerance as the file reads — must never throw).
+const realListSubdirs = (dir: string): string[] => {
+    try { return readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); }
+    catch { return []; }
+};
+
+// Injectable seams for the multi-draft read (unit tests fake the listing + the file map; the fs edge stays thin).
+export interface DraftReadDeps {
+    readFile: (p: string) => string | null;
+    listSubdirs: (dir: string) => string[];
+}
+
+// The multi-draft read: EVERY <slug>/ subdir is a named draft (its own prd.md + tasks.json), read in sorted
+// order for determinism. The loose root files stay the single anonymous draft, listed first — but only when at
+// least one root file actually exists (the root dir always exists, so presence alone can't mean "draft"; a
+// subdir, by contrast, exists only because a planner made it, so it IS a draft even before its files land).
+// A subdir whose files vanish mid-read (half-written) degrades to nulls for THAT draft only — never a throw,
+// never a dropped sibling.
+export function readPlanDrafts(dir: string, injected?: Partial<DraftReadDeps>): PlanDraftFiles[] {
+    const readFile = injected?.readFile ?? readFileOrNull;
+    const listSubdirs = injected?.listSubdirs ?? realListSubdirs;
+    const drafts: PlanDraftFiles[] = [];
+    const root = readPlanFiles(dir, readFile);
+    if (root.prdText != null || root.tasksJson != null) drafts.push({ name: null, ...root });
+    for (const name of listSubdirs(dir).filter((n) => !n.startsWith(".")).sort()) {
+        let files: PlanFiles;
+        try { files = readPlanFiles(join(dir, name), readFile); }
+        catch { files = { prdText: null, tasksJson: null }; }
+        drafts.push({ name, ...files });
+    }
+    return drafts;
 }
 
 // Real fs.watch on a flat dir, tolerant of it not existing yet (ENOENT → a no-op watcher). persistent:false so
@@ -87,4 +128,20 @@ export function buildPlanRailState(files: PlanFiles, ctx: PreflightCtx): PlanRai
         if (r.ok) verdicts = staticPreflight(r.draft, ctx);
     }
     return { stage, prdText: files.prdText, parse, verdicts };
+}
+
+export type NamedPlanRailState = PlanRailState & { name: string | null };
+
+// The queue view: the SAME rail contract, once per draft. Each draft parses independently — a malformed
+// tasks.json carries its errors inside its own entry and can never poison a sibling. Belt on top of that
+// isolation: a draft whose composition throws (a hostile ctx probe, an exotic seam) becomes its own
+// parse-FAIL entry instead of taking the map down — "couldn't judge" must surface per-draft, never vanish.
+export function buildPlanQueueState(drafts: PlanDraftFiles[], ctx: PreflightCtx): NamedPlanRailState[] {
+    return drafts.map((d) => {
+        try { return { name: d.name, ...buildPlanRailState(d, ctx) }; }
+        catch (e) {
+            const stage: PlanStage = d.tasksJson != null ? "tasks" : d.prdText != null ? "prd" : "conversing";
+            return { name: d.name, stage, prdText: d.prdText, parse: { ok: false, errors: [`draft failed to evaluate: ${(e as Error)?.message ?? String(e)}`] }, verdicts: [] };
+        }
+    });
 }
