@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject, deleteProject, recordConductorSession } from "./db/projects";
 import { insertPlan, listPlans, getPlan, planQueueMetaFromDraft } from "./db/plans";
-import { insertTask, insertPlanTask, listTasks, getTask, updateTask, setDependsOn } from "./db/tasks";
+import { insertTask, insertPlanTask, listTasks, getTask, updateTask, setDependsOn, stampPromoted, isPromoted } from "./db/tasks";
 import { listFailures, recordRecycledFailure, summarizeFailures } from "./db/failures";
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
 import { ensureBranch, checkoutBranch, createWorktree, removeWorktree, listWorktrees, listBranches, addWorktreeForBranch, worktreePathFor } from "./engine/worktree";
@@ -170,9 +170,14 @@ export function registerIpc(
     });
 
     // M6-③ batch-Promote deps: the same throwaway-worktree + setup + re-check engine fns as the merge
-    // stage, plus the promotion primitives. finalizePromotionDeps injects the ONLY push (pushBranch) —
-    // the verify slice inspects exactly this to prove the tool never pushes the target.
-    const finalizePromotionDeps: FinalizeDeps = { pushBranch };
+    // stage, plus the promotion primitives. The finalize deps inject the ONLY push (pushBranch) — the
+    // verify slice inspects exactly this to prove the tool never pushes the target — plus the promoted
+    // ledger's write seam: a LANDED direct advance batch-stamps every then-merged task of the project
+    // (promotedAt + the validated sha; the cockpit's derived 'promoted' badge reads off the stamp).
+    const buildFinalizeDeps = (projectId: string): FinalizeDeps => ({
+        pushBranch,
+        recordPromotion: (sha) => { stampPromoted(db, projectId, sha); notify(); },
+    });
     const buildPromoteDeps = (config: LoopConfig): PromoteStageDeps => ({
         fetchRemote, countCommitsBeyond, revParse, createWorktree, mergeNoFf, runSetup,
         runCheck: (wt, cmd, t) => runCheck(wt, cmd, t),
@@ -322,7 +327,7 @@ export function registerIpc(
         return scheduler.mutexFor(projectId).withLock(async () => {
             const r = await runPromoteStage(project, buildPromoteDeps(config));
             if (r.outcome !== "ready") return r;
-            const f = await finalizePromotion(project, r, finalizePromotionDeps);
+            const f = await finalizePromotion(project, r, buildFinalizeDeps(project.id));
             return { ...r, ...f };
         });
     });
@@ -332,13 +337,15 @@ export function registerIpc(
     // is exactly what tasks:dropIn uses, so the button's enabled state matches what the click will actually do.
     // Plus the M9 derived merged-gate view: `blocked` + the `waitingOn` parents (waitingOnFor over the whole
     // board), so the cockpit can render "waiting on X" without the renderer knowing the gate rule.
+    // Plus the derived promoted-ledger view: `promoted` (promotedAt != null) — a merged task that graduated
+    // to the target via a landed direct Promote. Derived per list like blocked; never a stored TaskStatus.
     // M16: hoisted to a shared fn — the ctl `status` verb reads the SAME board the cockpit reads.
     const listTaskItems = () => {
         const tasks = listTasks(db);
         const byId = new Map(tasks.map((t) => [t.id, t]));
         return tasks.map((t) => {
             const waitingOn = waitingOnFor(t, (id) => byId.get(id));
-            return { ...t, resumable: latestSessionId(listIterations(db, t.id)) != null, blocked: waitingOn.length > 0, waitingOn };
+            return { ...t, resumable: latestSessionId(listIterations(db, t.id)) != null, blocked: waitingOn.length > 0, waitingOn, promoted: isPromoted(t) };
         });
     };
     ipcMain.handle("tasks:list", () => listTaskItems());

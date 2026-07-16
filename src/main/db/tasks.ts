@@ -4,7 +4,12 @@ import type { Db } from "./db";
 import type { Task, NewTaskInput, FailureNote } from "../../shared/types";
 import { recordFailure, resolveFailures } from "./failures";
 
-interface Row extends Omit<Task, "acceptance" | "dependsOn"> { acceptance: string; dependsOn: string | null; }
+// The promoted ledger riding every task row (db.ts ensured columns; NULL = never graduated past
+// integration). Deliberately NOT part of the shared Task shape: 'promoted' is a DERIVED read
+// (promotedAt != null) the ipc stamps onto its list items — never a stored TaskStatus.
+export interface PromotionStamp { promotedAt: number | null; promotedSha: string | null }
+
+interface Row extends Omit<Task, "acceptance" | "dependsOn">, PromotionStamp { acceptance: string; dependsOn: string | null; }
 
 // A guarded JSON.parse for the dependsOn column: NULL/absent/garbage all collapse to [] (a corrupt edge
 // list must never throw on read — a task with no *valid* parents is simply unblocked), keeping only strings.
@@ -16,7 +21,7 @@ function parseDependsOn(raw: string | null): string[] {
     } catch { return []; }
 }
 
-function toTask(row: Row): Task {
+function toTask(row: Row): Task & PromotionStamp {
     return { ...row, acceptance: JSON.parse(row.acceptance) as string[], dependsOn: parseDependsOn(row.dependsOn) };
 }
 
@@ -60,12 +65,12 @@ export function insertPlanTask(db: Db, spec: { id: string; projectId: string; pl
     return t;
 }
 
-export function getTask(db: Db, id: string): Task | undefined {
+export function getTask(db: Db, id: string): (Task & PromotionStamp) | undefined {
     const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as Row | undefined;
     return row ? toTask(row) : undefined;
 }
 
-export function listTasks(db: Db): Task[] {
+export function listTasks(db: Db): Array<Task & PromotionStamp> {
     return (db.prepare("SELECT * FROM tasks ORDER BY createdAt DESC").all() as Row[]).map(toTask);
 }
 
@@ -97,3 +102,21 @@ export function setDependsOn(db: Db, id: string, ids: string[]): void {
     db.prepare("UPDATE tasks SET dependsOn = @dependsOn, updatedAt = @updatedAt WHERE id = @id")
         .run({ dependsOn: ids.length ? JSON.stringify(ids) : null, id, updatedAt: Date.now() });
 }
+
+// The promoted-ledger batch stamp, fired at a successful DIRECT promotion (finalizePromotion actually
+// advanced the target). Promotion graduates the WHOLE integration branch, so every currently-merged task
+// of the project gets the same promotedAt + the exact validated commit. First stamp wins (the promotedAt
+// IS NULL guard): a task graduates once, and a later re-promote must not rewrite that history — only tasks
+// merged since pick up the new sha. Anything not 'merged' (needs-human, queued, running, handed-off,
+// abandoned) is untouched: its work is not part of the validated commit.
+export function stampPromoted(db: Db, projectId: string, validatedSha: string): void {
+    const now = Date.now();
+    db.prepare(
+        `UPDATE tasks SET promotedAt = @now, promotedSha = @sha, updatedAt = @now
+         WHERE projectId = @projectId AND status = 'merged' AND promotedAt IS NULL`,
+    ).run({ now, sha: validatedSha, projectId });
+}
+
+// THE derived 'promoted' read — a stamp exists ⇔ the task graduated past integration to the target.
+// Keyed on promotedAt alone (the sha is companion evidence). Never a TaskStatus: tasks stay 'merged'.
+export const isPromoted = (t: PromotionStamp): boolean => t.promotedAt != null;

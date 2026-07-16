@@ -9,9 +9,13 @@ import type { Project, TaskStatus } from "../../shared/types";
 import { Icon, ProgressBar, StatusDot } from "../ds";
 import { verifyAttrs } from "../components/verifyAttrs";
 import {
-    ActionCtx, EmptyState, FailureBox, Mono, StatusChip, VerbBar, WaitingOn,
-    fmtDiffstat, fmtUsd, parseDiffstat, stuckOf, timeAgo, type TaskVM,
+    ActionCtx, EmptyState, FailureBox, MergeChip, Mono, StatusChip, VerbBar, WaitingOn,
+    chipStatusOf, fmtDiffstat, fmtTok, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
 } from "./helpers";
+
+// The card's compact token figure: the reconciling headline (input + output), matching the
+// Inspector's "tokens" metric. Cache-read dwarfs these once caching kicks in, so it's left out.
+const headlineTokens = (t: TaskVM): number => (t.snap?.totals.input ?? 0) + (t.snap?.totals.output ?? 0);
 
 export type BoardLayout = "kanban" | "list" | "grid";
 
@@ -43,8 +47,8 @@ function CardMetaLine({ task, project, showProject }: { task: TaskVM; project?: 
     else if (project?.jailImage) bits.push("jail");
     const idx = attemptOf(task);
     if (idx > 0) bits.push(`it ${idx}/${capOf(project)}`);
-    const cost = task.snap?.totals.costUsd ?? 0;
-    if (cost > 0) bits.push(fmtUsd(cost));
+    const toks = headlineTokens(task);
+    if (toks > 0) bits.push(`${fmtTok(toks)} tok`);
     if (task.diffstat) {
         const d = parseDiffstat(task.diffstat);
         bits.push(d ? `+${d.plus} −${d.minus}` : task.diffstat);
@@ -58,6 +62,7 @@ export function TaskCard({ task, project, showProject }: { task: TaskVM; project
     const actions = useContext(ActionCtx);
     const terminal = task.status === "merged" || task.status === "abandoned";
     const cur = task.snap?.currentIteration ?? null;
+    const mergePhase = mergePhaseOf(task);
     const verbs = !terminal;
     return (
         <div
@@ -65,15 +70,17 @@ export function TaskCard({ task, project, showProject }: { task: TaskVM; project
             {...verifyAttrs({
                 unit: "TaskCard", status: task.status, id: task.id,
                 resumable: task.resumable, blocked: task.blocked, stuck: stuckOf(task),
+                "merge-phase": mergePhase,
                 "waiting-on": task.blocked ? task.waitingOn.map((w) => w.title).join(", ") || null : null,
                 plan: task.planId, jail: project?.jailImage ? true : null,
+                promoted: task.promoted ? true : null,
             })}
             style={{ opacity: task.status === "abandoned" ? 0.55 : 1 }}
             onClick={() => actions.openTask(task.id)}
         >
             <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                 <span style={{ fontSize: "var(--text-md)", fontWeight: 500, lineHeight: 1.3, flex: 1, minWidth: 0 }}>{task.title}</span>
-                <StatusChip status={task.blocked ? "blocked" : task.status} />
+                <StatusChip status={chipStatusOf(task)} />
             </div>
             <CardMetaLine task={task} project={project} showProject={showProject} />
 
@@ -84,6 +91,14 @@ export function TaskCard({ task, project, showProject }: { task: TaskVM; project
                     </div>
                     <ProgressBar value={cur.index + 1} max={capOf(project)} tone="running" size="sm" />
                 </>
+            )}
+            {/* The merge stage runs after the last iteration ends (currentIteration is null), so
+                without this a landing task reads like a plain idle running one. */}
+            {mergePhase && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <MergeChip phase={mergePhase} />
+                    <div style={{ flex: 1 }}><ProgressBar indeterminate size="sm" tone="primary" /></div>
+                </div>
             )}
 
             {task.status === "needs-human" && <FailureBox reason={task.failureReason} quiet />}
@@ -136,12 +151,20 @@ function DoneFold({ tasks, projById, showProject }: { tasks: TaskVM[]; projById:
     if (!tasks.length) return null;
     const shown = showAll ? tasks : tasks.slice(0, DONE_PREVIEW);
     const hidden = tasks.length - shown.length;
+    // The derived promoted-ledger readout: how many of the fold graduated past integration to the target.
+    const promoted = tasks.filter((t) => t.promoted).length;
     return (
-        <div className="helm-donefold" {...verifyAttrs({ unit: "DoneFold", count: tasks.length, open, shown: open ? shown.length : 0 })}>
+        <div className="helm-donefold" {...verifyAttrs({ unit: "DoneFold", count: tasks.length, promoted, open, shown: open ? shown.length : 0 })}>
             <button className="helm-donefold-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
                 <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} />
                 <StatusDot status="merged" size={7} />
                 done <span className="helm-donefold-count">{tasks.length}</span>
+                {promoted > 0 && (
+                    <>
+                        <StatusDot status="promoted" size={7} style={{ marginLeft: 6 }} />
+                        promoted <span className="helm-donefold-count">{promoted}</span>
+                    </>
+                )}
                 {!open && <span className="helm-donefold-hint">merged &amp; abandoned — click to show</span>}
             </button>
             {open && (
@@ -179,8 +202,10 @@ function TaskRow({ task, project, showProject }: { task: TaskVM; project?: Proje
     const actions = useContext(ActionCtx);
     const cur = task.snap?.currentIteration ?? null;
     const stuck = stuckOf(task);
+    const mergePhase = mergePhaseOf(task);
     let detail: ReactNode = null;
-    if (task.status === "running" && cur) detail = <span className="helm-activity" style={{ color: "var(--text-secondary)" }}>{cur.latestActivity || "…"}<span className="helm-live-caret"></span></span>;
+    if (mergePhase) detail = <MergeChip phase={mergePhase} />;
+    else if (task.status === "running" && cur) detail = <span className="helm-activity" style={{ color: "var(--text-secondary)" }}>{cur.latestActivity || "…"}<span className="helm-live-caret"></span></span>;
     else if (task.status === "needs-human") detail = <span className="helm-activity" style={{ color: "var(--amber-300)" }}>{task.failureReason}</span>;
     else if (task.blocked) detail = <span className="helm-activity" style={{ color: stuck ? "var(--amber-300)" : undefined }}>{stuck ? "stuck — " : "waiting on "}{task.waitingOn.map((p) => p.title).join(", ")}</span>;
     else if (task.status === "merged" && task.diffstat) detail = <span className="helm-activity">{fmtDiffstat(task.diffstat)}</span>;
@@ -190,16 +215,16 @@ function TaskRow({ task, project, showProject }: { task: TaskVM; project?: Proje
     return (
         <div
             className="helm-row"
-            {...verifyAttrs({ unit: "TaskRow", status: task.status, id: task.id, blocked: task.blocked })}
+            {...verifyAttrs({ unit: "TaskRow", status: task.status, id: task.id, blocked: task.blocked, "merge-phase": mergePhase, promoted: task.promoted ? true : null })}
             style={{ opacity: task.status === "abandoned" ? 0.55 : 1 }} onClick={() => actions.openTask(task.id)}
         >
-            <div><StatusChip status={task.blocked ? "blocked" : task.status} /></div>
+            <div><StatusChip status={chipStatusOf(task)} /></div>
             <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }}>{task.title}</span>
                 {showProject && project && <Mono dim size="var(--text-2xs)">{project.name}{project.jailImage ? " · jail" : ""}</Mono>}
             </div>
             <div style={{ textAlign: "right" }}>
-                <Mono dim size="var(--text-2xs)">{attemptOf(task)}/{capOf(project)} · {fmtUsd(task.snap?.totals.costUsd ?? 0)}</Mono>
+                <Mono dim size="var(--text-2xs)">{attemptOf(task)}/{capOf(project)} · {fmtTok(headlineTokens(task))} tok</Mono>
             </div>
             <div style={{ minWidth: 0, overflow: "hidden" }}>{detail}</div>
             <div className="helm-row-verbs"><VerbBar task={task} compact /></div>

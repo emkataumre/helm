@@ -14,10 +14,22 @@ import { verifyAttrs } from "../components/verifyAttrs";
 export interface TaskVM extends TaskListItem {
     snap: EngineSnapshot | null;
     validating: boolean; // renderer-local: a verify-&-merge is in flight for this task
+    // The promoted ledger riding the ipc list items beyond the shared TaskListItem shape: `promoted` is
+    // DERIVED main-side (promotedAt != null) — a merged task a landed direct Promote graduated to the
+    // target. Optional: tasks:create returns a bare Task without the augmentations.
+    promoted?: boolean;
+    promotedAt?: number | null;
+    promotedSha?: string | null;
 }
 
 export const stuckOf = (t: Pick<TaskListItem, "status" | "blocked" | "waitingOn">): boolean =>
     t.status === "queued" && t.blocked && t.waitingOn.some((w) => w.status === "needs-human" || w.status === "abandoned");
+
+// The card/row/header chip in one rule: blocked wins (a queued task held behind parents), then the derived
+// promoted view of a merged task (graduated past integration — never a stored TaskStatus), then the
+// engine-owned status verbatim.
+export const chipStatusOf = (t: Pick<TaskVM, "status" | "blocked" | "promoted">): LedStatus =>
+    t.blocked ? "blocked" : t.status === "merged" && t.promoted ? "promoted" : t.status;
 
 /* ---------- operator actions (the verb list, nothing else) ---------- */
 export interface CockpitActions {
@@ -97,6 +109,39 @@ export function PhaseChip({ phase }: { phase: "spawning" | "working" | "checking
     return (
         <span {...verifyAttrs({ unit: "PhaseChip", phase })} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", color, whiteSpace: "nowrap" }}>
             <Icon name={m.icon} size={12} />{m.text}
+        </span>
+    );
+}
+
+/* ---------- merge-stage treatment (presentation-only — derived from the engine's gate feed) ---------- */
+// The engine marks the merge stage with gate feed entries; no TaskStatus exists for it (the task stays
+// running/handed-off until the ref advances). A task is IN the merge stage iff its latest feed entry is
+// one of the live merge labels — the merge stage emits nothing else, and any later event (a terminal
+// merge label, agent output of a recycled retry, a loop gate) ends the phase.
+export type MergePhase = "waiting" | "merging" | "re-check";
+const MERGE_LIVE: Record<string, MergePhase> = {
+    "merge: waiting": "waiting",             // queued behind the project's merge mutex
+    "merge: merging": "merging",             // squashing onto the fresh integration tip
+    "merge re-check: running": "re-check",   // check ∧ acceptance against the fresh tip
+    "merge re-check: passed": "re-check",    // advancing the ref (moments from merged)
+};
+export function mergePhaseOf(t: Pick<TaskVM, "status" | "snap">): MergePhase | null {
+    if (t.status !== "running" && t.status !== "handed-off") return null;
+    const feed = t.snap?.feed;
+    const last = feed && feed.length ? feed[feed.length - 1] : null;
+    if (!last || last.kind !== "gate") return null;
+    return MERGE_LIVE[last.text] ?? null;
+}
+
+const MERGE_TEXT: Record<MergePhase, string> = {
+    waiting: "merge: waiting on the lane",
+    merging: "merging onto integration",
+    "re-check": "merge re-check running",
+};
+export function MergeChip({ phase }: { phase: MergePhase }) {
+    return (
+        <span {...verifyAttrs({ unit: "MergeChip", phase })} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", color: "var(--violet-400)", whiteSpace: "nowrap" }}>
+            <Icon name="GitMerge" size={12} />{MERGE_TEXT[phase]}
         </span>
     );
 }
@@ -272,10 +317,10 @@ export function ActivityPanel({ tasks }: { tasks: TaskVM[] }) {
         const merged = tasks.filter((t) => t.status === "merged");
         const mergedAt = merged.map((t) => t.updatedAt);
         const abandoned = tasks.filter((t) => t.status === "abandoned").length;
-        let costUsd = 0, tokens = 0, sessions = 0;
+        let tokens = 0, sessions = 0;
         for (const t of tasks) {
             const tot = t.snap?.totals;
-            if (tot) { costUsd += tot.costUsd; tokens += tot.input + tot.output + tot.cacheRead + tot.cacheCreation; }
+            if (tot) tokens += tot.input + tot.output + tot.cacheRead + tot.cacheCreation;
             sessions += t.snap?.iterations.length ?? 0;
         }
         // Per-day merge counts drive the streaks and the busiest-day stat.
@@ -287,14 +332,13 @@ export function ActivityPanel({ tasks }: { tasks: TaskVM[] }) {
         for (const d of days) { run = prev && d - prev === DAY_MS ? run + 1 : 1; best = Math.max(best, run); prev = d; }
         let current = 0;
         for (let d = dayStart(Date.now()); perDay.has(d); d -= DAY_MS) current++;
-        return { merged: merged.length, mergedAt, abandoned, costUsd, tokens, sessions, busiest, best, current };
+        return { merged: merged.length, mergedAt, abandoned, tokens, sessions, busiest, best, current };
     }, [tasks]);
 
     return (
         <div className="helm-activity-panel">
             <div className="helm-actstats">
                 <StatTile value={s.merged} label="merged" sub={s.abandoned ? `${s.abandoned} abandoned` : "all-time"} />
-                <StatTile value={fmtUsd(s.costUsd)} label="spent" />
                 <StatTile value={fmtTok(s.tokens)} label="tokens" />
                 <StatTile value={s.sessions} label="sessions" sub="claude runs" />
                 <StatTile value={`${s.current}d`} label="streak" sub={`best ${s.best}d`} />
@@ -360,10 +404,18 @@ export function CopyCmd({ cmd }: { cmd: string }) {
 /* ---------- feed line ---------- */
 const FEED_ICON: Record<ActivityEntry["kind"], IconName> = { assistant: "MessageSquare", "tool-use": "Wrench", gate: "ShieldCheck" };
 const FEED_COLOR: Record<ActivityEntry["kind"], string> = { assistant: "var(--text-secondary)", "tool-use": "var(--cyan-400)", gate: "var(--amber-300)" };
+// Gate verdict tone, shared by FeedLine and the grouped feed's dominant gate treatment
+// (TaskDetail). fail wins over pass: "merge: lost race — recycled (merge-conflict)" is a failure.
+export type GateTone = "pass" | "fail" | "info";
+export const gateToneOf = (text: string): GateTone =>
+    /fail|denied|conflict|stopping|stall|hang/.test(text) ? "fail"
+        : /passed|green|merged/.test(text) ? "pass"
+            : "info";
+export const GATE_TONE_COLOR: Record<GateTone, string> = {
+    pass: "var(--green-400)", fail: "var(--red-400)", info: "var(--amber-300)",
+};
 export function FeedLine({ entry }: { entry: ActivityEntry }) {
-    const failish = /fail|denied|conflict|stopping|stall|hang/.test(entry.text);
-    const passish = /passed|green|merged/.test(entry.text);
-    const color = entry.kind === "gate" ? (failish ? "var(--red-400)" : passish ? "var(--green-400)" : "var(--amber-300)") : FEED_COLOR[entry.kind];
+    const color = entry.kind === "gate" ? GATE_TONE_COLOR[gateToneOf(entry.text)] : FEED_COLOR[entry.kind];
     return (
         <div className="helm-feed-line helm-fade-in">
             <Icon name={FEED_ICON[entry.kind] ?? "Dot"} size={12} style={{ flex: "none", color, transform: "translateY(1px)" }} />

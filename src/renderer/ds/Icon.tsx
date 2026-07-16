@@ -8,7 +8,7 @@ import type { CSSProperties } from "react";
 import {
     Anchor, ArrowLeft, ArrowUpRight, Ban, Bot, CalendarRange, Check, ChevronDown, ChevronRight, ChevronUp,
     Circle, CircleCheck, CircleDot, Columns3, Container, Copy, Crosshair, Dot, Ellipsis,
-    FileText, Filter, FolderGit2, GitBranch, GitCompare, Inbox, Info, LayoutGrid, List, ListTodo,
+    FileText, Filter, FolderGit2, GitBranch, GitCompare, GitMerge, Inbox, Info, LayoutGrid, List, ListTodo,
     Loader, Lock, Map, MessageSquare, OctagonAlert, Pause, Play, Plus, RefreshCw, ScanSearch,
     ScrollText, Settings2, ShieldCheck, SquareChevronRight, SquareTerminal, Terminal,
     TriangleAlert, Trash2, Unlink, Wrench, X,
@@ -17,7 +17,7 @@ import {
 const ICONS = {
     Anchor, ArrowLeft, ArrowUpRight, Ban, Bot, CalendarRange, Check, ChevronDown, ChevronRight, ChevronUp,
     Circle, CircleCheck, CircleDot, Columns3, Container, Copy, Crosshair, Dot, Ellipsis,
-    FileText, Filter, FolderGit2, GitBranch, GitCompare, Inbox, Info, LayoutGrid, List, ListTodo,
+    FileText, Filter, FolderGit2, GitBranch, GitCompare, GitMerge, Inbox, Info, LayoutGrid, List, ListTodo,
     Loader, Lock, Map, MessageSquare, OctagonAlert, Pause, Play, Plus, RefreshCw, ScanSearch,
     ScrollText, Settings2, ShieldCheck, SquareChevronRight, SquareTerminal, Terminal,
     TerminalSquare: SquareTerminal,

@@ -12,6 +12,26 @@ export function emptyTokens(): TokenTotals {
     return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0 };
 }
 
+// ── Token accounting: the canonical derivations ─────────────────────────────────────────────────
+// Characterised against claude's stream-json terminal result event (result.usage):
+//   input_tokens                = NON-cached input only (tiny once caching kicks in)
+//   output_tokens               = generated output — what a human means by "tokens the agent produced"
+//   cache_read_input_tokens     = context RE-READS (~10% of input price; dwarfs every other field summed)
+//   cache_creation_input_tokens = context newly written to cache (billed at 1.25× input)
+// The old headline summed input+output (and the fleet card added both cache fields on top), so the
+// displayed number tracked cache traffic, not work. The HEADLINE is OUTPUT tokens only.
+export function headlineTokens(t: TokenTotals): number {
+    return t.output;
+}
+
+// BILLABLE tokens — the runaway-backstop currency (the M12 synthetic-$ cap's successor): everything
+// the API meaningfully bills per NEW token — input + output + cacheCreation — cacheRead EXCLUDED, so
+// a long-lived cached session is not punished for cheap re-reads. runTaskLoop accumulates this per
+// iteration and parks needs-human once the run crosses LoopConfig.tokenCap.
+export function billableTokens(t: TokenTotals): number {
+    return t.input + t.output + t.cacheCreation;
+}
+
 export function emptySnapshot(taskId: string, status: TaskStatus = "queued"): EngineSnapshot {
     return {
         taskId, status, currentIteration: null,

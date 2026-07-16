@@ -3,6 +3,7 @@ import type { Project, Task, TaskStatus, IterationVerdict, SnapshotEvent, TokenT
 import type { LoopConfig } from "./loopConfig";
 import type { MergeStageResult } from "./mergeStage";
 import { buildGoalPrompt, buildInstructions, buildTaskDirective, seedProgress, type PriorFailure } from "./prompt";
+import { billableTokens } from "./verifyState";
 
 // Re-export so the reducer, the loop, and the M2 verify slice (which imports it from here) share
 // the single definition now living in shared/types.ts.
@@ -256,6 +257,11 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     // still merges below.
     let spend = 0;
 
+    // The token cap's ledger — the $ ledger's successor, same lifecycle (a LOCAL, fresh on resume): this
+    // RUN's accumulated BILLABLE tokens (input + output + cacheCreation; cacheRead excluded — see
+    // billableTokens). Denominated in what is actually spent instead of synthetic dollars.
+    let billableSpent = 0;
+
     // M18: merge-stage losses recycled in-place this RUN (a local, like the split counters above — a
     // human resume grants a fresh recycle budget along with the fresh iteration/cost budgets).
     let recyclesUsed = 0;
@@ -263,10 +269,17 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     for (let i = 0; i < config.iterationCap; i++) {
         // Top-of-loop guard: a drop-in that lands between iterations bails before spawning the next one.
         if (d.signal?.aborted) return handOff();
-        // Cost-cap breaker: once this run's spend reaches the ceiling, stop spawning (BEFORE addIteration/spawn).
-        // A 0 cap is honored — spend (0) >= cap (0) on the first pass, so a 0-cap project spawns nothing at all.
+        // Cost-cap breaker (LEGACY $): only fires for a project that explicitly set costCapUsd — the default
+        // is Infinity. A 0 cap is honored — spend (0) >= cap (0) trips on the first pass (spawn nothing).
         if (spend >= config.costCapUsd) {
             return terminate("needs-human", `cost cap reached ($${spend.toFixed(2)} of $${config.costCapUsd} cap)`, true, { kind: "cost-cap" });
+        }
+        // Token-cap breaker — the $ cap's successor: identical spawns-only placement, denominated in BILLABLE
+        // tokens. undefined ⇒ gate off (pre-tokenCap LoopConfig literals); resolveLoopConfig always supplies
+        // it. An explicit 0 spawns nothing (0 billable >= 0 cap trips before the first spawn). The ledger
+        // kind stays "cost-cap" — it IS the spend ceiling, now counted in tokens.
+        if (config.tokenCap !== undefined && billableSpent >= config.tokenCap) {
+            return terminate("needs-human", `token cap reached (${billableSpent} of ${config.tokenCap} billable tokens)`, true, { kind: "cost-cap" });
         }
         const dbIndex = startIndex + i;
         d.emit?.({ type: "iteration-start", index: dbIndex });
@@ -278,8 +291,9 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
             cacheReadTokens: o.usage.cacheRead, cacheCreationTokens: o.usage.cacheCreation,
             costUsd: o.usage.costUsd, durationMs: o.durationMs,
         });
-        // Accumulate this iteration's spend for the next top-of-loop cost-cap check (null/absent → 0).
+        // Accumulate this iteration's spend for the next top-of-loop cap checks (costUsd null/absent → 0).
         spend += o.usage.costUsd ?? 0;
+        billableSpent += billableTokens(o.usage);
         lastIndex = dbIndex; // this iteration COMPLETED — it's the locus any wall below stamps into the ledger
         d.emit?.({ type: "iteration-end", index: dbIndex, verdict: o.verdict, commitSha: o.commitSha, tail: o.gateOutput });
 

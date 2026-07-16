@@ -97,6 +97,7 @@
     --status-needs-human: var(--amber-400);  /* stopped, human must act — THE attention state */
     --status-handed-off:  var(--cyan-400);   /* a human is at the helm */
     --status-merged:      var(--violet-400); /* landed on integration (terminal) */
+    --status-promoted:    var(--violet-500); /* merged AND graduated to the target (derived, not a status) */
     --status-abandoned:   var(--ink-560);    /* given up (terminal) */
 
     /* ============ Iteration gate verdicts ============ */
