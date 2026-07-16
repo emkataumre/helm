@@ -4,14 +4,14 @@
 // the feed and iteration series come off the task's EngineSnapshot (live, or rebuilt
 // from DB rows with an empty feed after a restart), progress.md is fetched on demand.
 import { useContext, useEffect, useRef, useState } from "react";
-import type { Plan, Project } from "../../shared/types";
+import type { ActivityEntry, Plan, Project } from "../../shared/types";
 import { Icon, IconButton, MetricStat, ProgressBar, StatusDot, Tabs } from "../ds";
 import type { IconName } from "../ds";
 import { verifyAttrs } from "../components/verifyAttrs";
 import { parseProgress } from "../progress";
 import {
-    ActionCtx, CopyCmd, EmptyState, FailureBox, FeedLine, MergeChip, Mono, Overline, PhaseChip,
-    StatusChip, VerbBar, fmtDur, fmtTok, fmtUsd, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
+    ActionCtx, CopyCmd, EmptyState, FailureBox, FeedLine, GATE_TONE_COLOR, MergeChip, Mono, Overline, PhaseChip,
+    StatusChip, VerbBar, fmtDur, fmtTok, fmtUsd, gateToneOf, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
 } from "./helpers";
 import { Button } from "../ds";
 
@@ -93,7 +93,84 @@ export function IterationsTable({ task }: { task: TaskVM }) {
     );
 }
 
-/* ---------- live feed ---------- */
+/* ---------- live feed — grouped by iteration, gate verdicts dominant ---------- */
+// Consecutive-run grouping (not a global bucket): the feed is chronological, and if an
+// iteration index ever reappears the on-screen order must stay the order it happened.
+export interface FeedGroup { iteration: number; entries: ActivityEntry[] }
+export function groupFeed(feed: ActivityEntry[]): FeedGroup[] {
+    const groups: FeedGroup[] = [];
+    for (const e of feed) {
+        const last = groups[groups.length - 1];
+        if (last && last.iteration === e.iterationIndex) last.entries.push(e);
+        else groups.push({ iteration: e.iterationIndex, entries: [e] });
+    }
+    return groups;
+}
+
+// Split one group's entries into gate lines (always visible) and the chatter runs
+// between them (assistant + tool-use — dimmed, drill-in).
+type FeedSegment = { gate: ActivityEntry } | { chatter: ActivityEntry[] };
+function feedSegments(entries: ActivityEntry[]): FeedSegment[] {
+    const segs: FeedSegment[] = [];
+    for (const e of entries) {
+        if (e.kind === "gate") { segs.push({ gate: e }); continue; }
+        const last = segs[segs.length - 1];
+        if (last && "chatter" in last) last.chatter.push(e);
+        else segs.push({ chatter: [e] });
+    }
+    return segs;
+}
+
+// A gate verdict (check ✓/✗, acceptance, merge) — the feed's dominant element.
+export function FeedGateLine({ entry }: { entry: ActivityEntry }) {
+    const tone = gateToneOf(entry.text);
+    const color = GATE_TONE_COLOR[tone];
+    const icon: IconName = entry.text.startsWith("merge") ? "GitMerge" : tone === "fail" ? "OctagonAlert" : "ShieldCheck";
+    return (
+        <div className="helm-fade-in" {...verifyAttrs({ unit: "FeedGateLine", tone })} style={{
+            display: "flex", alignItems: "center", gap: 8, margin: "3px 14px", padding: "6px 10px",
+            border: `1px solid color-mix(in oklab, ${color} 45%, transparent)`,
+            background: `color-mix(in oklab, ${color} 10%, transparent)`,
+            borderRadius: 8, color, fontSize: "var(--text-xs)", fontWeight: 600,
+        }}>
+            <Icon name={icon} size={14} style={{ flex: "none" }} />
+            <span style={{ minWidth: 0 }}>{entry.text}</span>
+        </div>
+    );
+}
+
+// A run of assistant/tool-use chatter — collapsed by default (drill-in); only the live
+// tail of a running task starts open, and it folds shut when the next verdict lands.
+export function FeedChatter({ entries, live }: { entries: ActivityEntry[]; live?: boolean }) {
+    const tools = entries.filter((e) => e.kind === "tool-use").length;
+    return (
+        <details open={live || undefined} {...verifyAttrs({ unit: "FeedChatter", count: entries.length, collapsed: !live, dimmed: true })}>
+            <summary style={{ cursor: "pointer", padding: "3px 14px", color: "var(--text-faint)", fontSize: "var(--text-2xs)" }}>
+                {entries.length} step{entries.length === 1 ? "" : "s"} · {tools} tool call{tools === 1 ? "" : "s"}
+            </summary>
+            <div style={{ opacity: 0.7 }}>
+                {entries.map((e, i) => <FeedLine key={i} entry={e} />)}
+            </div>
+        </details>
+    );
+}
+
+function FeedIterationSection({ group, liveTail }: { group: FeedGroup; liveTail: boolean }) {
+    const segs = feedSegments(group.entries);
+    const gates = group.entries.filter((e) => e.kind === "gate").length;
+    return (
+        <section {...verifyAttrs({ unit: "FeedGroup", iteration: group.iteration, gates, chatter: group.entries.length - gates })}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px 4px" }}>
+                <Overline style={{ color: "var(--text-faint)", whiteSpace: "nowrap" }}>iteration {group.iteration}</Overline>
+                <div style={{ flex: 1, height: 1, background: "var(--border-subtle)" }} />
+            </div>
+            {segs.map((s, i) => "gate" in s
+                ? <FeedGateLine key={i} entry={s.gate} />
+                : <FeedChatter key={i} entries={s.chatter} live={liveTail && i === segs.length - 1} />)}
+        </section>
+    );
+}
+
 export function FeedView({ task }: { task: TaskVM }) {
     const ref = useRef<HTMLDivElement | null>(null);
     const feed = task.snap?.feed ?? [];
@@ -106,9 +183,10 @@ export function FeedView({ task }: { task: TaskVM }) {
                 line={task.status === "running" ? "Feed is filling as the agent works." : "The live feed does not survive restarts — history lives in Iterations."} />
         );
     }
+    const groups = groupFeed(feed);
     return (
-        <div ref={ref} className="helm-feed helm-scroll" {...verifyAttrs({ unit: "FeedView", count: feed.length })} style={{ flex: 1 }}>
-            {feed.map((e, i) => <FeedLine key={i} entry={e} />)}
+        <div ref={ref} className="helm-feed helm-scroll" {...verifyAttrs({ unit: "FeedView", count: feed.length, groups: groups.length })} style={{ flex: 1 }}>
+            {groups.map((g, i) => <FeedIterationSection key={i} group={g} liveTail={task.status === "running" && i === groups.length - 1} />)}
         </div>
     );
 }
