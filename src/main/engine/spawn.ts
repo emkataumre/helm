@@ -101,6 +101,10 @@ export async function spawnAgent(
             // Per the Task 1 spike, result.usage is the cumulative session total — read once here.
             // (Defensive fallback if a future CLI makes it non-cumulative: sum the per-message
             //  assistant.message.usage.output_tokens instead. Not needed today — 294 ≠ summed 72.)
+            // Field semantics (the token-accounting characterisation): input_tokens is NON-cached input
+            // only; cache_read_input_tokens dwarfs every other field once caching kicks in; capture is
+            // deliberately 1:1 raw. Derived numbers — the output-only HEADLINE and the BILLABLE total the
+            // token cap gates on — live in verifyState's headlineTokens/billableTokens, never here.
             const u = evt.usage;
             if (u) {
                 usage.input = u.input_tokens ?? 0;
