@@ -317,10 +317,10 @@ export function ActivityPanel({ tasks }: { tasks: TaskVM[] }) {
         const merged = tasks.filter((t) => t.status === "merged");
         const mergedAt = merged.map((t) => t.updatedAt);
         const abandoned = tasks.filter((t) => t.status === "abandoned").length;
-        let costUsd = 0, tokens = 0, sessions = 0;
+        let tokens = 0, sessions = 0;
         for (const t of tasks) {
             const tot = t.snap?.totals;
-            if (tot) { costUsd += tot.costUsd; tokens += tot.input + tot.output + tot.cacheRead + tot.cacheCreation; }
+            if (tot) tokens += tot.input + tot.output + tot.cacheRead + tot.cacheCreation;
             sessions += t.snap?.iterations.length ?? 0;
         }
         // Per-day merge counts drive the streaks and the busiest-day stat.
@@ -332,14 +332,13 @@ export function ActivityPanel({ tasks }: { tasks: TaskVM[] }) {
         for (const d of days) { run = prev && d - prev === DAY_MS ? run + 1 : 1; best = Math.max(best, run); prev = d; }
         let current = 0;
         for (let d = dayStart(Date.now()); perDay.has(d); d -= DAY_MS) current++;
-        return { merged: merged.length, mergedAt, abandoned, costUsd, tokens, sessions, busiest, best, current };
+        return { merged: merged.length, mergedAt, abandoned, tokens, sessions, busiest, best, current };
     }, [tasks]);
 
     return (
         <div className="helm-activity-panel">
             <div className="helm-actstats">
                 <StatTile value={s.merged} label="merged" sub={s.abandoned ? `${s.abandoned} abandoned` : "all-time"} />
-                <StatTile value={fmtUsd(s.costUsd)} label="spent" />
                 <StatTile value={fmtTok(s.tokens)} label="tokens" />
                 <StatTile value={s.sessions} label="sessions" sub="claude runs" />
                 <StatTile value={`${s.current}d`} label="streak" sub={`best ${s.best}d`} />

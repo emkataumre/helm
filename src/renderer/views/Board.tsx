@@ -10,8 +10,12 @@ import { Icon, ProgressBar, StatusDot } from "../ds";
 import { verifyAttrs } from "../components/verifyAttrs";
 import {
     ActionCtx, EmptyState, FailureBox, MergeChip, Mono, StatusChip, VerbBar, WaitingOn,
-    chipStatusOf, fmtDiffstat, fmtUsd, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
+    chipStatusOf, fmtDiffstat, fmtTok, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
 } from "./helpers";
+
+// The card's compact token figure: the reconciling headline (input + output), matching the
+// Inspector's "tokens" metric. Cache-read dwarfs these once caching kicks in, so it's left out.
+const headlineTokens = (t: TaskVM): number => (t.snap?.totals.input ?? 0) + (t.snap?.totals.output ?? 0);
 
 export type BoardLayout = "kanban" | "list" | "grid";
 
@@ -43,8 +47,8 @@ function CardMetaLine({ task, project, showProject }: { task: TaskVM; project?: 
     else if (project?.jailImage) bits.push("jail");
     const idx = attemptOf(task);
     if (idx > 0) bits.push(`it ${idx}/${capOf(project)}`);
-    const cost = task.snap?.totals.costUsd ?? 0;
-    if (cost > 0) bits.push(fmtUsd(cost));
+    const toks = headlineTokens(task);
+    if (toks > 0) bits.push(`${fmtTok(toks)} tok`);
     if (task.diffstat) {
         const d = parseDiffstat(task.diffstat);
         bits.push(d ? `+${d.plus} −${d.minus}` : task.diffstat);
@@ -220,7 +224,7 @@ function TaskRow({ task, project, showProject }: { task: TaskVM; project?: Proje
                 {showProject && project && <Mono dim size="var(--text-2xs)">{project.name}{project.jailImage ? " · jail" : ""}</Mono>}
             </div>
             <div style={{ textAlign: "right" }}>
-                <Mono dim size="var(--text-2xs)">{attemptOf(task)}/{capOf(project)} · {fmtUsd(task.snap?.totals.costUsd ?? 0)}</Mono>
+                <Mono dim size="var(--text-2xs)">{attemptOf(task)}/{capOf(project)} · {fmtTok(headlineTokens(task))} tok</Mono>
             </div>
             <div style={{ minWidth: 0, overflow: "hidden" }}>{detail}</div>
             <div className="helm-row-verbs"><VerbBar task={task} compact /></div>

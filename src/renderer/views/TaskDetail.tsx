@@ -11,7 +11,7 @@ import { verifyAttrs } from "../components/verifyAttrs";
 import { parseProgress } from "../progress";
 import {
     ActionCtx, CopyCmd, EmptyState, FailureBox, FeedLine, GATE_TONE_COLOR, MergeChip, Mono, Overline, PhaseChip,
-    StatusChip, VerbBar, chipStatusOf, fmtDur, fmtTok, fmtUsd, gateToneOf, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
+    StatusChip, VerbBar, chipStatusOf, fmtDur, fmtTok, gateToneOf, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
 } from "./helpers";
 import { Button } from "../ds";
 
@@ -57,14 +57,14 @@ export function IterationsTable({ task }: { task: TaskVM }) {
     return (
         <table className="helm-ittable" {...verifyAttrs({ unit: "IterationsTable", count: settled.length, live: !!cur })}>
             <thead>
-                <tr><th style={{ width: 36 }}>#</th><th style={{ width: 130 }}>verdict</th><th>commit</th><th>tokens</th><th>cost</th><th>duration</th><th style={{ width: 30 }}></th></tr>
+                <tr><th style={{ width: 36 }}>#</th><th style={{ width: 130 }}>verdict</th><th>commit</th><th>tokens</th><th>duration</th><th style={{ width: 30 }}></th></tr>
             </thead>
             <tbody>
                 {cur && (
                     <tr>
                         <td>{cur.index}</td>
                         <td><PhaseChip phase={cur.phase} /></td>
-                        <td colSpan={4}><span className="helm-activity" style={{ color: "var(--text-secondary)" }}>{cur.latestActivity || "…"}<span className="helm-live-caret"></span></span></td>
+                        <td colSpan={3}><span className="helm-activity" style={{ color: "var(--text-secondary)" }}>{cur.latestActivity || "…"}<span className="helm-live-caret"></span></span></td>
                         <td></td>
                     </tr>
                 )}
@@ -75,14 +75,13 @@ export function IterationsTable({ task }: { task: TaskVM }) {
                             <td>{it.verdict ? <StatusChip status={it.verdict} /> : null}</td>
                             <td>{it.commitSha ? it.commitSha.slice(0, 10) : "—"}</td>
                             <td>{fmtTok(it.tokens.input)} in · {fmtTok(it.tokens.output)} out</td>
-                            <td>{fmtUsd(it.tokens.costUsd)}</td>
                             <td>{it.durationMs != null ? fmtDur(it.durationMs) : "—"}</td>
                             <td>{it.outputTail && <Icon name={openIdx === it.index ? "ChevronUp" : "ChevronDown"} size={13} style={{ color: "var(--text-faint)" }} />}</td>
                         </tr>
                     );
                     if (openIdx !== it.index || !it.outputTail) return [row];
                     return [row, (
-                        <tr key={it.index + "-tail"}><td colSpan={7} style={{ padding: "4px 12px 12px" }}>
+                        <tr key={it.index + "-tail"}><td colSpan={6} style={{ padding: "4px 12px 12px" }}>
                             <div className="helm-well">{it.outputTail}</div>
                             {it.sessionId === null && <div style={{ marginTop: 6, fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", color: "var(--text-faint)" }}>no persisted session — this turn cannot be resumed</div>}
                         </td></tr>
@@ -214,9 +213,8 @@ export function Inspector({ task, project, tasksById, plans }: {
         <div className="helm-inspector helm-scroll" {...verifyAttrs({ unit: "Inspector", output: totals.output, consistent })}>
             <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 18 }}>
 
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                     <MetricStat label="iterations" value={String(attempt)} unit={"/ " + cap} />
-                    <MetricStat label="cost" value={fmtUsd(totals.costUsd)} unit={"/ $" + (project.costCapUsd ?? 25)} />
                     <MetricStat label="tokens" value={fmtTok(totals.input + totals.output)} />
                 </div>
 
