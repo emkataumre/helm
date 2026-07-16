@@ -10,7 +10,7 @@ import { Icon, ProgressBar, StatusDot } from "../ds";
 import { verifyAttrs } from "../components/verifyAttrs";
 import {
     ActionCtx, EmptyState, FailureBox, MergeChip, Mono, StatusChip, VerbBar, WaitingOn,
-    fmtDiffstat, fmtUsd, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
+    chipStatusOf, fmtDiffstat, fmtUsd, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
 } from "./helpers";
 
 export type BoardLayout = "kanban" | "list" | "grid";
@@ -69,13 +69,14 @@ export function TaskCard({ task, project, showProject }: { task: TaskVM; project
                 "merge-phase": mergePhase,
                 "waiting-on": task.blocked ? task.waitingOn.map((w) => w.title).join(", ") || null : null,
                 plan: task.planId, jail: project?.jailImage ? true : null,
+                promoted: task.promoted ? true : null,
             })}
             style={{ opacity: task.status === "abandoned" ? 0.55 : 1 }}
             onClick={() => actions.openTask(task.id)}
         >
             <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                 <span style={{ fontSize: "var(--text-md)", fontWeight: 500, lineHeight: 1.3, flex: 1, minWidth: 0 }}>{task.title}</span>
-                <StatusChip status={task.blocked ? "blocked" : task.status} />
+                <StatusChip status={chipStatusOf(task)} />
             </div>
             <CardMetaLine task={task} project={project} showProject={showProject} />
 
@@ -146,12 +147,20 @@ function DoneFold({ tasks, projById, showProject }: { tasks: TaskVM[]; projById:
     if (!tasks.length) return null;
     const shown = showAll ? tasks : tasks.slice(0, DONE_PREVIEW);
     const hidden = tasks.length - shown.length;
+    // The derived promoted-ledger readout: how many of the fold graduated past integration to the target.
+    const promoted = tasks.filter((t) => t.promoted).length;
     return (
-        <div className="helm-donefold" {...verifyAttrs({ unit: "DoneFold", count: tasks.length, open, shown: open ? shown.length : 0 })}>
+        <div className="helm-donefold" {...verifyAttrs({ unit: "DoneFold", count: tasks.length, promoted, open, shown: open ? shown.length : 0 })}>
             <button className="helm-donefold-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
                 <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} />
                 <StatusDot status="merged" size={7} />
                 done <span className="helm-donefold-count">{tasks.length}</span>
+                {promoted > 0 && (
+                    <>
+                        <StatusDot status="promoted" size={7} style={{ marginLeft: 6 }} />
+                        promoted <span className="helm-donefold-count">{promoted}</span>
+                    </>
+                )}
                 {!open && <span className="helm-donefold-hint">merged &amp; abandoned — click to show</span>}
             </button>
             {open && (
@@ -202,10 +211,10 @@ function TaskRow({ task, project, showProject }: { task: TaskVM; project?: Proje
     return (
         <div
             className="helm-row"
-            {...verifyAttrs({ unit: "TaskRow", status: task.status, id: task.id, blocked: task.blocked, "merge-phase": mergePhase })}
+            {...verifyAttrs({ unit: "TaskRow", status: task.status, id: task.id, blocked: task.blocked, "merge-phase": mergePhase, promoted: task.promoted ? true : null })}
             style={{ opacity: task.status === "abandoned" ? 0.55 : 1 }} onClick={() => actions.openTask(task.id)}
         >
-            <div><StatusChip status={task.blocked ? "blocked" : task.status} /></div>
+            <div><StatusChip status={chipStatusOf(task)} /></div>
             <div style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }}>
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }}>{task.title}</span>
                 {showProject && project && <Mono dim size="var(--text-2xs)">{project.name}{project.jailImage ? " · jail" : ""}</Mono>}

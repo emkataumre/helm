@@ -89,6 +89,7 @@
 .helm-dot--needs-human{color:var(--status-needs-human);}
 .helm-dot--handed-off{color:var(--status-handed-off);}
 .helm-dot--merged{color:var(--status-merged);}
+.helm-dot--promoted{color:var(--status-promoted);}
 .helm-dot--abandoned{color:var(--status-abandoned);}
 .helm-dot--green{color:var(--verdict-green);}
 .helm-dot--failed{color:var(--verdict-failed);}
@@ -103,6 +104,7 @@
 .helm-pill--needs-human{--_c:var(--status-needs-human);}
 .helm-pill--handed-off{--_c:var(--status-handed-off);}
 .helm-pill--merged{--_c:var(--status-merged);}
+.helm-pill--promoted{--_c:var(--status-promoted);}
 .helm-pill--abandoned{--_c:var(--status-abandoned);}
 .helm-pill--green{--_c:var(--verdict-green);}
 .helm-pill--failed{--_c:var(--verdict-failed);}

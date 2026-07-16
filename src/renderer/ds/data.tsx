@@ -72,8 +72,8 @@ export function ProgressBar({ value = 0, max = 100, tone = "primary", size = "md
     );
 }
 
-/** Task lifecycle statuses + the derived blocked view + gate verdicts — the LED vocabulary. */
-export type LedStatus = TaskStatus | "blocked" | IterationVerdict;
+/** Task lifecycle statuses + the derived blocked/promoted views + gate verdicts — the LED vocabulary. */
+export type LedStatus = TaskStatus | "blocked" | "promoted" | IterationVerdict;
 
 /** Small status LED. `blocked` renders hollow. `pulse` only for running. */
 export function StatusDot({ status = "queued", size = 8, pulse = false, style }: {

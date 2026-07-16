@@ -11,7 +11,7 @@ import { verifyAttrs } from "../components/verifyAttrs";
 import { parseProgress } from "../progress";
 import {
     ActionCtx, CopyCmd, EmptyState, FailureBox, FeedLine, GATE_TONE_COLOR, MergeChip, Mono, Overline, PhaseChip,
-    StatusChip, VerbBar, fmtDur, fmtTok, fmtUsd, gateToneOf, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
+    StatusChip, VerbBar, chipStatusOf, fmtDur, fmtTok, fmtUsd, gateToneOf, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
 } from "./helpers";
 import { Button } from "../ds";
 
@@ -310,7 +310,7 @@ export function TaskDetail({ task, project, tasksById, plans, onBack }: {
                     <IconButton size="sm" label="Back" onClick={onBack}><Icon name="ArrowLeft" size={15} /></IconButton>
                     <h1 style={{ margin: 0, font: "var(--role-title)", letterSpacing: "var(--tracking-tight)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{task.title}</h1>
                     {mergePhase && <MergeChip phase={mergePhase} />}
-                    <StatusChip status={task.blocked ? "blocked" : task.status} />
+                    <StatusChip status={chipStatusOf(task)} />
                     <VerbBar task={task} size="md" />
                 </div>
                 {/* needs-human always explains itself; handed-off can carry a surfaced launch error

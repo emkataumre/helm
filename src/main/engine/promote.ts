@@ -37,6 +37,11 @@ export interface FinalizeDeps {
     // THE only push the finalizer may perform. The verify slice injects a recording fake and asserts it
     // is never called with <targetBranch> as its remoteRef (nor as a target-named local ref).
     pushBranch: (repo: string, remote: string, localRef: string, remoteRef?: string) => Promise<void>;
+    // The promoted ledger's write seam (optional — fakes that only probe push behaviour omit it). Called
+    // ONLY after a direct-mode advance actually lands: ipc wires it to the batch stamp that marks every
+    // then-merged task of the project promoted at exactly this validatedSha. pr/strict advance nothing,
+    // so they never stamp — the ledger records target graduations, not intentions.
+    recordPromotion?: (validatedSha: string) => void | Promise<void>;
 }
 
 const TAIL = 2000;
@@ -118,10 +123,6 @@ export async function finalizePromotion(
                 // ONLY case the tool pushes the target — and localRef is always validatedSha (the verify slice
                 // asserts nothing else can ever reach the target). Non-force: a moved target → clean rejection.
                 await d.pushBranch(repoPath, "origin", ready.validatedSha, targetRef);
-                return {
-                    pushedRefs: [], commands: [command], advancedTarget: true, advancedTo: ready.validatedSha,
-                    note: `advanced ${targetBranch} → ${ready.validatedSha.slice(0, 12)} (the exact re-checked commit)`,
-                };
             } catch (e) {
                 // e.g. the target moved between the fetch and the advance → non-ff rejection. The re-check was
                 // real; nothing landed. Hand the command so the human can re-run after a fresh Promote.
@@ -131,6 +132,13 @@ export async function finalizePromotion(
                     error: e instanceof Error ? e.message : String(e),
                 };
             }
+            // The target REALLY advanced ⇒ stamp the promoted ledger (every then-merged task graduated with
+            // the branch). Outside the catch: a ledger hiccup must never masquerade as a failed advance.
+            await d.recordPromotion?.(ready.validatedSha);
+            return {
+                pushedRefs: [], commands: [command], advancedTarget: true, advancedTo: ready.validatedSha,
+                note: `advanced ${targetBranch} → ${ready.validatedSha.slice(0, 12)} (the exact re-checked commit)`,
+            };
         }
         case "pr": {
             // Push integration (a non-protected helper), then hand a gh command to open the PR. If the user

@@ -14,10 +14,22 @@ import { verifyAttrs } from "../components/verifyAttrs";
 export interface TaskVM extends TaskListItem {
     snap: EngineSnapshot | null;
     validating: boolean; // renderer-local: a verify-&-merge is in flight for this task
+    // The promoted ledger riding the ipc list items beyond the shared TaskListItem shape: `promoted` is
+    // DERIVED main-side (promotedAt != null) — a merged task a landed direct Promote graduated to the
+    // target. Optional: tasks:create returns a bare Task without the augmentations.
+    promoted?: boolean;
+    promotedAt?: number | null;
+    promotedSha?: string | null;
 }
 
 export const stuckOf = (t: Pick<TaskListItem, "status" | "blocked" | "waitingOn">): boolean =>
     t.status === "queued" && t.blocked && t.waitingOn.some((w) => w.status === "needs-human" || w.status === "abandoned");
+
+// The card/row/header chip in one rule: blocked wins (a queued task held behind parents), then the derived
+// promoted view of a merged task (graduated past integration — never a stored TaskStatus), then the
+// engine-owned status verbatim.
+export const chipStatusOf = (t: Pick<TaskVM, "status" | "blocked" | "promoted">): LedStatus =>
+    t.blocked ? "blocked" : t.status === "merged" && t.promoted ? "promoted" : t.status;
 
 /* ---------- operator actions (the verb list, nothing else) ---------- */
 export interface CockpitActions {

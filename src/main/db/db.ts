@@ -138,6 +138,22 @@ const STEPS: Array<(db: Db) => void> = [
     },
 ];
 
+// The promoted ledger: when a successful DIRECT promotion advanced the target, and to which validated
+// commit. Both nullable (NULL = merged onto integration only, never graduated); stamped as a BATCH on
+// every then-merged task of the project (promotion graduates the whole integration branch). 'promoted'
+// is DERIVED at read time (promotedAt != null) — never a TaskStatus; tasks stay 'merged'.
+// NOT a numbered step: the head user_version (14) is pinned all over the suite's hand-built fixture DBs,
+// and some fixtures are PARTIAL (only the table their pinned step touches), so these columns ride an
+// idempotent ensure that runs at every migrate() instead of the cursor — present ⇒ no-op, absent ⇒ ALTER,
+// no tasks table at all (a partial fixture) ⇒ skip. db.ts stays the sole schema authority either way.
+function ensurePromotedLedger(db: Db): void {
+    const cols = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+    if (cols.length === 0) return;
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("promotedAt")) db.exec(`ALTER TABLE tasks ADD COLUMN promotedAt INTEGER`);
+    if (!names.has("promotedSha")) db.exec(`ALTER TABLE tasks ADD COLUMN promotedSha TEXT`);
+}
+
 // Apply every step past the DB's current user_version, advancing the cursor as we go.
 // Exported for testing the ALTER path against a hand-built old-shape DB.
 export function migrate(db: Db): void {
@@ -146,6 +162,7 @@ export function migrate(db: Db): void {
         STEPS[v](db);
         db.pragma(`user_version = ${v + 1}`);
     }
+    ensurePromotedLedger(db);
 }
 
 export function openDb(path: string): Db {
