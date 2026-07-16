@@ -10,8 +10,8 @@ import type { IconName } from "../ds";
 import { verifyAttrs } from "../components/verifyAttrs";
 import { parseProgress } from "../progress";
 import {
-    ActionCtx, CopyCmd, EmptyState, FailureBox, FeedLine, Mono, Overline, PhaseChip,
-    StatusChip, VerbBar, fmtDur, fmtTok, fmtUsd, parseDiffstat, stuckOf, timeAgo, type TaskVM,
+    ActionCtx, CopyCmd, EmptyState, FailureBox, FeedLine, MergeChip, Mono, Overline, PhaseChip,
+    StatusChip, VerbBar, fmtDur, fmtTok, fmtUsd, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
 } from "./helpers";
 import { Button } from "../ds";
 
@@ -224,12 +224,14 @@ export function TaskDetail({ task, project, tasksById, plans, onBack }: {
 
     const feedCount = task.snap?.feed.length ?? 0;
     const iterCount = task.snap?.iterations.filter((i) => i.verdict != null).length ?? 0;
+    const mergePhase = mergePhaseOf(task);
     return (
-        <div className="helm-content helm-fade-in" {...verifyAttrs({ unit: "TaskDetail", id: task.id, status: task.status })} style={{ height: "100%" }}>
+        <div className="helm-content helm-fade-in" {...verifyAttrs({ unit: "TaskDetail", id: task.id, status: task.status, "merge-phase": mergePhase })} style={{ height: "100%" }}>
             <div style={{ padding: "14px var(--pad-view) 0", display: "flex", flexDirection: "column", gap: 12, borderBottom: "1px solid var(--border-subtle)", background: "var(--surface-app)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                     <IconButton size="sm" label="Back" onClick={onBack}><Icon name="ArrowLeft" size={15} /></IconButton>
                     <h1 style={{ margin: 0, font: "var(--role-title)", letterSpacing: "var(--tracking-tight)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{task.title}</h1>
+                    {mergePhase && <MergeChip phase={mergePhase} />}
                     <StatusChip status={task.blocked ? "blocked" : task.status} />
                     <VerbBar task={task} size="md" />
                 </div>

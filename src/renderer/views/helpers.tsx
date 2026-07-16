@@ -101,6 +101,39 @@ export function PhaseChip({ phase }: { phase: "spawning" | "working" | "checking
     );
 }
 
+/* ---------- merge-stage treatment (presentation-only — derived from the engine's gate feed) ---------- */
+// The engine marks the merge stage with gate feed entries; no TaskStatus exists for it (the task stays
+// running/handed-off until the ref advances). A task is IN the merge stage iff its latest feed entry is
+// one of the live merge labels — the merge stage emits nothing else, and any later event (a terminal
+// merge label, agent output of a recycled retry, a loop gate) ends the phase.
+export type MergePhase = "waiting" | "merging" | "re-check";
+const MERGE_LIVE: Record<string, MergePhase> = {
+    "merge: waiting": "waiting",             // queued behind the project's merge mutex
+    "merge: merging": "merging",             // squashing onto the fresh integration tip
+    "merge re-check: running": "re-check",   // check ∧ acceptance against the fresh tip
+    "merge re-check: passed": "re-check",    // advancing the ref (moments from merged)
+};
+export function mergePhaseOf(t: Pick<TaskVM, "status" | "snap">): MergePhase | null {
+    if (t.status !== "running" && t.status !== "handed-off") return null;
+    const feed = t.snap?.feed;
+    const last = feed && feed.length ? feed[feed.length - 1] : null;
+    if (!last || last.kind !== "gate") return null;
+    return MERGE_LIVE[last.text] ?? null;
+}
+
+const MERGE_TEXT: Record<MergePhase, string> = {
+    waiting: "merge: waiting on the lane",
+    merging: "merging onto integration",
+    "re-check": "merge re-check running",
+};
+export function MergeChip({ phase }: { phase: MergePhase }) {
+    return (
+        <span {...verifyAttrs({ unit: "MergeChip", phase })} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "var(--font-mono)", fontSize: "var(--text-2xs)", color: "var(--violet-400)", whiteSpace: "nowrap" }}>
+            <Icon name="GitMerge" size={12} />{MERGE_TEXT[phase]}
+        </span>
+    );
+}
+
 /* ---------- failure reason box (verbatim engine reasons — §4.2) ---------- */
 export function FailureBox({ reason, quiet }: { reason: string | null | undefined; quiet?: boolean }) {
     if (!reason) return null;

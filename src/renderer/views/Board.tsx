@@ -9,8 +9,8 @@ import type { Project, TaskStatus } from "../../shared/types";
 import { Icon, ProgressBar, StatusDot } from "../ds";
 import { verifyAttrs } from "../components/verifyAttrs";
 import {
-    ActionCtx, EmptyState, FailureBox, Mono, StatusChip, VerbBar, WaitingOn,
-    fmtDiffstat, fmtUsd, parseDiffstat, stuckOf, timeAgo, type TaskVM,
+    ActionCtx, EmptyState, FailureBox, MergeChip, Mono, StatusChip, VerbBar, WaitingOn,
+    fmtDiffstat, fmtUsd, mergePhaseOf, parseDiffstat, stuckOf, timeAgo, type TaskVM,
 } from "./helpers";
 
 export type BoardLayout = "kanban" | "list" | "grid";
@@ -58,6 +58,7 @@ export function TaskCard({ task, project, showProject }: { task: TaskVM; project
     const actions = useContext(ActionCtx);
     const terminal = task.status === "merged" || task.status === "abandoned";
     const cur = task.snap?.currentIteration ?? null;
+    const mergePhase = mergePhaseOf(task);
     const verbs = !terminal;
     return (
         <div
@@ -65,6 +66,7 @@ export function TaskCard({ task, project, showProject }: { task: TaskVM; project
             {...verifyAttrs({
                 unit: "TaskCard", status: task.status, id: task.id,
                 resumable: task.resumable, blocked: task.blocked, stuck: stuckOf(task),
+                "merge-phase": mergePhase,
                 "waiting-on": task.blocked ? task.waitingOn.map((w) => w.title).join(", ") || null : null,
                 plan: task.planId, jail: project?.jailImage ? true : null,
             })}
@@ -84,6 +86,14 @@ export function TaskCard({ task, project, showProject }: { task: TaskVM; project
                     </div>
                     <ProgressBar value={cur.index + 1} max={capOf(project)} tone="running" size="sm" />
                 </>
+            )}
+            {/* The merge stage runs after the last iteration ends (currentIteration is null), so
+                without this a landing task reads like a plain idle running one. */}
+            {mergePhase && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <MergeChip phase={mergePhase} />
+                    <div style={{ flex: 1 }}><ProgressBar indeterminate size="sm" tone="primary" /></div>
+                </div>
             )}
 
             {task.status === "needs-human" && <FailureBox reason={task.failureReason} quiet />}
@@ -179,8 +189,10 @@ function TaskRow({ task, project, showProject }: { task: TaskVM; project?: Proje
     const actions = useContext(ActionCtx);
     const cur = task.snap?.currentIteration ?? null;
     const stuck = stuckOf(task);
+    const mergePhase = mergePhaseOf(task);
     let detail: ReactNode = null;
-    if (task.status === "running" && cur) detail = <span className="helm-activity" style={{ color: "var(--text-secondary)" }}>{cur.latestActivity || "…"}<span className="helm-live-caret"></span></span>;
+    if (mergePhase) detail = <MergeChip phase={mergePhase} />;
+    else if (task.status === "running" && cur) detail = <span className="helm-activity" style={{ color: "var(--text-secondary)" }}>{cur.latestActivity || "…"}<span className="helm-live-caret"></span></span>;
     else if (task.status === "needs-human") detail = <span className="helm-activity" style={{ color: "var(--amber-300)" }}>{task.failureReason}</span>;
     else if (task.blocked) detail = <span className="helm-activity" style={{ color: stuck ? "var(--amber-300)" : undefined }}>{stuck ? "stuck — " : "waiting on "}{task.waitingOn.map((p) => p.title).join(", ")}</span>;
     else if (task.status === "merged" && task.diffstat) detail = <span className="helm-activity">{fmtDiffstat(task.diffstat)}</span>;
@@ -190,7 +202,7 @@ function TaskRow({ task, project, showProject }: { task: TaskVM; project?: Proje
     return (
         <div
             className="helm-row"
-            {...verifyAttrs({ unit: "TaskRow", status: task.status, id: task.id, blocked: task.blocked })}
+            {...verifyAttrs({ unit: "TaskRow", status: task.status, id: task.id, blocked: task.blocked, "merge-phase": mergePhase })}
             style={{ opacity: task.status === "abandoned" ? 0.55 : 1 }} onClick={() => actions.openTask(task.id)}
         >
             <div><StatusChip status={task.blocked ? "blocked" : task.status} /></div>
