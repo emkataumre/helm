@@ -73,6 +73,112 @@ function DraftCard({ card, verdicts }: { card: PlanDraftTask; verdicts: Prefligh
     );
 }
 
+/* ---------- parse-failure list (one draft's tasks.json problems, verbatim) ---------- */
+function DraftErrors({ errors }: { errors: string[] }) {
+    return (
+        <div {...verifyAttrs({ unit: "DraftErrors", errors: errors.length })}>
+            <div style={{ color: "var(--red-400)", fontWeight: 600, fontSize: "var(--text-sm)" }}>tasks.json has {errors.length} problem{errors.length === 1 ? "" : "s"} — fix it in the session:</div>
+            <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                {errors.map((e, i) => <li key={i} style={{ color: "var(--red-400)", fontSize: "var(--text-xs)" }}>{e}</li>)}
+            </ul>
+        </div>
+    );
+}
+
+/* ---------- plan-queue rail (the multi-draft seam) ---------- */
+// The renderer's twin of main's NamedPlanRailState (planWatcher.buildPlanQueueState): the SAME rail
+// contract, once per draft — name null = the anonymous loose-root draft, a string = a <slug>/ subdir
+// draft. Structural copy because shared/types is outside this slice; the queue-push ipc slice hoists it.
+export type NamedPlanRailState = PlanRailState & { name: string | null };
+
+// Approve-all's order: the parse-ok drafts, in SET ORDER (the order drafts arrive from the multi-draft
+// read — loose root first, then <slug>/ drafts sorted). A draft that doesn't parse is skipped, never
+// blocking its siblings. Exported for the render tests (the order is behavior, not markup).
+export function queueApproveOrder(drafts: NamedPlanRailState[]): Array<string | null> {
+    return drafts.filter((d) => d.parse?.ok).map((d) => d.name);
+}
+
+// One draft of the set: its own tasks (with THEIR static verdicts), its own parse errors, its own
+// Approve. A draft that doesn't parse offers NO approval path — same rule as the single face.
+function QueuedDraftCard({ draft, approving, onApprove }: {
+    draft: NamedPlanRailState;
+    approving: boolean;
+    onApprove: (name: string | null) => void;
+}) {
+    const parsed = draft.parse?.ok ? draft.parse.draft : null;
+    const errors = draft.parse && !draft.parse.ok ? draft.parse.errors : null;
+    const warns = draft.verdicts.filter((v) => v.level === "warn").length;
+    return (
+        <div {...verifyAttrs({ unit: "QueuedDraftCard", name: draft.name ?? "(root)", "parse-ok": draft.parse ? draft.parse.ok : null, tasks: parsed ? parsed.tasks.length : null, warns })}
+            style={{ background: "var(--surface-card)", border: "1px solid var(--border-default)", borderRadius: 10, boxShadow: "var(--elev-card)", padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                <Mono dim size="var(--text-2xs)">{draft.name ?? "(root)"}</Mono>
+                <span style={{ fontSize: "var(--text-sm)", fontWeight: 500, flex: 1 }}>{parsed ? parsed.planTitle : errors ? "tasks.json invalid" : "still drafting"}</span>
+            </div>
+            {errors && <DraftErrors errors={errors} />}
+            {parsed && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {parsed.tasks.map((c) => <DraftCard key={c.slug} card={c} verdicts={draft.verdicts} />)}
+                </div>
+            )}
+            {!parsed && !errors && <div style={{ color: "var(--text-muted)", fontSize: "var(--text-xs)" }}>waiting for this draft's tasks.json…</div>}
+            {parsed && (
+                <Button variant="primary" disabled={approving} iconLeft={<Icon name="Check" size={14} />} onClick={() => onApprove(draft.name)}>
+                    Approve — queue {parsed.tasks.length} task{parsed.tasks.length === 1 ? "" : "s"}
+                </Button>
+            )}
+        </div>
+    );
+}
+
+// The side rail's draft area, multi-draft (plan-queue). One card per draft, each with its own static
+// verdicts and its own Approve (THE authority); [Approve all (in set order)] is a convenience that just
+// invokes the per-draft approvals in set order. Back-compat is a rendering rule, not a wiring rule: a
+// single anonymous loose-root draft — the only shape main pushes pre-queue — renders EXACTLY as today
+// (errors list / task cards, no per-draft chrome), so shipping the seam changes nothing live.
+export function PlanQueueRail({ drafts, approving, onApprove }: {
+    drafts: NamedPlanRailState[];  // in set order: the loose root first, then <slug>/ drafts sorted
+    approving: boolean;
+    onApprove: (name: string | null) => void;
+}) {
+    if (!drafts.length) return null;
+    if (drafts.length === 1 && drafts[0].name === null) {
+        const d = drafts[0];
+        const parsed = d.parse?.ok ? d.parse.draft : null;
+        const errors = d.parse && !d.parse.ok ? d.parse.errors : null;
+        if (!parsed && !errors) return null; // still conversing — nothing drafted, nothing to render
+        return (
+            <div {...verifyAttrs({ unit: "PlanQueueRail", drafts: 1, single: true })} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                {errors && <DraftErrors errors={errors} />}
+                {parsed && (
+                    <>
+                        <Overline>draft tasks — {parsed.tasks.length} · fix problems in the session, not here</Overline>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                            {parsed.tasks.map((c) => <DraftCard key={c.slug} card={c} verdicts={d.verdicts} />)}
+                        </div>
+                    </>
+                )}
+            </div>
+        );
+    }
+    const order = queueApproveOrder(drafts);
+    return (
+        <div {...verifyAttrs({ unit: "PlanQueueRail", drafts: drafts.length, single: false, approvable: order.length, order: order.map((n) => n ?? "(root)").join("¦") })}
+            style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <Overline>draft set — {drafts.length} drafts · per-draft Approve is the authority</Overline>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {drafts.map((d) => <QueuedDraftCard key={d.name ?? "(root)"} draft={d} approving={approving} onApprove={onApprove} />)}
+            </div>
+            {drafts.length >= 2 && (
+                <Button variant="secondary" disabled={approving || order.length === 0} iconLeft={<Icon name="ListTodo" size={14} />}
+                    onClick={() => { for (const name of queueApproveOrder(drafts)) onApprove(name); }}>
+                    Approve all (in set order)
+                </Button>
+            )}
+        </div>
+    );
+}
+
 /* ---------- dynamic pre-flight report (§3.10; role-aware vocabulary 2026-07-14) ---------- */
 const PRE_META: Record<PreflightCommandVerdict["level"], { color: string; icon: IconName; label: string; hint: string }> = {
     "ok-red": { color: "var(--green-400)", icon: "CircleCheck", label: "expected red", hint: "fails before any work exists — this proof can gate the task" },
@@ -241,7 +347,6 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
     }
 
     const draft = rail.parse?.ok ? rail.parse.draft : null;
-    const parseErrors = rail.parse && !rail.parse.ok ? rail.parse.errors : null;
     const report = preflight !== null && preflight !== "loading" ? preflight : null;
     const unacked = report ? unackedWarns(report, acks) : 0;
     const uniqueCommands = draft ? new Set(draft.tasks.flatMap((c) => c.acceptance)).size : 0;
@@ -303,22 +408,16 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
                     <div style={{ color: "var(--text-muted)", fontSize: "var(--text-sm)" }}>The session is still conversing — the PRD and task drafts appear here as files land.</div>
                 )}
 
-                {parseErrors && (
-                    <div {...verifyAttrs({ unit: "DraftErrors", errors: parseErrors.length })}>
-                        <div style={{ color: "var(--red-400)", fontWeight: 600, fontSize: "var(--text-sm)" }}>tasks.json has {parseErrors.length} problem{parseErrors.length === 1 ? "" : "s"} — fix it in the session:</div>
-                        <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-                            {parseErrors.map((e, i) => <li key={i} style={{ color: "var(--red-400)", fontSize: "var(--text-xs)" }}>{e}</li>)}
-                        </ul>
-                    </div>
-                )}
+                {/* the draft area, via the multi-draft seam (plan-queue). Main still pushes ONE anonymous
+                    rail state, so live this is always the single loose-root face — today's errors list /
+                    task cards, byte-for-byte, with no per-draft chrome. The queue-push ipc slice hands the
+                    full NamedPlanRailState[] straight through and routes onApprove per draft name; until
+                    then the root draft's authority stays the two-phase box below (the single face renders
+                    no per-draft Approve button, so this onApprove is unreachable live). */}
+                <PlanQueueRail drafts={[{ name: null, ...rail }]} approving={approving} onApprove={() => void approve(false)} />
 
                 {draft && (
                     <>
-                        <Overline>draft tasks — {draft.tasks.length} · fix problems in the session, not here</Overline>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                            {draft.tasks.map((c) => <DraftCard key={c.slug} card={c} verdicts={rail.verdicts} />)}
-                        </div>
-
                         {/* two-phase approval */}
                         <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-default)", borderRadius: 10, boxShadow: "var(--elev-card)", padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
                             <Overline>approval</Overline>

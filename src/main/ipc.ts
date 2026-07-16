@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync
 import { homedir } from "node:os";
 import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject, deleteProject, recordConductorSession } from "./db/projects";
-import { insertPlan, listPlans, getPlan } from "./db/plans";
+import { insertPlan, listPlans, getPlan, planQueueMetaFromDraft } from "./db/plans";
 import { insertTask, insertPlanTask, listTasks, getTask, updateTask, setDependsOn } from "./db/tasks";
 import { listFailures, recordRecycledFailure, summarizeFailures } from "./db/failures";
 import { addIteration, finishIteration, listIterations, latestSessionId } from "./db/iterations";
@@ -648,8 +648,11 @@ export function registerIpc(
         }
 
         const warnings = files.prdText == null ? ["no prd.md in .helm/plan/ — stored an empty PRD for this plan"] : [];
+        // Stamp the plan-queue columns from the draft's publish metadata (optional top-level tasks.json
+        // fields; absent/bad values fall to the safe defaults — null order, null parent, 'strict' gate).
+        const queueMeta = planQueueMetaFromDraft(files.tasksJson);
         db.transaction(() => {
-            const plan = insertPlan(db, { projectId, title: approved.plan.planTitle, prdText: approved.plan.prdText });
+            const plan = insertPlan(db, { projectId, title: approved.plan.planTitle, prdText: approved.plan.prdText, ...queueMeta });
             for (const ins of approved.plan.inserts) insertPlanTask(db, { ...ins, projectId, planId: plan.id });
         })();
 

@@ -126,6 +126,16 @@ const STEPS: Array<(db: Db) => void> = [
             CREATE INDEX IF NOT EXISTS failures_taskId ON failures(taskId);
         `);
     },
+    // Step 13 — plan-queue slice 2: where an approved plan sits in the run-order (queuePos, nullable =
+    // unordered), which plan must finish before it starts (dependsOnPlan, a plan id; NULL = no parent),
+    // and how its tasks gate (gateMode 'strict'|'yolo'). Stamped at approve from the draft's publish
+    // metadata; reads are defensive (plans.ts maps any bad stored gateMode back to 'strict'). NOT NULL
+    // DEFAULT 'strict' backfills every existing plan row with the safe mode (the promotionMode precedent).
+    (db) => {
+        db.exec(`ALTER TABLE plans ADD COLUMN queuePos INTEGER`);
+        db.exec(`ALTER TABLE plans ADD COLUMN dependsOnPlan TEXT`);
+        db.exec(`ALTER TABLE plans ADD COLUMN gateMode TEXT NOT NULL DEFAULT 'strict'`);
+    },
 ];
 
 // Apply every step past the DB's current user_version, advancing the cursor as we go.
