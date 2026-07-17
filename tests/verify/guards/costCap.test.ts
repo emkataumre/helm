@@ -1,16 +1,23 @@
 // tests/verify/guards/costCap.test.ts
-// The M12 per-task cost-cap verify slice. Sibling to the deny-fail-fast slice (surface/fixtures/invariants +
-// trayCounts) — self-contained in this one file, same shape as trayCounts.test.ts. runTaskLoop has no DOM and
-// no HTTP response; its observable SURFACE is what it did (final status, terminal reason, how many iterations
-// it spawned). We drive the REAL, fully-DI'd runTaskLoop with recording fake deps that script, per iteration,
-// exactly how many USD that spawn cost and whether the gate went green — then distil a flat CostRecording the
-// invariant reads.
+// The M12 cost-cap verify slice, REPOINTED at the TOKEN cap — the $ cap's successor and now the SOLE
+// spend ceiling. Sibling to the deny-fail-fast slice (surface/fixtures/invariants + trayCounts) —
+// self-contained in this one file, same shape as trayCounts.test.ts. runTaskLoop has no DOM and no HTTP
+// response; its observable SURFACE is what it did (final status, terminal reason, how many iterations it
+// spawned). We drive the REAL, fully-DI'd runTaskLoop with recording fake deps that script, per
+// iteration, the usage that spawn reported — BILLABLE tokens *and* a legacy costUsd figure — and whether
+// the gate went green, then distil a flat SpendRecording the invariants read.
 //
-// Non-circularity: each scenario DECLARES its ground truth — the per-iteration cost, recorded at the spawn
-// seam, independent of the loop's own accounting. The invariant RE-DERIVES the expected "spend before this
-// iteration" from those raw costs (an independent restatement of the rule: a spawn is legitimate only while
-// the cumulative prior spend is still under the cap) and compares it against the loop's ACTUAL behaviour
-// (how many iterations it spawned). A spawn that happened after the ceiling was crossed is caught.
+// What "repointed" means: the dollar CAP is retired (the USD accumulator and `spend >= costCapUsd`
+// meter are gone from runTask.ts; costUsd survives as display accounting only), so this slice now
+// proves TWO things — the token backstop halts spawns exactly like the old $ cap used to, AND a run
+// that would have tripped the OLD $ cap but is under the token cap must NOT park (the retirement
+// itself, as a live probe scenario).
+//
+// Non-circularity: each scenario DECLARES its ground truth — the per-iteration billable usage and USD
+// figure, recorded at the spawn seam, independent of the loop's own accounting. The invariants RE-DERIVE
+// the expected behaviour from those raw series (prior-billable strictly under the cap before every
+// spawn; a positive $ cap may never park a run) and compare against the loop's ACTUAL behaviour, so a
+// leaked spawn or a resurrected dollar gate is caught rather than tautologically confirmed.
 import { describe, it, expect } from "vitest";
 import { runTaskLoop, type RunTaskDeps } from "../../../src/main/engine/runTask";
 import type { LoopConfig } from "../../../src/main/engine/loopConfig";
@@ -19,37 +26,44 @@ import { mkProject, mkTask } from "./surface";
 
 const ZERO: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0 };
 
-// Tiny bounds so a scenario runs fast; per-scenario overrides set the cap + iteration budget under test.
-// noProgressK is comfortably high AND every scripted step lands a fresh commit, so the no-progress breaker
-// never pre-empts the cost cap; no denied keys, so the deny wall never fires either — the cost cap is the
-// sole breaker under observation.
-const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 5, denyWallK: 99, mergeRecycleK: 0, costCapUsd: 25, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
+// Tiny bounds so a scenario runs fast; per-scenario overrides set the caps + iteration budget under
+// test. noProgressK is comfortably high AND every scripted step lands a fresh commit, so the no-progress
+// breaker never pre-empts the spend ceiling; no denied keys, so the deny wall never fires either — the
+// spend ceiling is the sole breaker under observation. costCapUsd is deliberately ABSENT by default:
+// resolveLoopConfig only ever forwards a stored project value, and the retired field has no engine
+// default anymore.
+const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 99, denyWallK: 99, mergeRecycleK: 0, tokenCap: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
 
-// One iteration's scripted world: what the spawn cost (USD) and whether the gate went green.
-interface CostStep { costUsd: number; checkGreen?: boolean }
-interface CostScenario { script: CostStep[]; config?: Partial<LoopConfig> }
+// One iteration's scripted world: the billable tokens and legacy USD figure the spawn reported, and
+// whether the gate went green.
+interface SpendStep { billable: number; costUsd: number; checkGreen?: boolean }
+interface SpendScenario { script: SpendStep[]; config?: Partial<LoopConfig> }
 
-// The flat recording the invariant reads.
-interface CostRecording {
+// The flat recording the invariants read.
+interface SpendRecording {
     unit: "cost-cap";
     finalStatus: TaskStatus;
     terminalReason: string | null;
-    iterationsRun: number;       // iterations the REAL loop actually SPAWNED (spawn-seam count)
+    iterationsRun: number;            // iterations the REAL loop actually SPAWNED (spawn-seam count)
     iterationCap: number;
-    costCapUsd: number;
-    escalatedCostCap: boolean;   // the terminal reason is a cost-cap termination
-    perIterationCost: number[];  // ground truth: what each spawned iteration cost (recorded at the spawn seam)
+    tokenCap: number | undefined;
+    costCapUsd: number | undefined;   // the config's retired $ figure (only 0 may ever act)
+    escalatedTokenCap: boolean;       // the terminal reason is a token-cap termination
+    escalatedDollarCap: boolean;      // the terminal reason is a $-cap termination (only legal at cap ≤ 0)
+    perIterationBillable: number[];   // ground truth: billable tokens each spawned iteration reported
+    perIterationCostUsd: number[];    // ground truth: the USD figure each spawned iteration carried
 }
 
 // Drive the REAL loop over a scenario and distil the recording.
-async function runCostScenario(scenario: CostScenario): Promise<CostRecording> {
+async function runSpendScenario(scenario: SpendScenario): Promise<SpendRecording> {
     const config: LoopConfig = { ...TEST_CONFIG, ...scenario.config };
     const script = scenario.script;
-    const perIterationCost: number[] = [];
+    const perIterationBillable: number[] = [];
+    const perIterationCostUsd: number[] = [];
     const statusCalls: { status: TaskStatus; reason: string | null }[] = [];
     let iterIdx = -1, headCalls = 0;
     let lastSha = "sha-base";
-    const step = (): CostStep => script[Math.min(iterIdx, script.length - 1)] ?? { costUsd: 0 };
+    const step = (): SpendStep => script[Math.min(iterIdx, script.length - 1)] ?? { billable: 0, costUsd: 0 };
 
     const deps: RunTaskDeps = {
         ensureBranch: async () => {}, checkoutBranch: async () => {},
@@ -59,14 +73,17 @@ async function runCostScenario(scenario: CostScenario): Promise<CostRecording> {
         runSetup: async () => ({ ok: true, output: "" }),
         spawnAgent: async () => {
             iterIdx += 1;
-            const cost = step().costUsd;
-            perIterationCost.push(cost);
-            return { ok: true, output: "did work", sessionId: `sess-${iterIdx}`, stalled: false, usage: { ...ZERO, costUsd: cost }, durationMs: null, deniedCommands: [] };
+            const s = step();
+            perIterationBillable.push(s.billable);
+            perIterationCostUsd.push(s.costUsd);
+            // The whole billable figure rides on output tokens (billable = input + output +
+            // cacheCreation); a fat cacheRead documents that cache reads never count toward the cap.
+            return { ok: true, output: "did work", sessionId: `sess-${iterIdx}`, stalled: false, usage: { ...ZERO, output: s.billable, cacheRead: 500_000, costUsd: s.costUsd }, durationMs: null, deniedCommands: [] };
         },
         commitAll: async () => {},
         headSha: async () => {
             if (headCalls++ === 0) return "sha-base"; // baseSha, read once before the loop
-            lastSha = `sha-${iterIdx}`;                // every iteration lands a fresh commit (no-progress never fires)
+            lastSha = `sha-${iterIdx}`;               // every iteration lands a fresh commit (no-progress never fires)
             return lastSha;
         },
         runCheck: async () => { const green = step().checkGreen ?? false; return { green, timedOut: false, output: green ? "" : "check failed" }; },
@@ -75,7 +92,7 @@ async function runCostScenario(scenario: CostScenario): Promise<CostRecording> {
         diffStat: async () => "+1 -0",
         mergeStage: async () => ({ outcome: "merged", diffstat: "+1 -0" }),
         setStatus: (_id, status, extra) => { statusCalls.push({ status, reason: extra?.failureReason ?? null }); },
-        addIteration: () => ({ id: `it-${perIterationCost.length}` }),
+        addIteration: () => ({ id: `it-${perIterationBillable.length}` }),
         finishIteration: () => {},
         log: () => {},
     };
@@ -86,148 +103,202 @@ async function runCostScenario(scenario: CostScenario): Promise<CostRecording> {
         unit: "cost-cap",
         finalStatus,
         terminalReason,
-        iterationsRun: perIterationCost.length,
+        iterationsRun: perIterationBillable.length,
         iterationCap: config.iterationCap,
+        tokenCap: config.tokenCap,
         costCapUsd: config.costCapUsd,
-        escalatedCostCap: (terminalReason ?? "").startsWith("cost cap reached"),
-        perIterationCost,
+        escalatedTokenCap: (terminalReason ?? "").startsWith("token cap reached"),
+        escalatedDollarCap: (terminalReason ?? "").startsWith("cost cap reached"),
+        perIterationBillable,
+        perIterationCostUsd,
     };
 }
 
 // ── Scenarios ───────────────────────────────────────────────────────────────────────────────────────────
-const step = (costUsd: number, over: Partial<CostStep> = {}): CostStep => ({ costUsd, checkGreen: false, ...over });
+const step = (billable: number, costUsd: number, over: Partial<SpendStep> = {}): SpendStep => ({ billable, costUsd, checkGreen: false, ...over });
 
-// $10/iteration against a $25 cap with red gates: spawns run while cumulative prior spend is under the cap
-// (before iters 0/1/2 → $0/$10/$20) and STOP before iter 3 (prior spend $30 ≥ $25). Cap gates spawns, not the
-// iteration budget — it fires at 3, well before the cap of 8.
-const capHaltsSpawns = (): CostScenario => ({ script: Array.from({ length: 8 }, () => step(10)), config: { costCapUsd: 25, iterationCap: 8 } });
+// 400 billable/iteration against a 1000-token cap with red gates: spawns run while cumulative prior
+// billable is under the cap (before iters 0/1/2 → 0/400/800) and STOP before iter 3 (prior 1200 ≥ 1000).
+// The cap gates spawns, not the iteration budget — it fires at 3, well before the cap of 8.
+const capHaltsSpawns = (): SpendScenario => ({ script: Array.from({ length: 8 }, () => step(400, 0)), config: { tokenCap: 1000, iterationCap: 8 } });
 
-// A single GREEN iteration that itself costs $30 (> the $25 cap) still MERGES: the cap is checked BEFORE the
-// spawn (prior spend $0 < $25), and a green iteration that crosses the cap lands normally (the deliberate
-// spawns-only symmetry). No second spawn is ever gated because the task already merged.
-const greenCrossingCapMerges = (): CostScenario => ({ script: [step(30, { checkGreen: true })], config: { costCapUsd: 25 } });
+// THE mandated live probe scenario: a run that would have tripped the OLD $ cap but is under the token
+// cap must NOT park. $10/iteration against the old default $25 cap — the retired meter would have halted
+// the 4th spawn (prior spend $30 ≥ $25) — but each iteration is only 10 billable tokens (40 ≪ 1000), so
+// the loop must run its FULL iteration budget and park on the iteration cap, never on a spend ceiling.
+const oldDollarCapDoesNotPark = (): SpendScenario => ({ script: Array.from({ length: 6 }, () => step(10, 10)), config: { costCapUsd: 25, tokenCap: 1000, iterationCap: 6 } });
 
-// Cheap iterations ($1) never reach the $25 cap, so the cost cap NEVER fires — the loop runs its full
-// iteration budget (4) and terminates on the iteration cap instead. Proves the cost cap does not over-fire.
-const underCapRunsToIterationCap = (): CostScenario => ({ script: Array.from({ length: 4 }, () => step(1)), config: { costCapUsd: 25, iterationCap: 4 } });
+// A single GREEN iteration that itself blows past the token cap still MERGES: the cap is checked BEFORE
+// the spawn (prior billable 0 < 1000), and a green iteration that crosses the cap lands normally (the
+// deliberate spawns-only symmetry, carried over from the $ cap it replaced).
+const greenCrossingCapMerges = (): SpendScenario => ({ script: [step(5_000, 0, { checkGreen: true })], config: { tokenCap: 1000 } });
 
-// An explicit $0 cap means "spawn nothing": the top-of-loop check ($0 spend ≥ $0 cap) trips on the very first
-// pass, so zero iterations are ever spawned.
-const zeroCapSpawnsNothing = (): CostScenario => ({ script: Array.from({ length: 4 }, () => step(10)), config: { costCapUsd: 0, iterationCap: 8 } });
+// An explicit 0 token cap means "spawn nothing": the top-of-loop check (0 billable ≥ 0 cap) trips on the
+// very first pass, so zero iterations are ever spawned.
+const zeroTokenCapSpawnsNothing = (): SpendScenario => ({ script: Array.from({ length: 4 }, () => step(400, 0)), config: { tokenCap: 0, iterationCap: 8 } });
 
-// ── The invariant ───────────────────────────────────────────────────────────────────────────────────────
-// cost-cap-respected: no iteration is spawned once the ceiling has been crossed. Re-derive, from the recorded
-// per-iteration costs, the cumulative spend BEFORE each spawned iteration; every spawn must have begun with
-// that prior spend strictly under the cap. This is an INDEPENDENT restatement of the loop's rule, so a spawn
-// that happened after the cap was crossed (a leaked spawn) is caught rather than tautologically confirmed.
-function costCapRespected(r: CostRecording): true | string {
-    let spendBefore = 0;
+// The retired $ cap's one surviving contract: an explicit costCapUsd of 0 STILL spawns nothing (the
+// kill-switch is a config flag, not a spend meter — with the accumulator gone, 0 is the only value the
+// old gate could ever fire at).
+const zeroDollarCapStillSpawnsNothing = (): SpendScenario => ({ script: Array.from({ length: 4 }, () => step(10, 0)), config: { costCapUsd: 0, tokenCap: 1000, iterationCap: 8 } });
+
+// ── The invariants ──────────────────────────────────────────────────────────────────────────────────────
+
+// token-cap-respected: no iteration is spawned once the billable ceiling has been crossed. Re-derive,
+// from the recorded per-iteration billable series, the cumulative prior billable before each spawned
+// iteration; every spawn must have begun strictly under the cap. An INDEPENDENT restatement of the
+// loop's rule, so a leaked spawn is caught rather than tautologically confirmed.
+function tokenCapRespected(r: SpendRecording): true | string {
+    if (r.tokenCap === undefined) return true; // gate off — nothing to respect
+    let billableBefore = 0;
     for (let j = 0; j < r.iterationsRun; j++) {
-        if (spendBefore >= r.costCapUsd) {
-            return `iteration ${j + 1} spawned though cumulative prior spend $${spendBefore.toFixed(2)} had already reached the $${r.costCapUsd} cap`;
+        if (billableBefore >= r.tokenCap) {
+            return `iteration ${j + 1} spawned though cumulative prior billable ${billableBefore} had already reached the ${r.tokenCap}-token cap`;
         }
-        spendBefore += r.perIterationCost[j] ?? 0;
+        billableBefore += r.perIterationBillable[j] ?? 0;
     }
     return true;
 }
 
+// dollar-cap-retired: with the USD meter severed, ONLY an explicit cap ≤ 0 (the spawn-nothing
+// kill-switch) may ever terminate as a $-cap park. A positive $ cap producing a dollar-cap termination
+// means the legacy `spend >= costCapUsd` gate came back from the dead — exactly the regression this
+// slice exists to catch, however much the run "cost".
+function dollarCapRetired(r: SpendRecording): true | string {
+    if (!r.escalatedDollarCap) return true;
+    if (r.costCapUsd !== undefined && r.costCapUsd <= 0) return true; // the kill-switch — legitimate
+    const spent = r.perIterationCostUsd.reduce((a, c) => a + c, 0);
+    return `a $-cap park fired against costCapUsd=${r.costCapUsd} (cumulative costUsd $${spent.toFixed(2)}) — the retired dollar meter is back`;
+}
+
+const INVARIANTS: Record<string, (r: SpendRecording) => true | string> = {
+    "token-cap-respected": tokenCapRespected,
+    "dollar-cap-retired": dollarCapRetired,
+};
+
 // runGuardInvariants-style wrapper: a predicate that THROWS becomes a failed check, never a silent pass.
-function checkInvariant(r: CostRecording): { name: string; ok: boolean; detail?: string } {
-    const name = "cost-cap-respected";
-    try {
-        const verdict = costCapRespected(r);
-        return verdict === true ? { name, ok: true } : { name, ok: false, detail: verdict };
-    } catch (err) {
-        return { name, ok: false, detail: `threw: ${(err as Error)?.message ?? String(err)}` };
-    }
+function checkInvariants(r: SpendRecording): Array<{ name: string; ok: boolean; detail?: string }> {
+    return Object.entries(INVARIANTS).map(([name, pred]) => {
+        try {
+            const verdict = pred(r);
+            return verdict === true ? { name, ok: true } : { name, ok: false, detail: verdict };
+        } catch (err) {
+            return { name, ok: false, detail: `threw: ${(err as Error)?.message ?? String(err)}` };
+        }
+    });
 }
 
 // ── Fixtures ────────────────────────────────────────────────────────────────────────────────────────────
-// POSITIVE fixtures drive the REAL loop — the invariant must hold. A PROBE is a hand-crafted BROKEN recording
-// (a spawn that happened after the cap was crossed) that MUST FAIL — proving the harness catches a lie.
-interface PositiveFixture { id: string; probe?: false; run: () => Promise<CostRecording> }
-interface ProbeFixture { id: string; probe: true; recording: CostRecording; mustFail: string }
-type CostFixture = PositiveFixture | ProbeFixture;
+// POSITIVE fixtures drive the REAL loop — every invariant must hold. A PROBE is a hand-crafted BROKEN
+// recording that MUST FAIL its named invariant — proving the harness catches each lie.
+interface PositiveFixture { id: string; probe?: false; run: () => Promise<SpendRecording> }
+interface ProbeFixture { id: string; probe: true; recording: SpendRecording; mustFail: string }
+type SpendFixture = PositiveFixture | ProbeFixture;
 
-const FIXTURES: CostFixture[] = [
-    { id: "cap-halts-spawns", run: () => runCostScenario(capHaltsSpawns()) },
-    { id: "green-crossing-cap-merges", run: () => runCostScenario(greenCrossingCapMerges()) },
-    { id: "under-cap-runs-to-iteration-cap", run: () => runCostScenario(underCapRunsToIterationCap()) },
-    { id: "zero-cap-spawns-nothing", run: () => runCostScenario(zeroCapSpawnsNothing()) },
+const FIXTURES: SpendFixture[] = [
+    { id: "token-cap-halts-spawns", run: () => runSpendScenario(capHaltsSpawns()) },
+    { id: "old-dollar-cap-does-not-park", run: () => runSpendScenario(oldDollarCapDoesNotPark()) },
+    { id: "green-crossing-cap-merges", run: () => runSpendScenario(greenCrossingCapMerges()) },
+    { id: "zero-token-cap-spawns-nothing", run: () => runSpendScenario(zeroTokenCapSpawnsNothing()) },
+    { id: "zero-dollar-cap-still-spawns-nothing", run: () => runSpendScenario(zeroDollarCapStillSpawnsNothing()) },
 
-    // Probe (deliberately wrong): three $30 spawns against a $25 cap. The SECOND spawn began with $30 of prior
-    // spend — already past the cap — so it should never have happened. MUST FAIL cost-cap-respected.
+    // Probe (deliberately wrong): three 3000-billable spawns against a 1000-token cap. The SECOND spawn
+    // began with 3000 of prior billable — already past the cap — so it should never have happened. MUST
+    // FAIL token-cap-respected.
     {
-        id: "spawn-after-cap", probe: true, mustFail: "cost-cap-respected",
+        id: "spawn-after-token-cap", probe: true, mustFail: "token-cap-respected",
         recording: {
-            unit: "cost-cap", finalStatus: "needs-human", terminalReason: "cost cap reached ($60.00 of $25 cap)",
-            iterationsRun: 3, iterationCap: 8, costCapUsd: 25, escalatedCostCap: true,
-            perIterationCost: [30, 30, 30],
+            unit: "cost-cap", finalStatus: "needs-human", terminalReason: "token cap reached (9000 of 1000 billable tokens)",
+            iterationsRun: 3, iterationCap: 8, tokenCap: 1000, costCapUsd: undefined,
+            escalatedTokenCap: true, escalatedDollarCap: false,
+            perIterationBillable: [3000, 3000, 3000], perIterationCostUsd: [0, 0, 0],
+        },
+    },
+    // Probe (deliberately wrong): the resurrected dollar gate — a run under the token cap parked as a
+    // $-cap termination against the old default $25 (positive) cap. This is precisely "a run that would
+    // have tripped the OLD $ cap" being parked, which the retirement forbids. MUST FAIL
+    // dollar-cap-retired.
+    {
+        id: "dollar-park-under-token-cap", probe: true, mustFail: "dollar-cap-retired",
+        recording: {
+            unit: "cost-cap", finalStatus: "needs-human", terminalReason: "cost cap reached ($30.00 of $25 cap)",
+            iterationsRun: 3, iterationCap: 8, tokenCap: 1000, costCapUsd: 25,
+            escalatedTokenCap: false, escalatedDollarCap: true,
+            perIterationBillable: [10, 10, 10], perIterationCostUsd: [10, 10, 10],
         },
     },
 ];
 
 type Verdict = "PASS" | "FAIL" | "BLOCKED";
 
-// Run one fixture: positive → PASS iff the invariant holds against the REAL loop's recording; probe → PASS
-// iff the invariant FAILED (the harness caught the lie). BLOCKED (couldn't observe) is never a pass.
-async function runFixture(f: CostFixture): Promise<{ verdict: Verdict; check: { name: string; ok: boolean; detail?: string } }> {
-    let recording: CostRecording;
+// Run one fixture: positive → PASS iff every invariant holds against the REAL loop's recording; probe →
+// PASS iff its named invariant FAILED (the harness caught the lie). BLOCKED (couldn't observe) is never
+// a pass.
+async function runFixture(f: SpendFixture): Promise<{ verdict: Verdict; checks: Array<{ name: string; ok: boolean; detail?: string }> }> {
+    let recording: SpendRecording;
     try {
         recording = f.probe ? f.recording : await f.run();
     } catch (err) {
-        return { verdict: "BLOCKED", check: { name: "cost-cap-respected", ok: false, detail: `could not build recording — threw: ${(err as Error)?.message ?? String(err)}` } };
+        return { verdict: "BLOCKED", checks: [{ name: "recording", ok: false, detail: `could not build recording — threw: ${(err as Error)?.message ?? String(err)}` }] };
     }
-    const check = checkInvariant(recording);
+    const checks = checkInvariants(recording);
     if (f.probe) {
-        const caught = check.name === f.mustFail && !check.ok;
-        return { verdict: caught ? "PASS" : "FAIL", check };
+        const caught = checks.some((c) => c.name === f.mustFail && !c.ok);
+        return { verdict: caught ? "PASS" : "FAIL", checks };
     }
-    return { verdict: check.ok ? "PASS" : "FAIL", check };
+    return { verdict: checks.every((c) => c.ok) ? "PASS" : "FAIL", checks };
 }
 
-describe("verify/guards/costCap Part 1: the cost-cap breaker in the REAL runTaskLoop", () => {
-    it("stops spawning once accumulated spend crosses the cap — before the iteration cap", async () => {
-        const r = await runCostScenario(capHaltsSpawns());
+describe("verify/guards/costCap Part 1: the token backstop in the REAL runTaskLoop", () => {
+    it("stops spawning once accumulated billable tokens cross the cap — before the iteration cap", async () => {
+        const r = await runSpendScenario(capHaltsSpawns());
         expect(r.finalStatus).toBe("needs-human");
-        expect(r.escalatedCostCap).toBe(true);
-        expect(r.terminalReason).toBe("cost cap reached ($30.00 of $25 cap)");
-        expect(r.iterationsRun).toBe(3);                    // $0/$10/$20 spawned; $30 ≥ $25 halts the 4th
+        expect(r.escalatedTokenCap).toBe(true);
+        expect(r.terminalReason).toBe("token cap reached (1200 of 1000 billable tokens)");
+        expect(r.iterationsRun).toBe(3);                    // prior billable 0/400/800 spawned; 1200 ≥ 1000 halts the 4th
         expect(r.iterationsRun).toBeLessThan(r.iterationCap);
-        expect(costCapRespected(r)).toBe(true);
+        expect(tokenCapRespected(r)).toBe(true);
+    });
+
+    it("PROBE: a run that would have tripped the OLD $ cap but is under the token cap does NOT park", async () => {
+        const r = await runSpendScenario(oldDollarCapDoesNotPark());
+        expect(r.escalatedDollarCap).toBe(false);           // the retired meter never fires at a positive cap
+        expect(r.escalatedTokenCap).toBe(false);            // 6 × 10 billable = 60 ≪ 1000
+        expect(r.iterationsRun).toBe(6);                    // the FULL budget ran — the old gate would have halted at 3
+        expect(r.terminalReason).toContain("iteration cap reached");
+        expect(dollarCapRetired(r)).toBe(true);
     });
 
     it("a green iteration that crosses the cap still merges (the cap gates spawns, not merges)", async () => {
-        const r = await runCostScenario(greenCrossingCapMerges());
+        const r = await runSpendScenario(greenCrossingCapMerges());
         expect(r.finalStatus).toBe("merged");
-        expect(r.escalatedCostCap).toBe(false);
+        expect(r.escalatedTokenCap).toBe(false);
         expect(r.terminalReason).toBeNull();                // merged clears any reason
         expect(r.iterationsRun).toBe(1);
-        expect(costCapRespected(r)).toBe(true);
+        expect(tokenCapRespected(r)).toBe(true);
     });
 
-    it("cheap iterations never trip the cap — the loop runs its full iteration budget", async () => {
-        const r = await runCostScenario(underCapRunsToIterationCap());
+    it("an explicit 0 token cap spawns nothing at all", async () => {
+        const r = await runSpendScenario(zeroTokenCapSpawnsNothing());
         expect(r.finalStatus).toBe("needs-human");
-        expect(r.escalatedCostCap).toBe(false);
-        expect(r.terminalReason).toContain("iteration cap reached");
-        expect(r.iterationsRun).toBe(4);
-        expect(costCapRespected(r)).toBe(true);
+        expect(r.escalatedTokenCap).toBe(true);
+        expect(r.terminalReason).toBe("token cap reached (0 of 0 billable tokens)");
+        expect(r.iterationsRun).toBe(0);
     });
 
-    it("an explicit $0 cap spawns nothing at all", async () => {
-        const r = await runCostScenario(zeroCapSpawnsNothing());
+    it("the retired $ cap's kill-switch survives: an explicit $0 cap still spawns nothing", async () => {
+        const r = await runSpendScenario(zeroDollarCapStillSpawnsNothing());
         expect(r.finalStatus).toBe("needs-human");
-        expect(r.escalatedCostCap).toBe(true);
+        expect(r.escalatedDollarCap).toBe(true);
         expect(r.terminalReason).toBe("cost cap reached ($0.00 of $0 cap)");
         expect(r.iterationsRun).toBe(0);
-        expect(costCapRespected(r)).toBe(true);
+        expect(dollarCapRetired(r)).toBe(true);             // cap ≤ 0 is the one legitimate $-cap park
     });
 });
 
 describe("verify/guards/costCap Part 2: the CI matrix over every fixture", () => {
     it.each(FIXTURES.filter((f) => !f.probe).map((f) => [f.id, f] as const))(
-        "honest fixture %s → PASS (the real loop respects the cap)",
+        "honest fixture %s → PASS (the real loop respects the token backstop)",
         async (_id, fixture) => {
             expect<Verdict>((await runFixture(fixture)).verdict).toBe("PASS");
         },
@@ -238,7 +309,7 @@ describe("verify/guards/costCap Part 2: the CI matrix over every fixture", () =>
     });
 
     it.each(FIXTURES.filter((f) => f.probe).map((f) => [f.id, f] as const))(
-        "probe %s → MUST FAIL (the harness catches the leaked spawn)",
+        "probe %s → MUST FAIL its invariant (the harness catches the lie)",
         async (_id, fixture) => {
             expect<Verdict>((await runFixture(fixture)).verdict).toBe("PASS"); // PASS == the probe's invariant FAILED
         },
@@ -252,17 +323,24 @@ describe("verify/guards/costCap Part 2: the CI matrix over every fixture", () =>
     });
 });
 
-describe("verify/guards/costCap Part 2: the re-derivation is independent of the loop", () => {
-    it("the probe recording genuinely violates cost-cap-respected (a spawn after the cap was crossed)", () => {
-        const probe = FIXTURES.find((f) => f.id === "spawn-after-cap")!;
+describe("verify/guards/costCap Part 3: the re-derivation is independent of the loop", () => {
+    it("the token probe recording genuinely violates token-cap-respected (a spawn after the cap)", () => {
+        const probe = FIXTURES.find((f) => f.id === "spawn-after-token-cap")!;
         const rec = (probe as ProbeFixture).recording;
-        const verdict = costCapRespected(rec);
+        const verdict = tokenCapRespected(rec);
         expect(verdict).not.toBe(true);
         expect(String(verdict)).toContain("iteration 2 spawned");
     });
 
+    it("the dollar probe recording genuinely violates dollar-cap-retired (a positive-$-cap park)", () => {
+        const probe = FIXTURES.find((f) => f.id === "dollar-park-under-token-cap")!;
+        const verdict = dollarCapRetired((probe as ProbeFixture).recording);
+        expect(verdict).not.toBe(true);
+        expect(String(verdict)).toContain("retired dollar meter");
+    });
+
     it("a verifier that throws becomes a FAIL, never a silent pass", () => {
-        const garbage = null as unknown as CostRecording; // property access throws inside the predicate
-        expect(checkInvariant(garbage).ok).toBe(false);
+        const garbage = null as unknown as SpendRecording; // property access throws inside the predicates
+        expect(checkInvariants(garbage).every((c) => !c.ok)).toBe(true);
     });
 });
