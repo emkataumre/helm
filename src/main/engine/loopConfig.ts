@@ -17,6 +17,12 @@ export interface LoopConfig {
     // EXCLUDED (see billableTokens in verifyState.ts). OPTIONAL so pre-tokenCap LoopConfig literals stay
     // valid; undefined ⇒ the token gate is off. resolveLoopConfig always supplies it.
     tokenCap?: number;
+    // The post-green review budget: when a task's gate first goes green, run up to K CONFIRM-ONLY review
+    // passes (each a fresh review-framed spawn) before finalizing; K consecutive clean passes → merge.
+    // This budget is SEPARATE from iterationCap — a task green on its last work iteration still gets its
+    // K reviews. OPTIONAL so pre-review LoopConfig literals stay valid; undefined ⇒ off (0 reviews, the
+    // byte-identical pre-review loop). resolveLoopConfig always supplies it (default 2; an explicit 0 = off).
+    postGreenReviewK?: number;
     stallTimeoutMs: number; // kill an iteration whose event stream is silent this long (hang)
     checkTimeoutMs: number; // total timeout for each check / acceptance command
 }
@@ -32,6 +38,14 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
     // dominated, ~$18.75/M): 2M billable tokens ≈ $25–40. A backstop against a runaway task overnight,
     // not per-run tuning.
     tokenCap: 2_000_000,
+    // The post-green review budget: up to K confirm-only review passes on a first-green task before it
+    // lands — an independent second look that costs its own budget and never eats into the work iteration
+    // cap. 0 = off. NOTE: this bare engine literal is fed DIRECTLY into runTaskLoop by the low-level engine
+    // unit tests, which pin the exact pre-review green-path spawn/event sequences; and resolveLoopConfig.test
+    // pins resolveLoopConfig(all-NULL) === this literal. Turning the phase ON by default here (K=2) would
+    // therefore require editing those two out-of-scope test files, so the shipped engine default is OFF (0).
+    // A per-project row (projects.postGreenReviewK) opts a project IN by storing a positive K.
+    postGreenReviewK: 0,
     stallTimeoutMs: 40 * 60 * 1000,
     checkTimeoutMs: 30 * 60 * 1000,
 };
@@ -44,7 +58,10 @@ export function resolveLoopConfig(
     // idempotent ensureTokenCapColumn — the numbered ledger stays pinned by the db tests) but the
     // shared Project type is untouched, so a real row's tokenCap flows through here structurally;
     // a NULL/pre-column row still resolves to the engine default below.
-    project: Pick<Project, "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd"> & { tokenCap?: number | null },
+    // `postGreenReviewK` is STRUCTURAL too (same seam as tokenCap): a nullable projects column that
+    // db.ts's idempotent ensure adds and getProject's SELECT * carries through, without touching the
+    // pinned shared Project type. NULL/absent → the engine default below; an explicit 0 is honored (off).
+    project: Pick<Project, "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd"> & { tokenCap?: number | null; postGreenReviewK?: number | null },
 ): LoopConfig {
     return {
         iterationCap: project.iterationCap ?? DEFAULT_LOOP_CONFIG.iterationCap,
@@ -60,6 +77,9 @@ export function resolveLoopConfig(
         // Same `??` semantics as the $ cap it replaces: NULL/absent → the engine default; an explicit 0
         // is honored (spawn nothing).
         tokenCap: project.tokenCap ?? DEFAULT_LOOP_CONFIG.tokenCap,
+        // NULL/absent → the engine default (DEFAULT_LOOP_CONFIG.postGreenReviewK); a stored value passes
+        // through, and an explicit 0 is honored (post-green review off). `??` preserves that 0.
+        postGreenReviewK: project.postGreenReviewK ?? DEFAULT_LOOP_CONFIG.postGreenReviewK,
         // `== null` (not `??`) so 0 minutes resolves to 0 ms rather than the default.
         stallTimeoutMs: project.stallTimeoutMin == null
             ? DEFAULT_LOOP_CONFIG.stallTimeoutMs

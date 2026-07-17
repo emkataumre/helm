@@ -2,7 +2,7 @@
 import type { Project, Task, TaskStatus, IterationVerdict, SnapshotEvent, TokenTotals, FailureKind, FailureNote } from "../../shared/types";
 import type { LoopConfig } from "./loopConfig";
 import type { MergeStageResult } from "./mergeStage";
-import { buildGoalPrompt, buildInstructions, buildTaskDirective, seedProgress, type PriorFailure } from "./prompt";
+import { buildGoalPrompt, buildInstructions, buildReviewPrompt, buildTaskDirective, seedProgress, type PriorFailure } from "./prompt";
 import { billableTokens } from "./verifyState";
 
 // Re-export so the reducer, the loop, and the M2 verify slice (which imports it from here) share
@@ -299,6 +299,41 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         if (d.signal?.aborted) return handOff();
 
         if (o.verdict === "green") {
+            // ── Post-green review phase (M19, confirm-only) ─────────────────────────────────────────
+            // Before finalizing, run up to K review passes — each a FRESH review-framed spawn through the
+            // same chokepoint that independently re-examines the now-green work. This phase draws its OWN
+            // budget (K passes); it does NOT consume iterationCap, so a task that goes green on its LAST
+            // work iteration still gets its full K reviews. In this slice reviews are CONFIRM-ONLY: a
+            // completed pass advances toward finalize, K consecutive clean passes → merge exactly as
+            // before. K = 0/undefined → no reviews (the loop stays byte-identical to the pre-review path).
+            // A review spawn that fails to COMPLETE parks the task (the review couldn't confirm) rather
+            // than landing unconfirmed work. Review spawns are NOT iterations — they call neither
+            // addIteration nor finishIteration, and never advance the work counter `i`.
+            const reviewK = config.postGreenReviewK ?? 0;
+            for (let rev = 0; rev < reviewK; rev++) {
+                // A drop-in landing between review passes bails like any between-spawn abort.
+                if (d.signal?.aborted) return handOff();
+                const reviewPrompt = buildReviewPrompt(project, task);
+                if (d.jailSync) await d.jailSync.syncIn(worktreePath, branch);
+                const review = await d.spawnAgent(worktreePath, reviewPrompt, {
+                    model: project.model ?? undefined,
+                    idleTimeoutMs: config.stallTimeoutMs,
+                    iterationIndex: dbIndex,
+                    onEvent: (e) => d.emit?.(e),
+                    signal: d.signal,
+                });
+                if (d.jailSync) await d.jailSync.syncOut(worktreePath, branch);
+                // Reviews cost real tokens — fold them into this run's billable ledger (accounting only;
+                // the review phase runs to completion regardless of the token cap, which gates work spawns).
+                billableSpent += billableTokens(review.usage);
+                if (!review.ok) {
+                    const why = review.stalled ? "stalled (stream idle timeout)" : "exited non-zero";
+                    d.emit?.({ type: "gate", index: dbIndex, label: `review: pass ${rev + 1}/${reviewK} ${why}` });
+                    return terminate("needs-human", `post-green review pass ${rev + 1}/${reviewK} ${why} — work left unconfirmed`, true, { kind: "recheck-failed" });
+                }
+                d.emit?.({ type: "gate", index: dbIndex, label: `review: pass ${rev + 1}/${reviewK} clean` });
+            }
+            // K consecutive clean reviews (or K = 0) → land it via the isolated merge stage.
             // Hand landing to the isolated merge stage: it rebases on the fresh integration tip and
             // re-checks in a throwaway worktree, advancing integration only on a green re-check. A
             // failed re-check (or conflict) loses the race → needs-human (worktree kept for drop-in).

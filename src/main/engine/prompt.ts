@@ -87,6 +87,21 @@ ${accLines}
 `;
 }
 
+// The post-green review /goal (M19 post-green review phase, confirm-only). When the work has already
+// gone green, the loop spawns this REVIEW-FRAMED session instead of another work turn: a fresh, independent
+// agent re-runs the gates and judges whether the work truly and completely satisfies the task — WITHOUT
+// changing the implementation (this slice is confirm-only; a clean pass advances toward finalize). Kept
+// well under PROMPT_BUDGET. The leading "You are REVIEWING" line is the stable frame the loop/tests key
+// off to tell a review spawn apart from a work spawn at the chokepoint.
+export function buildReviewPrompt(project: Project, task: Task): string {
+    const accInline = task.acceptance.join("; ");
+    return `/goal You are REVIEWING already-green work on task "${task.title}" — a confirm-only review pass, NOT a work turn. Independently re-verify that the project check \`${project.checkCommand}\` exits 0 AND every one of these acceptance commands exits 0, all demonstrated in this transcript: ${accInline}. Then judge whether the committed work correctly and completely satisfies the task's intent. Do NOT change the implementation — only confirm and report your judgement.
+
+You are reviewing task "${task.title}".
+
+Your full directive is in .ralph/TASK.md — read it first, then .ralph/INSTRUCTIONS.md and .ralph/progress.md. This is a review pass: verify and judge, do not re-implement.`;
+}
+
 // The -p argument: the /goal condition + a short frame pointing at the .ralph files, plus the
 // engine's ground-truth prior failure on retry (framing-aware, M18) — the whole string kept under
 // PROMPT_BUDGET (an oversized /goal is rejected outright by the CLI, wasting the iteration).

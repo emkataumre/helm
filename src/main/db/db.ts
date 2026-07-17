@@ -164,6 +164,17 @@ function ensureTokenCapColumn(db: Db): void {
     if (!cols.some((c) => c.name === "tokenCap")) db.exec(`ALTER TABLE projects ADD COLUMN tokenCap INTEGER`);
 }
 
+// The per-project post-green review budget: a nullable INTEGER count of confirm-only review passes to run
+// when a task first goes green (NULL = the engine default 2 in resolveLoopConfig; an explicit 0 = off).
+// Same non-step rationale as ensureTokenCapColumn above — the head user_version (14) is pinned by hand-built
+// fixture DBs (some partial, with no projects table at all), so the column rides an idempotent ensure
+// instead of a numbered cursor step: present ⇒ no-op, absent ⇒ ALTER, no projects table ⇒ skip.
+function ensurePostGreenReviewKColumn(db: Db): void {
+    const cols = db.prepare("PRAGMA table_info(projects)").all() as Array<{ name: string }>;
+    if (cols.length === 0) return;
+    if (!cols.some((c) => c.name === "postGreenReviewK")) db.exec(`ALTER TABLE projects ADD COLUMN postGreenReviewK INTEGER`);
+}
+
 // Apply every step past the DB's current user_version, advancing the cursor as we go.
 // Exported for testing the ALTER path against a hand-built old-shape DB.
 export function migrate(db: Db): void {
@@ -174,6 +185,7 @@ export function migrate(db: Db): void {
     }
     ensurePromotedLedger(db);
     ensureTokenCapColumn(db);
+    ensurePostGreenReviewKColumn(db);
 }
 
 export function openDb(path: string): Db {
