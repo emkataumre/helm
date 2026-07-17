@@ -326,13 +326,14 @@ function PromotionHelpCard() {
 }
 
 /* ---------- project config tab (§5.1.2 / §5.1.3) ---------- */
-// projects.tokenCap is STRUCTURAL (the resolveLoopConfig precedent): the column exists via db.ts's
-// idempotent ensure while the shared Project type stays pinned, so it's widened locally here.
-type ConfigProject = Project & { tokenCap?: number | null };
+// projects.tokenCap and projects.postGreenReviewK are STRUCTURAL (the resolveLoopConfig precedent): the
+// columns exist via db.ts's idempotent ensure while the shared Project type stays pinned, so they're
+// widened locally here.
+type ConfigProject = Project & { tokenCap?: number | null; postGreenReviewK?: number | null };
 
 export function ProjectConfigTab({ project, onSave, onDelete }: {
     project: Project;
-    onSave: (id: string, patch: ProjectConfigPatch & { tokenCap?: number | null }) => void;
+    onSave: (id: string, patch: ProjectConfigPatch & { tokenCap?: number | null; postGreenReviewK?: number | null }) => void;
     onDelete: (id: string) => void;
 }) {
     const toForm = (p: Project) => ({
@@ -340,6 +341,7 @@ export function ProjectConfigTab({ project, onSave, onDelete }: {
         iterationCap: p.iterationCap?.toString() ?? "", noProgressK: p.noProgressK?.toString() ?? "",
         stallTimeoutMin: p.stallTimeoutMin?.toString() ?? "",
         tokenCap: (p as ConfigProject).tokenCap?.toString() ?? "",
+        postGreenReviewK: (p as ConfigProject).postGreenReviewK?.toString() ?? "",
         concurrencyCap: p.concurrencyCap?.toString() ?? "", terminalCommand: p.terminalCommand ?? "",
         autoModeEnvironment: p.autoModeEnvironment ?? "", promotionMode: p.promotionMode, jailImage: p.jailImage ?? "",
     });
@@ -356,6 +358,7 @@ export function ProjectConfigTab({ project, onSave, onDelete }: {
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK),
             stallTimeoutMin: numOrNull(f.stallTimeoutMin),
             tokenCap: numOrNull(f.tokenCap),
+            postGreenReviewK: numOrNull(f.postGreenReviewK),
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
             autoModeEnvironment: f.autoModeEnvironment || null,
             promotionMode: f.promotionMode as Project["promotionMode"],
@@ -388,14 +391,15 @@ export function ProjectConfigTab({ project, onSave, onDelete }: {
                     <Field label="setup command" hint="once per fresh worktree"><Input mono value={f.setupCommand} onChange={(e) => set("setupCommand", e.target.value)} placeholder="(none)" /></Field>
                     <Field label="model" hint="claude --model override"><ModelField key={project.id} value={f.model} onChange={(v) => set("model", v)} /></Field>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
                     <Field label="iter cap"><Input mono type="number" value={f.iterationCap} onChange={(e) => set("iterationCap", e.target.value)} placeholder="8" /></Field>
                     <Field label="no-progress k"><Input mono type="number" value={f.noProgressK} onChange={(e) => set("noProgressK", e.target.value)} placeholder="2" /></Field>
                     <Field label="stall (min)"><Input mono type="number" value={f.stallTimeoutMin} onChange={(e) => set("stallTimeoutMin", e.target.value)} placeholder="40" /></Field>
                     <Field label="token cap"><Input mono type="number" value={f.tokenCap} onChange={(e) => set("tokenCap", e.target.value)} placeholder="2000000" /></Field>
+                    <Field label="review K"><Input mono type="number" value={f.postGreenReviewK} onChange={(e) => set("postGreenReviewK", e.target.value)} placeholder="0" /></Field>
                     <Field label="concurrency"><Input mono type="number" value={f.concurrencyCap} onChange={(e) => set("concurrencyCap", e.target.value)} placeholder="3" /></Field>
                 </div>
-                <Mono dim size="var(--text-2xs)">explicit token cap 0 = spawn nothing · token cap is billable tokens per run · raising concurrency takes effect immediately</Mono>
+                <Mono dim size="var(--text-2xs)">explicit token cap 0 = spawn nothing · review K = post-green review passes (0 = off) · raising concurrency takes effect immediately</Mono>
             </section>
 
             <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>

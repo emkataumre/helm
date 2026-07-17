@@ -4,7 +4,7 @@
 // ipc.ts). These tests drive the REAL createPtyManager with a fake factory that records every call and
 // lets the test push data / fire exit on demand. Behaviour through the public interface only.
 import { describe, it, expect } from "vitest";
-import { createPtyManager, SCROLLBACK_CAP, type PtyFactory, type PtyHandle } from "../../src/main/engine/ptyManager";
+import { createPtyManager, SCROLLBACK_CAP, sanitizeReplay, type PtyFactory, type PtyHandle } from "../../src/main/engine/ptyManager";
 
 // A fake PTY handle: records writes/resizes/kills and exposes emit()/fireExit() so a test can drive it.
 interface FakeHandle extends PtyHandle {
@@ -121,6 +121,36 @@ describe("attach replays scrollback then streams live; detach stops the stream",
         const { factory } = makeFakeFactory();
         const m = createPtyManager(factory);
         expect(() => m.attach("nope", () => {})).not.toThrow();
+    });
+
+    it("a re-attach REPLAY strips terminal query/response sequences (the `[?1;2c` pin/unpin bug)", () => {
+        const { factory, handles } = makeFakeFactory();
+        const m = createPtyManager(factory);
+        const s = create(m);
+        const ESC = "\x1b";
+        // The shell's init wrote a Device-Attributes query + response into scrollback; a naive replay
+        // would make xterm re-answer and pwsh echo the `[?1;2c` junk on every re-attach.
+        handles[0].emit(`prompt> ${ESC}[c${ESC}[?1;2c${ESC}[6n done`);
+        const seen: string[] = [];
+        m.attach(s.id, (d) => seen.push(d));
+        const replay = seen.join("");
+        expect(replay).toContain("prompt>");         // visible text survives
+        expect(replay).toContain("done");
+        expect(replay).not.toContain(`${ESC}[?1;2c`); // the DA response is gone from the replay
+        expect(replay).not.toContain(`${ESC}[c`);     // …and the query that re-triggers it
+        expect(replay).not.toContain(`${ESC}[6n`);    // …and the cursor-position query
+    });
+});
+
+describe("sanitizeReplay — strips only query/response sequences, never visible output", () => {
+    const ESC = "\x1b";
+    it("removes DA (`[c`,`[?1;2c`), DSR (`[6n`) and cursor-position reports (`[r;cR`)", () => {
+        const out = sanitizeReplay(`a${ESC}[cb${ESC}[?1;2cc${ESC}[6nd${ESC}[12;34Re`);
+        expect(out).toBe("abcde");
+    });
+    it("PROBE: ordinary SGR colours and cursor MOVES (uppercase C/D, `m`, `J`) are untouched", () => {
+        const ring = `${ESC}[31mred${ESC}[0m ${ESC}[5C ${ESC}[2D ${ESC}[2J`;
+        expect(sanitizeReplay(ring)).toBe(ring); // none of these solicit a response
     });
 });
 

@@ -52,6 +52,18 @@ export const SCROLLBACK_CAP = 200_000;
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 30;
 
+// Terminal QUERY / RESPONSE control sequences — Primary/Secondary Device Attributes (`ESC[c`, `ESC[>c`,
+// and the `ESC[?1;2c` reply) and cursor-position / status reports (`ESC[6n`, `ESC[<r>;<c>R`) — must be
+// stripped from a SCROLLBACK REPLAY. Re-feeding a historical DA/DSR *query* makes xterm re-answer it, and
+// a shell sitting at its prompt echoes that answer as visible junk (the `[?1;2c` the user saw) which then
+// re-enters the ring and GROWS on every re-attach (pin/unpin, reopened window). These are invisible
+// control sequences, so removing them from the replay changes nothing a human sees — it only breaks the
+// stale re-answer loop. LIVE streaming is untouched; only the history repaint is sanitised.
+const REPLAY_QUERY_RE = /\x1b\[[?>=]?[0-9;]*[cn]|\x1b\[[0-9]+;[0-9]+R/g;
+export function sanitizeReplay(ring: string): string {
+    return ring.replace(REPLAY_QUERY_RE, "");
+}
+
 // Normalise slash style + trailing slash so a git/Windows cwd prefix match agrees regardless of
 // representation (the reconcile normPath lesson). The `+ "/"` boundary stops `worktrees-evil` matching
 // `worktrees`.
@@ -116,8 +128,8 @@ export function createPtyManager(factory: PtyFactory, env?: Record<string, strin
         attach: (id, onData) => {
             const s = sessions.get(id);
             if (!s) return;
-            if (s.ring.length) onData(s.ring); // replay the scrollback first (history paints)…
-            s.listener = onData;               // …then stream live
+            if (s.ring.length) onData(sanitizeReplay(s.ring)); // replay scrollback (history paints; query/response sequences stripped so pin/unpin doesn't inject `[?1;2c`)…
+            s.listener = onData;               // …then stream live (raw)
         },
         detach: (id) => { const s = sessions.get(id); if (s) s.listener = null; },
         list: () => [...sessions.values()].map((s) => ({ ...s.meta, alive: s.alive })),
