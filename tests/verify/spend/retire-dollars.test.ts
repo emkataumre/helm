@@ -32,7 +32,7 @@ import type { Project, Task, TaskStatus, TokenTotals } from "../../../src/shared
 const mkProject = (): Project => ({
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main",
     branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees", setupCommand: null,
-    iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap: null,
+    iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null, concurrencyCap: null,
     terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null,
 });
 const mkTask = (): Task => ({
@@ -44,7 +44,7 @@ const mkTask = (): Task => ({
 // Every other breaker is out of reach; the spend ceiling is the sole breaker under observation. Note
 // costCapUsd 25 — the OLD default $ cap, deliberately configured so a dollar meter WOULD trip if one
 // still existed.
-const TEST_CONFIG: LoopConfig = { iterationCap: 4, noProgressK: 99, denyWallK: 99, mergeRecycleK: 0, costCapUsd: 25, tokenCap: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
+const TEST_CONFIG: LoopConfig = { iterationCap: 4, noProgressK: 99, denyWallK: 99, mergeRecycleK: 0, tokenCap: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
 
 interface SpendStep { usage: TokenTotals; checkGreen?: boolean }
 interface RunResult {
@@ -113,7 +113,7 @@ describe("verify/spend/retire-dollars Part 1: the dollar meter is gone from the 
         // run its FULL iteration budget and park on the iteration cap, never on a spend ceiling.
         const r = await runLoop(
             Array.from({ length: 4 }, () => ({ usage: usage({ input: 1, output: 1, cacheCreation: 1, costUsd: 10 }) })),
-            { costCapUsd: 25, tokenCap: 1000, iterationCap: 4 },
+            { tokenCap: 1000, iterationCap: 4 },
         );
         expect(r.iterationsRun).toBe(4);                              // the old gate would have stopped at 3
         expect(r.finalStatus).toBe("needs-human");
@@ -130,7 +130,7 @@ describe("verify/spend/retire-dollars Part 1: the dollar meter is gone from the 
     it("even an absurd $1000/iteration never parks a run on dollars", async () => {
         const r = await runLoop(
             Array.from({ length: 3 }, () => ({ usage: usage({ output: 1, costUsd: 1000 }) })),
-            { costCapUsd: 25, tokenCap: 1000, iterationCap: 3 },
+            { tokenCap: 1000, iterationCap: 3 },
         );
         expect(r.iterationsRun).toBe(3);
         expect(r.terminalReason).toContain("iteration cap reached");
@@ -168,26 +168,25 @@ describe("verify/spend/retire-dollars Part 2: a high-token run parks on the toke
 
 describe("verify/spend/retire-dollars Part 3: the $ cap is gone from the config surface", () => {
     it("DEFAULT_LOOP_CONFIG carries NO costCapUsd — there is no engine dollar default anymore", () => {
-        expect(DEFAULT_LOOP_CONFIG.costCapUsd).toBeUndefined();
         expect(Object.hasOwn(DEFAULT_LOOP_CONFIG, "costCapUsd")).toBe(false);
         expect(DEFAULT_LOOP_CONFIG.tokenCap).toBe(2_000_000); // the successor default stands
     });
 
-    it("a NULL/absent projects.costCapUsd column resolves to undefined — nothing to honor", () => {
-        const nullProject = { iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null };
-        expect(resolveLoopConfig(nullProject).costCapUsd).toBeUndefined();
-        expect(resolveLoopConfig(nullProject).tokenCap).toBe(2_000_000);
+    it("resolveLoopConfig no longer produces a costCapUsd — the $ field is gone from LoopConfig entirely", () => {
+        const resolved = resolveLoopConfig({ iterationCap: null, noProgressK: null, stallTimeoutMin: null });
+        expect(Object.hasOwn(resolved, "costCapUsd")).toBe(false);
+        expect(resolved.tokenCap).toBe(2_000_000); // the successor is the sole spend ceiling
     });
 
-    it("the one surviving vestige: an explicit $0 cap is the spawn-nothing kill-switch", async () => {
-        // With the accumulator gone, prior spend is identically $0 — cap ≤ 0 is the only value the old
-        // gate could ever fire at, and that degenerate contract is deliberately kept.
+    it("the spawn-nothing kill-switch is now the TOKEN cap: an explicit 0 spawns nothing", async () => {
+        // The $-cap kill-switch ($0 = spawn nothing) was ripped out with the rest of the dollar machinery;
+        // tokenCap 0 is its faithful successor — 0 billable ≥ 0 cap trips before the first spawn.
         const r = await runLoop(
             Array.from({ length: 4 }, () => ({ usage: usage({ output: 10 }) })),
-            { costCapUsd: 0, tokenCap: 1000, iterationCap: 8 },
+            { tokenCap: 0, iterationCap: 8 },
         );
         expect(r.iterationsRun).toBe(0);
         expect(r.finalStatus).toBe("needs-human");
-        expect(r.terminalReason).toBe("cost cap reached ($0.00 of $0 cap)");
+        expect(r.terminalReason).toBe("token cap reached (0 of 0 billable tokens)");
     });
 });

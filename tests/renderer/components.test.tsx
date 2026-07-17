@@ -48,7 +48,7 @@ const vm = (over: Partial<TaskVM> = {}): TaskVM => ({
 const project = (over: Partial<Project> = {}): Project => ({
     id: "p", name: "alpha", repoPath: "C:\\repo", integrationBranch: "integration/ralph",
     targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees",
-    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null,
+    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null,
     model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null,
     promotionMode: "pr", jailImage: null, conductorSessionId: null, ...over,
 });
@@ -229,15 +229,15 @@ describe("Titlebar / StatusBar contracts (fleet telemetry)", () => {
     });
 
     it("StatusBar stamps paused + within-cap=true when every project's running ≤ cap, and shows the slot line", () => {
-        const html = render(<StatusBar counts={counts} projects={[project()]} sched={sched()} paused={false} spend={4.2} />);
+        const html = render(<StatusBar counts={counts} projects={[project()]} sched={sched()} paused={false} />);
         expect(html).toContain('data-verify-unit="StatusBar"');
         expect(html).toContain('data-verify-within-cap="true"');
         expect(html).toContain("alpha 2/3");
-        expect(html).toContain("$4.20");
+        expect(html).not.toContain("$"); // the spend ($) readout was ripped out
     });
 
     it("PROBE: a project with running > cap surfaces data-verify-within-cap=\"false\"", () => {
-        const html = render(<StatusBar counts={counts} projects={[project()]} sched={sched({ perProject: [{ projectId: "p", running: 4, cap: 3 }] })} paused={false} spend={0} />);
+        const html = render(<StatusBar counts={counts} projects={[project()]} sched={sched({ perProject: [{ projectId: "p", running: 4, cap: 3 }] })} paused={false} />);
         expect(html).toContain('data-verify-within-cap="false"');
     });
 });

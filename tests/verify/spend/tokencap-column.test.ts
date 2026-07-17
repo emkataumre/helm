@@ -112,7 +112,7 @@ describe("verify/spend Part 1: the projects.tokenCap column exists on fresh AND 
 
 // The minimal structural project resolveLoopConfig reads — everything else NULL (= engine defaults).
 const nullConfigProject = (tokenCap?: number | null) => ({
-    iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, tokenCap,
+    iterationCap: null, noProgressK: null, stallTimeoutMin: null, tokenCap,
 });
 
 // The candidate resolutions. "shipped" is the real resolver; "default-always" is the override bug this

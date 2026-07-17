@@ -9,8 +9,8 @@ import type { Project, NewProjectInput } from "../../shared/types";
 // ensure, but shared/types' Project is pinned, so it's widened locally rather than picked off Project.
 // postGreenReviewK is STRUCTURAL, the exact tokenCap precedent: the column exists via db.ts's idempotent
 // ensure but shared/types' Project is pinned, so it's widened locally rather than picked off Project.
-type ConfigField = "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode" | "jailImage" | "tokenCap" | "postGreenReviewK";
-const CONFIG_FIELDS: ConfigField[] = ["setupCommand", "iterationCap", "noProgressK", "stallTimeoutMin", "costCapUsd", "model", "concurrencyCap", "terminalCommand", "autoModeEnvironment", "promotionMode", "jailImage", "tokenCap", "postGreenReviewK"];
+type ConfigField = "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode" | "jailImage" | "tokenCap" | "postGreenReviewK";
+const CONFIG_FIELDS: ConfigField[] = ["setupCommand", "iterationCap", "noProgressK", "stallTimeoutMin", "model", "concurrencyCap", "terminalCommand", "autoModeEnvironment", "promotionMode", "jailImage", "tokenCap", "postGreenReviewK"];
 type ProjectConfig = Partial<Pick<Project, Exclude<ConfigField, "tokenCap" | "postGreenReviewK">>> & { tokenCap?: number | null; postGreenReviewK?: number | null };
 
 export function insertProject(db: Db, input: NewProjectInput & { tokenCap?: number | null; postGreenReviewK?: number | null }): Project {
@@ -31,7 +31,6 @@ export function insertProject(db: Db, input: NewProjectInput & { tokenCap?: numb
         iterationCap: input.iterationCap ?? null,
         noProgressK: input.noProgressK ?? null,
         stallTimeoutMin: input.stallTimeoutMin ?? null,
-        costCapUsd: input.costCapUsd ?? null,
         tokenCap: input.tokenCap ?? null,
         postGreenReviewK: input.postGreenReviewK ?? null,
         model: opt(input.model),
@@ -44,9 +43,9 @@ export function insertProject(db: Db, input: NewProjectInput & { tokenCap?: numb
     };
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir,
-                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,costCapUsd,tokenCap,postGreenReviewK,model,concurrencyCap,terminalCommand,autoModeEnvironment,promotionMode,jailImage,conductorSessionId)
+                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,tokenCap,postGreenReviewK,model,concurrencyCap,terminalCommand,autoModeEnvironment,promotionMode,jailImage,conductorSessionId)
          VALUES (@id,@name,@repoPath,@integrationBranch,@targetBranch,@branchPrefix,@checkCommand,@worktreeDir,
-                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@costCapUsd,@tokenCap,@postGreenReviewK,@model,@concurrencyCap,@terminalCommand,@autoModeEnvironment,@promotionMode,@jailImage,@conductorSessionId)`,
+                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@tokenCap,@postGreenReviewK,@model,@concurrencyCap,@terminalCommand,@autoModeEnvironment,@promotionMode,@jailImage,@conductorSessionId)`,
     ).run(p);
     return p;
 }

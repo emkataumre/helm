@@ -8,11 +8,6 @@ export interface LoopConfig {
     noProgressK: number;    // bail after K consecutive iterations with no new commit
     denyWallK: number;      // escalate to needs-human after K consecutive iterations blocked on the same permissions.deny key
     mergeRecycleK: number;  // M18: max merge-stage losses (conflict/failed re-check) recycled in-place per run before parking
-    // RETIRED M12 USD ceiling. The loop's USD accumulator is gone (costUsd is captured for display
-    // only), so this can never meter spend again — tokenCap is the SOLE spend ceiling. What survives is
-    // only the degenerate kill-switch: an explicit 0 still means "spawn nothing" (runTask.ts). OPTIONAL,
-    // with NO default: absent ⇒ nothing to honor. projects.costCapUsd is a dead column left in place.
-    costCapUsd?: number;
     // The runaway backstop, denominated in BILLABLE tokens: input + output + cacheCreation, cacheRead
     // EXCLUDED (see billableTokens in verifyState.ts). OPTIONAL so pre-tokenCap LoopConfig literals stay
     // valid; undefined ⇒ the token gate is off. resolveLoopConfig always supplies it.
@@ -32,11 +27,8 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
     noProgressK: 2,
     denyWallK: 3,
     mergeRecycleK: 2,
-    // costCapUsd has NO default — the $ cap is retired (see the field note above). The token cap below
-    // is what guards a runaway run.
-    // ≈ the old $25 default at Opus-class pricing for the Ralph-loop spend profile (cache-creation-
-    // dominated, ~$18.75/M): 2M billable tokens ≈ $25–40. A backstop against a runaway task overnight,
-    // not per-run tuning.
+    // The token cap is the SOLE spend ceiling (the legacy $ cap was ripped out). ~2M billable tokens is
+    // a backstop against a runaway task overnight, not per-run tuning.
     tokenCap: 2_000_000,
     // The post-green review budget: up to K confirm-only review passes on a first-green task before it
     // lands — an independent second look that costs its own budget and never eats into the work iteration
@@ -61,7 +53,7 @@ export function resolveLoopConfig(
     // `postGreenReviewK` is STRUCTURAL too (same seam as tokenCap): a nullable projects column that
     // db.ts's idempotent ensure adds and getProject's SELECT * carries through, without touching the
     // pinned shared Project type. NULL/absent → the engine default below; an explicit 0 is honored (off).
-    project: Pick<Project, "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd"> & { tokenCap?: number | null; postGreenReviewK?: number | null },
+    project: Pick<Project, "iterationCap" | "noProgressK" | "stallTimeoutMin"> & { tokenCap?: number | null; postGreenReviewK?: number | null },
 ): LoopConfig {
     return {
         iterationCap: project.iterationCap ?? DEFAULT_LOOP_CONFIG.iterationCap,
@@ -71,11 +63,8 @@ export function resolveLoopConfig(
         denyWallK: DEFAULT_LOOP_CONFIG.denyWallK,
         // Engine-default only, same rationale: a bounded self-heal, not per-project tuning (M18).
         mergeRecycleK: DEFAULT_LOOP_CONFIG.mergeRecycleK,
-        // RETIRED passthrough: a stored value flows through unchanged but only an explicit 0 ever acts
-        // (the spawn-nothing kill-switch); any positive $ figure is inert. NULL → undefined (no default).
-        costCapUsd: project.costCapUsd ?? DEFAULT_LOOP_CONFIG.costCapUsd,
-        // Same `??` semantics as the $ cap it replaces: NULL/absent → the engine default; an explicit 0
-        // is honored (spawn nothing).
+        // NULL/absent → the engine default; an explicit 0 is honored (spawn nothing). The token cap is the
+        // sole spend ceiling now that the $ cap is gone.
         tokenCap: project.tokenCap ?? DEFAULT_LOOP_CONFIG.tokenCap,
         // NULL/absent → the engine default (DEFAULT_LOOP_CONFIG.postGreenReviewK); a stored value passes
         // through, and an explicit 0 is honored (post-green review off). `??` preserves that 0.

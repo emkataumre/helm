@@ -3,8 +3,8 @@ import { describe, it, expect } from "vitest";
 import { resolveLoopConfig, DEFAULT_LOOP_CONFIG } from "../../src/main/engine/loopConfig";
 
 // The bound project columns resolveLoopConfig reads; NULL everywhere by default.
-const cfg = (over: Partial<{ iterationCap: number | null; noProgressK: number | null; stallTimeoutMin: number | null; costCapUsd: number | null }> = {}) =>
-    ({ iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, ...over });
+const cfg = (over: Partial<{ iterationCap: number | null; noProgressK: number | null; stallTimeoutMin: number | null }> = {}) =>
+    ({ iterationCap: null, noProgressK: null, stallTimeoutMin: null, ...over });
 
 describe("resolveLoopConfig", () => {
     it("all-NULL config resolves to exactly DEFAULT_LOOP_CONFIG", () => {
@@ -26,11 +26,5 @@ describe("resolveLoopConfig", () => {
     it("preserves a legitimate 0 (iterationCap: 0 stays 0, not the default)", () => {
         expect(resolveLoopConfig(cfg({ iterationCap: 0 })).iterationCap).toBe(0);
         expect(resolveLoopConfig(cfg({ stallTimeoutMin: 0 })).stallTimeoutMs).toBe(0);
-    });
-
-    it("maps costCapUsd: NULL → the default 25, a set value passes through, and 0 is honored", () => {
-        expect(resolveLoopConfig(cfg()).costCapUsd).toBe(DEFAULT_LOOP_CONFIG.costCapUsd); // 25
-        expect(resolveLoopConfig(cfg({ costCapUsd: 40 })).costCapUsd).toBe(40);
-        expect(resolveLoopConfig(cfg({ costCapUsd: 0 })).costCapUsd).toBe(0); // explicit 0 = spawn nothing
     });
 });

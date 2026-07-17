@@ -338,7 +338,7 @@ export function ProjectConfigTab({ project, onSave, onDelete }: {
     const toForm = (p: Project) => ({
         setupCommand: p.setupCommand ?? "", model: p.model ?? "",
         iterationCap: p.iterationCap?.toString() ?? "", noProgressK: p.noProgressK?.toString() ?? "",
-        stallTimeoutMin: p.stallTimeoutMin?.toString() ?? "", costCapUsd: p.costCapUsd?.toString() ?? "",
+        stallTimeoutMin: p.stallTimeoutMin?.toString() ?? "",
         tokenCap: (p as ConfigProject).tokenCap?.toString() ?? "",
         concurrencyCap: p.concurrencyCap?.toString() ?? "", terminalCommand: p.terminalCommand ?? "",
         autoModeEnvironment: p.autoModeEnvironment ?? "", promotionMode: p.promotionMode, jailImage: p.jailImage ?? "",
@@ -354,7 +354,7 @@ export function ProjectConfigTab({ project, onSave, onDelete }: {
         onSave(project.id, {
             setupCommand: f.setupCommand || null, model: f.model || null,
             iterationCap: numOrNull(f.iterationCap), noProgressK: numOrNull(f.noProgressK),
-            stallTimeoutMin: numOrNull(f.stallTimeoutMin), costCapUsd: numOrNull(f.costCapUsd),
+            stallTimeoutMin: numOrNull(f.stallTimeoutMin),
             tokenCap: numOrNull(f.tokenCap),
             concurrencyCap: numOrNull(f.concurrencyCap), terminalCommand: f.terminalCommand || null,
             autoModeEnvironment: f.autoModeEnvironment || null,
@@ -388,15 +388,14 @@ export function ProjectConfigTab({ project, onSave, onDelete }: {
                     <Field label="setup command" hint="once per fresh worktree"><Input mono value={f.setupCommand} onChange={(e) => set("setupCommand", e.target.value)} placeholder="(none)" /></Field>
                     <Field label="model" hint="claude --model override"><ModelField key={project.id} value={f.model} onChange={(v) => set("model", v)} /></Field>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
                     <Field label="iter cap"><Input mono type="number" value={f.iterationCap} onChange={(e) => set("iterationCap", e.target.value)} placeholder="8" /></Field>
                     <Field label="no-progress k"><Input mono type="number" value={f.noProgressK} onChange={(e) => set("noProgressK", e.target.value)} placeholder="2" /></Field>
                     <Field label="stall (min)"><Input mono type="number" value={f.stallTimeoutMin} onChange={(e) => set("stallTimeoutMin", e.target.value)} placeholder="40" /></Field>
-                    <Field label="cost cap ($)"><Input mono type="number" value={f.costCapUsd} onChange={(e) => set("costCapUsd", e.target.value)} placeholder="25" /></Field>
                     <Field label="token cap"><Input mono type="number" value={f.tokenCap} onChange={(e) => set("tokenCap", e.target.value)} placeholder="2000000" /></Field>
                     <Field label="concurrency"><Input mono type="number" value={f.concurrencyCap} onChange={(e) => set("concurrencyCap", e.target.value)} placeholder="3" /></Field>
                 </div>
-                <Mono dim size="var(--text-2xs)">explicit cost/token cap 0 = spawn nothing · token cap is billable tokens per run · raising concurrency takes effect immediately</Mono>
+                <Mono dim size="var(--text-2xs)">explicit token cap 0 = spawn nothing · token cap is billable tokens per run · raising concurrency takes effect immediately</Mono>
             </section>
 
             <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>

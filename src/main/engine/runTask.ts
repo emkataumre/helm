@@ -257,8 +257,8 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
 
     // The spend ledger (a LOCAL, fresh on resume — the human resumed *because* the budget was exhausted):
     // this RUN's accumulated BILLABLE tokens (input + output + cacheCreation; cacheRead excluded — see
-    // billableTokens). The legacy USD accumulator is GONE — costUsd still rides along per iteration as
-    // display accounting, but dollars are no longer a spend signal anywhere in the loop.
+    // billableTokens). The legacy USD cap + costUsd capture were ripped out — the token cap is the sole
+    // spend ceiling.
     let billableSpent = 0;
 
     // M18: merge-stage losses recycled in-place this RUN (a local, like the split counters above — a
@@ -268,13 +268,6 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     for (let i = 0; i < config.iterationCap; i++) {
         // Top-of-loop guard: a drop-in that lands between iterations bails before spawning the next one.
         if (d.signal?.aborted) return handOff();
-        // The RETIRED $ cap's one surviving contract: an explicit costCapUsd of 0 still means "spawn
-        // nothing". With no USD accumulator left, prior spend is identically $0, so the old `spend >= cap`
-        // meter could only ever fire at cap ≤ 0 — this is that residue, written as exactly that. Any
-        // positive $ cap is DEAD: it can never trip, no matter what a run costs.
-        if (config.costCapUsd !== undefined && config.costCapUsd <= 0) {
-            return terminate("needs-human", `cost cap reached ($0.00 of $${config.costCapUsd} cap)`, true, { kind: "cost-cap" });
-        }
         // Token-cap breaker — the SOLE spend ceiling: spawns-only placement, denominated in BILLABLE
         // tokens. undefined ⇒ gate off (pre-tokenCap LoopConfig literals); resolveLoopConfig always supplies
         // it. An explicit 0 spawns nothing (0 billable >= 0 cap trips before the first spawn). The ledger
@@ -292,8 +285,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
             cacheReadTokens: o.usage.cacheRead, cacheCreationTokens: o.usage.cacheCreation,
             costUsd: o.usage.costUsd, durationMs: o.durationMs,
         });
-        // Accumulate this iteration's billable tokens for the next top-of-loop cap check. costUsd is
-        // recorded above for display/history only — it feeds NO gate.
+        // Accumulate this iteration's billable tokens for the next top-of-loop cap check (the sole gate).
         billableSpent += billableTokens(o.usage);
         lastIndex = dbIndex; // this iteration COMPLETED — it's the locus any wall below stamps into the ledger
         d.emit?.({ type: "iteration-end", index: dbIndex, verdict: o.verdict, commitSha: o.commitSha, tail: o.gateOutput });

@@ -42,7 +42,7 @@ const ZERO_USAGE: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreati
 const PROJECT: Project = {
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph",
     targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm test", worktreeDir: ".helm/worktrees",
-    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null,
+    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null,
     concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null,
 };
 const TASK: Task = {
@@ -142,7 +142,7 @@ export async function runFailuresScenario(): Promise<FailuresRecording> {
         { site: "worktree-setup", expected: "worktree-setup", recorded: await wallKind({ createWorktree: async () => { throw new Error("clone failed"); } }) },
         { site: "no-acceptance", expected: "no-acceptance", recorded: await wallKind({}, {}, { acceptance: [] }) },
         { site: "setup-command (fresh worktree)", expected: "setup-command", recorded: await wallKind({ runSetup: async () => ({ ok: false, output: "npm ci exploded" }) }, {}, {}, { setupCommand: "npm ci" }) },
-        { site: "cost-cap", expected: "cost-cap", recorded: await wallKind({}, { costCapUsd: 0 }) },
+        { site: "cost-cap", expected: "cost-cap", recorded: await wallKind({}, { tokenCap: 0 }) },
         {
             site: "deny-wall", expected: "deny-wall",
             recorded: await wallKind({

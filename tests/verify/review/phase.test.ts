@@ -28,7 +28,7 @@ const REVIEW_MARKER = "You are REVIEWING";
 const mkProject = (): Project => ({
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main",
     branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees", setupCommand: null,
-    iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap: null,
+    iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null, concurrencyCap: null,
     terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null,
 });
 const mkTask = (): Task => ({
@@ -41,7 +41,7 @@ const mkTask = (): Task => ({
 // under observation; each work iteration lands a fresh commit (no-progress never pre-empts).
 const TEST_CONFIG: LoopConfig = {
     iterationCap: 5, noProgressK: 99, denyWallK: 99, mergeRecycleK: 0,
-    costCapUsd: Number.POSITIVE_INFINITY, tokenCap: Number.POSITIVE_INFINITY, postGreenReviewK: 2,
+    tokenCap: Number.POSITIVE_INFINITY, postGreenReviewK: 2,
     stallTimeoutMs: 1000, checkTimeoutMs: 1000,
 };
 

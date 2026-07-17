@@ -95,7 +95,7 @@ describe("verify/spend Part 1: the headline reconciles to result.usage output to
 const mkProject = (): Project => ({
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main",
     branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees", setupCommand: null,
-    iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap: null,
+    iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null, concurrencyCap: null,
     terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null,
 });
 const mkTask = (): Task => ({
@@ -106,7 +106,7 @@ const mkTask = (): Task => ({
 
 // The $ cap is neutralized (Infinity) and every other breaker is out of reach, so the TOKEN cap is the
 // sole breaker under observation; every step lands a fresh commit (no-progress never pre-empts).
-const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 99, denyWallK: 99, mergeRecycleK: 0, costCapUsd: Number.POSITIVE_INFINITY, tokenCap: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
+const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 99, denyWallK: 99, mergeRecycleK: 0, tokenCap: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
 
 // One iteration's scripted world: the usage the spawn reports and whether the gate goes green.
 interface TokenStep { usage: TokenTotals; checkGreen?: boolean }
