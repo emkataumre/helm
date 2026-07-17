@@ -188,9 +188,34 @@ export function registerIpc(
     // verify slice inspects exactly this to prove the tool never pushes the target — plus the promoted
     // ledger's write seam: a LANDED direct advance batch-stamps every then-merged task of the project
     // (promotedAt + the validated sha; the cockpit's derived 'promoted' badge reads off the stamp).
+    // The direct-mode post-advance LOCAL sync git ops. readLocalRef = revParse-or-null (a missing ref
+    // reads null, never throws — the reset guard then refuses). ffLocalRef moves a LOCAL branch
+    // fast-forward-only and NEVER clobbers: no-such-branch / diverged / checked-out-dirty each return
+    // { ok:false, reason } instead of moving anything. The checked-out case (the human's working copy
+    // sits on <targetBranch>) fast-forwards the working copy itself via `merge --ff-only` — only over a
+    // clean tracked tree, and git itself refuses an untracked-file collision. NO push lives here —
+    // every move is a local ref move (the never-push invariant keeps pushBranch's single legal call
+    // the finalize target advance).
+    const gitIn = (repo: string, args: string[]) => run("git", ["-C", repo, ...args]);
+    const readLocalRef = async (repo: string, ref: string): Promise<string | null> => {
+        try { return await revParse(repo, ref); } catch { return null; }
+    };
+    const ffLocalRef = async (repo: string, branch: string, toSha: string): Promise<{ ok: boolean; reason?: string }> => {
+        if ((await gitIn(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])).code !== 0) return { ok: false, reason: `no local branch ${branch}` };
+        if ((await gitIn(repo, ["merge-base", "--is-ancestor", branch, toSha])).code !== 0) return { ok: false, reason: `${branch} has diverged (not an ancestor of the validated commit)` };
+        const head = await gitIn(repo, ["symbolic-ref", "-q", "HEAD"]);
+        if (head.code === 0 && head.stdout.trim() === `refs/heads/${branch}`) {
+            if ((await gitIn(repo, ["status", "--porcelain", "--untracked-files=no"])).stdout.trim() !== "") return { ok: false, reason: `${branch} is checked out with uncommitted changes` };
+            const m = await gitIn(repo, ["merge", "--ff-only", toSha]);
+            return m.code === 0 ? { ok: true } : { ok: false, reason: m.stderr.trim() || "ff-only merge refused" };
+        }
+        const b = await gitIn(repo, ["branch", "-f", branch, toSha]);
+        return b.code === 0 ? { ok: true } : { ok: false, reason: b.stderr.trim() || "branch -f refused" };
+    };
     const buildFinalizeDeps = (projectId: string): FinalizeDeps => ({
         pushBranch,
         recordPromotion: (sha) => { stampPromoted(db, projectId, sha); notify(); },
+        readLocalRef, ffLocalRef,
     });
     const buildPromoteDeps = (config: LoopConfig): PromoteStageDeps => ({
         fetchRemote, countCommitsBeyond, revParse, createWorktree, mergeNoFf, runSetup,
@@ -339,10 +364,16 @@ export function registerIpc(
         if (!project) throw new Error(`Helm: promote — unknown project ${projectId}`);
         const config = resolveLoopConfig(project);
         return scheduler.mutexFor(projectId).withLock(async () => {
+            // The promoted integration tip, read under the SAME mutex that serializes this project's
+            // merges — so it IS the tip the stage merges. Threaded through PromoteReady so the direct
+            // finalize can compare the LIVE tip against it before resetting integration (tips differ ⇒
+            // work merged during the promote window ⇒ leave integration ahead, never orphan the merge).
+            const integrationTip = await revParse(project.repoPath, project.integrationBranch);
             const r = await runPromoteStage(project, buildPromoteDeps(config));
             if (r.outcome !== "ready") return r;
-            const f = await finalizePromotion(project, r, buildFinalizeDeps(project.id));
-            return { ...r, ...f };
+            const ready = { ...r, integrationTip };
+            const f = await finalizePromotion(project, ready, buildFinalizeDeps(project.id));
+            return { ...ready, ...f };
         });
     });
     // Create → enqueue → kick: the scheduler auto-starts it when a slot is free (unless paused).

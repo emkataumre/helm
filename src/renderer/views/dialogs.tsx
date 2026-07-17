@@ -108,7 +108,7 @@ export function NewTaskDialog({ open, projects, tasks, defaultProjectId, onCreat
 /* ---------- promote (§5.1.4) ---------- */
 export const MODE_BLURB: Record<Project["promotionMode"], string> = {
     pr: "pr mode — Helm pushes the integration branch and hands you a PR command. Trunk advances only when the PR merges.",
-    direct: "direct mode — on your explicit click, Helm advances the target to the exact re-validated commit. Nothing else is pushed.",
+    direct: "direct mode — on your explicit click, Helm advances the target to the exact re-validated commit. Nothing else is pushed; local integration + target are then fast-forwarded to match (local ref moves only).",
     strict: "strict mode — Helm pushes nothing. You get the full local command sequence to run yourself.",
 };
 
@@ -116,7 +116,7 @@ export const MODE_BLURB: Record<Project["promotionMode"], string> = {
 export function PromoteOutcome({ project, result }: { project: Project; result: PromoteResponse }) {
     const ready = result.outcome === "ready" ? result : null;
     return (
-        <div className="helm-fade-in" {...verifyAttrs({ unit: "PromoteOutcome", outcome: result.outcome, advanced: ready ? !!ready.advancedTarget : null, commands: ready?.commands?.length ?? 0 })} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="helm-fade-in" {...verifyAttrs({ unit: "PromoteOutcome", outcome: result.outcome, advanced: ready ? !!ready.advancedTarget : null, commands: ready?.commands?.length ?? 0, "sync-integration": ready?.sync ? String(ready.sync.integration.reset) : null, "sync-target": ready?.sync ? String(ready.sync.localTarget.fastForwarded) : null })} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {result.outcome === "nothing-to-promote" && <div style={{ fontSize: "var(--text-sm)", color: "var(--text-muted)" }}>Nothing to promote — integration has no unlanded commits beyond origin/{project.targetBranch}.</div>}
             {result.outcome === "conflict" && <FailureBox reason={`integration conflicts with origin/${project.targetBranch} — resolve on integration, then promote again. Nothing was pushed.`} />}
             {result.outcome === "recheck-failed" && (
@@ -133,6 +133,14 @@ export function PromoteOutcome({ project, result }: { project: Project; result: 
                         <Mono dim size="var(--text-2xs)">{ready.diffstat}</Mono>
                     </div>
                     {ready.advancedTarget && <div style={{ fontSize: "var(--text-sm)", color: "var(--green-300)" }}>advanced {project.targetBranch} → <Mono>{(ready.advancedTo ?? ready.validatedSha).slice(0, 12)}</Mono> on your click — the exact re-validated commit, nothing else.</div>}
+                    {ready.sync && (
+                        <Field label="local sync — no push, local ref moves only">
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                <div style={{ fontSize: "var(--text-xs)", color: ready.sync.integration.reset ? "var(--text-muted)" : "var(--amber-300)" }}>{ready.sync.integration.note}</div>
+                                <div style={{ fontSize: "var(--text-xs)", color: ready.sync.localTarget.fastForwarded ? "var(--text-muted)" : "var(--amber-300)" }}>{ready.sync.localTarget.note}</div>
+                            </div>
+                        </Field>
+                    )}
                     {ready.error && <FailureBox reason={ready.error} />}
                     {(ready.pushedRefs?.length ?? 0) > 0 && (
                         <Field label="pushed refs">{ready.pushedRefs!.map((r) => <Mono key={r} dim size="var(--text-2xs)">{r}</Mono>)}</Field>
