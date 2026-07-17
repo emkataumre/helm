@@ -41,9 +41,10 @@ export const DEFAULT_LOOP_CONFIG: LoopConfig = {
 // default (via ??, so a legitimate 0 is preserved); stallTimeoutMin is MINUTES → ms here and
 // nowhere else (the units seam); checkTimeoutMs has no column and is always the default.
 export function resolveLoopConfig(
-    // The `tokenCap` intersection is STRUCTURAL, not a Project field: today's projects table has no
-    // tokenCap column (the migration ledger is pinned by the db tests), so a real Project row resolves
-    // to the engine default below; when a future migration adds the column it lights up here unchanged.
+    // The `tokenCap` intersection is STRUCTURAL, not a Project field: the column exists (db.ts's
+    // idempotent ensureTokenCapColumn — the numbered ledger stays pinned by the db tests) but the
+    // shared Project type is untouched, so a real row's tokenCap flows through here structurally;
+    // a NULL/pre-column row still resolves to the engine default below.
     project: Pick<Project, "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd"> & { tokenCap?: number | null },
 ): LoopConfig {
     return {

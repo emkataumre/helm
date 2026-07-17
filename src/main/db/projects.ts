@@ -5,15 +5,18 @@ import type { Project, NewProjectInput } from "../../shared/types";
 
 // The M3 config columns, in one place. Every absent value binds NULL — better-sqlite3 throws on
 // `undefined`, and NULL is the meaningful "use the engine default / feature off" sentinel.
-type ConfigField = "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode" | "jailImage";
-const CONFIG_FIELDS: ConfigField[] = ["setupCommand", "iterationCap", "noProgressK", "stallTimeoutMin", "costCapUsd", "model", "concurrencyCap", "terminalCommand", "autoModeEnvironment", "promotionMode", "jailImage"];
+// tokenCap is STRUCTURAL (the resolveLoopConfig precedent): the column exists via db.ts's idempotent
+// ensure, but shared/types' Project is pinned, so it's widened locally rather than picked off Project.
+type ConfigField = "setupCommand" | "iterationCap" | "noProgressK" | "stallTimeoutMin" | "costCapUsd" | "model" | "concurrencyCap" | "terminalCommand" | "autoModeEnvironment" | "promotionMode" | "jailImage" | "tokenCap";
+const CONFIG_FIELDS: ConfigField[] = ["setupCommand", "iterationCap", "noProgressK", "stallTimeoutMin", "costCapUsd", "model", "concurrencyCap", "terminalCommand", "autoModeEnvironment", "promotionMode", "jailImage", "tokenCap"];
+type ProjectConfig = Partial<Pick<Project, Exclude<ConfigField, "tokenCap">>> & { tokenCap?: number | null };
 
-export function insertProject(db: Db, input: NewProjectInput): Project {
+export function insertProject(db: Db, input: NewProjectInput & { tokenCap?: number | null }): Project {
     // Trim every string input. A stray leading/trailing space (a paste artifact) in repoPath/
     // targetBranch silently bricks the project — `git -C " C:\\…"` fails with "cannot change to
     // ' C:\\…': Invalid argument" — and an optional field that's blank-after-trim means "unset".
     const opt = (s: string | null | undefined): string | null => { const t = s?.trim(); return t ? t : null; };
-    const p: Project = {
+    const p: Project & { tokenCap: number | null } = {
         id: randomUUID(),
         name: input.name.trim(),
         repoPath: input.repoPath.trim(),
@@ -27,6 +30,7 @@ export function insertProject(db: Db, input: NewProjectInput): Project {
         noProgressK: input.noProgressK ?? null,
         stallTimeoutMin: input.stallTimeoutMin ?? null,
         costCapUsd: input.costCapUsd ?? null,
+        tokenCap: input.tokenCap ?? null,
         model: opt(input.model),
         concurrencyCap: input.concurrencyCap ?? null,
         terminalCommand: opt(input.terminalCommand),
@@ -37,9 +41,9 @@ export function insertProject(db: Db, input: NewProjectInput): Project {
     };
     db.prepare(
         `INSERT INTO projects (id,name,repoPath,integrationBranch,targetBranch,branchPrefix,checkCommand,worktreeDir,
-                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,costCapUsd,model,concurrencyCap,terminalCommand,autoModeEnvironment,promotionMode,jailImage,conductorSessionId)
+                               setupCommand,iterationCap,noProgressK,stallTimeoutMin,costCapUsd,tokenCap,model,concurrencyCap,terminalCommand,autoModeEnvironment,promotionMode,jailImage,conductorSessionId)
          VALUES (@id,@name,@repoPath,@integrationBranch,@targetBranch,@branchPrefix,@checkCommand,@worktreeDir,
-                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@costCapUsd,@model,@concurrencyCap,@terminalCommand,@autoModeEnvironment,@promotionMode,@jailImage,@conductorSessionId)`,
+                 @setupCommand,@iterationCap,@noProgressK,@stallTimeoutMin,@costCapUsd,@tokenCap,@model,@concurrencyCap,@terminalCommand,@autoModeEnvironment,@promotionMode,@jailImage,@conductorSessionId)`,
     ).run(p);
     return p;
 }
@@ -53,7 +57,7 @@ export function recordConductorSession(db: Db, id: string, sessionId: string | n
 
 // Patch the editable config columns (the project-config form). Only the config fields are
 // patchable; each named field binds NULL when absent so we never pass `undefined` to SQLite.
-export function updateProject(db: Db, id: string, patch: Partial<Pick<Project, ConfigField>>): void {
+export function updateProject(db: Db, id: string, patch: ProjectConfig): void {
     const fields = CONFIG_FIELDS.filter((f) => f in patch);
     if (fields.length === 0) return;
     const set = fields.map((f) => `${f} = @${f}`).join(", ");
