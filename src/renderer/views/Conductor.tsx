@@ -8,7 +8,7 @@
 // the recorded session is actually resumable — the M5 guard, re-checked main-side) beside
 // [Fresh session]; persistence is the CONVERSATION (via --resume), not the PTY process.
 import { useEffect, useRef, useState } from "react";
-import type { PlanDraftTask, PlanRailState, PlanStage, PreflightCommandVerdict, PreflightProgress, PreflightReport, PreflightVerdict, Project, PtySession } from "../../shared/types";
+import type { ApproveOptions, PlanDraftTask, PlanRailState, PlanStage, PreflightCommandVerdict, PreflightProgress, PreflightReport, PreflightVerdict, Project, PtySession } from "../../shared/types";
 import { isWarnLevel } from "../../shared/types";
 import { Badge, Button, Checkbox, Icon, IconButton, ProgressBar } from "../ds";
 import type { IconName } from "../ds";
@@ -350,6 +350,11 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
     const report = preflight !== null && preflight !== "loading" ? preflight : null;
     const unacked = report ? unackedWarns(report, acks) : 0;
     const uniqueCommands = draft ? new Set(draft.tasks.flatMap((c) => c.acceptance)).size : 0;
+    // The plan-channel payload is a SUPERSET of PlanRailState: the loose-root rail (which the StageRail / PRD /
+    // two-phase box below still read) PLUS the multi-draft LIST main composes (composePlanQueueState). Read
+    // `.drafts` off it; when absent (a plain PlanRailState — the render tests, or any pre-queue push) fall back
+    // to the single anonymous loose-root draft, so the single-face behaviour stays byte-identical.
+    const drafts: NamedPlanRailState[] = (rail as PlanRailState & { drafts?: NamedPlanRailState[] }).drafts ?? [{ name: null, ...rail }];
 
     const runPreflight = async () => {
         setPreflight("loading"); setProgress(null); setError(null);
@@ -372,6 +377,21 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
             const r = await window.helm.approvePlan(project.id, skip ? { skipPreflight: true } : { runId: runId ?? undefined, acks, skipPreflight: false });
             if (r.ok) { setPreflight(null); setRunId(null); setAcks([]); onApproved(r.count, r.warnings, skip); }
             else if (r.stale) { setPreflight(null); setRunId(null); setAcks([]); setError(r.errors.join(" · ")); }
+            else setError(r.errors.join(" · "));
+        } catch (err) { setError(`approve failed: ${(err as Error)?.message ?? String(err)}`); }
+        finally { setApproving(false); }
+    };
+    // Route a per-draft Approve by NAME (queue-push). The loose-root draft keeps the two-phase pre-flight gate —
+    // its Approve is the approval box below (approve(false)). A NAMED <slug>/ draft has no per-subdir pre-flight
+    // run, so its Approve queues straight from disk (skipPreflight); the ipc re-reads + re-validates THAT
+    // subdir's files and clears only it, leaving sibling drafts intact. The name rides in ApproveOptions.
+    const approveDraft = async (name: string | null) => {
+        if (name === null) { void approve(false); return; }
+        setApproving(true); setError(null);
+        try {
+            const opts: ApproveOptions & { name: string | null } = { skipPreflight: true, name };
+            const r = await window.helm.approvePlan(project.id, opts);
+            if (r.ok) onApproved(r.count, r.warnings, true);
             else setError(r.errors.join(" · "));
         } catch (err) { setError(`approve failed: ${(err as Error)?.message ?? String(err)}`); }
         finally { setApproving(false); }
@@ -408,13 +428,12 @@ export function ConductorTab({ project, session, rail, resumable, onHydrate, onL
                     <div style={{ color: "var(--text-muted)", fontSize: "var(--text-sm)" }}>The session is still conversing — the PRD and task drafts appear here as files land.</div>
                 )}
 
-                {/* the draft area, via the multi-draft seam (plan-queue). Main still pushes ONE anonymous
-                    rail state, so live this is always the single loose-root face — today's errors list /
-                    task cards, byte-for-byte, with no per-draft chrome. The queue-push ipc slice hands the
-                    full NamedPlanRailState[] straight through and routes onApprove per draft name; until
-                    then the root draft's authority stays the two-phase box below (the single face renders
-                    no per-draft Approve button, so this onApprove is unreachable live). */}
-                <PlanQueueRail drafts={[{ name: null, ...rail }]} approving={approving} onApprove={() => void approve(false)} />
+                {/* the draft area, via the multi-draft seam (plan-queue). Main pushes the full draft LIST inside
+                    the rail payload (composePlanQueueState); PlanQueueRail renders one card per draft and routes
+                    Approve per NAME. A single anonymous loose-root draft still renders EXACTLY as today (errors
+                    list / task cards, no per-draft chrome), and its authority stays the two-phase box below —
+                    approveDraft(null) delegates to it. A NAMED <slug>/ draft's card carries its own Approve. */}
+                <PlanQueueRail drafts={drafts} approving={approving} onApprove={(name) => void approveDraft(name)} />
 
                 {draft && (
                     <>

@@ -3,7 +3,7 @@ import { ipcMain, Notification, type BrowserWindow } from "electron";
 import { app } from "electron";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { openDb } from "./db/db";
 import { insertProject, listProjects, getProject, updateProject, deleteProject, recordConductorSession } from "./db/projects";
@@ -19,7 +19,7 @@ import { runMergeStage, type MergeStageDeps } from "./engine/mergeStage";
 import { runPromoteStage, finalizePromotion, type PromoteStageDeps, type FinalizeDeps } from "./engine/promote";
 import { runAcceptance } from "./engine/acceptance";
 import { ensureRalphExcluded, ensureHelmExcluded, writeRalphFiles } from "./engine/ralph";
-import { watchPlanDir, readPlanFiles, buildPlanRailState } from "./engine/planWatcher";
+import { watchPlanDir, readPlanFiles, buildPlanRailState, composePlanQueueState, resolveDraftFiles, type NamedPlanRailState } from "./engine/planWatcher";
 import { approveFromTasksJson, parsePlanDraft, staticPreflight, type PreflightCtx } from "./engine/planDraft";
 import { runPreflight, type PreflightDeps } from "./engine/preflight";
 import { createPreflightRunStore, hashDraft, validateApproval } from "./engine/preflightStore";
@@ -132,10 +132,24 @@ export function registerIpc(
         return { npmScripts, fileExists: (p) => existsSync(join(repoPath, p)) };
     };
     const readPlanRailState = (repoPath: string): PlanRailState => buildPlanRailState(readPlanFiles(planDirFor(repoPath)), planCtx(repoPath));
-    // Empty the transient drop dir (keep the dir itself so the watcher's fs.watch handle stays valid).
-    const clearPlanDir = (dir: string): void => {
-        try { for (const name of readdirSync(dir)) rmSync(join(dir, name), { recursive: true, force: true }); }
-        catch { /* dir gone / unreadable — nothing to clear */ }
+    // The renderer plan-channel payload (queue-push). A SUPERSET of PlanRailState: today's single loose-root
+    // rail — which the StageRail / PRD / two-phase approval box read and App stores as PlanRailState, all
+    // unchanged — PLUS the full multi-draft LIST (the loose-root anonymous draft first, then every <slug>/
+    // subdir sorted) that the Conductor's PlanQueueRail renders. Every existing consumer keeps working off the
+    // PlanRailState face; only the Conductor reads `.drafts`. One ctx per fire, shared by both halves.
+    const buildPlanPush = (repoPath: string): PlanRailState & { drafts: NamedPlanRailState[] } => {
+        const ctx = planCtx(repoPath);
+        return { ...buildPlanRailState(readPlanFiles(planDirFor(repoPath)), ctx), drafts: composePlanQueueState(repoPath, ctx) };
+    };
+    // Clear ONLY the approved draft, leaving sibling drafts intact (queue-push): a null name removes the loose-
+    // root files (prd.md + tasks.json), a <slug> name removes that whole subdir. The dir itself stays so the
+    // watcher's fs.watch handle keeps working. Pre-queue, approve cleared the WHOLE dir; now approving alpha can
+    // never wipe beta.
+    const clearDraft = (dir: string, name: string | null): void => {
+        try {
+            if (name == null) for (const f of ["prd.md", "tasks.json"]) rmSync(join(dir, f), { force: true });
+            else rmSync(join(dir, name), { recursive: true, force: true });
+        } catch { /* already gone / unreadable — nothing to clear */ }
     };
 
     // Forward-declared so startTask can close over the scheduler it itself is driven by (the merge
@@ -504,7 +518,7 @@ export function registerIpc(
         ensureHelmExcluded(project.repoPath);
         if (!planWatchers.has(project.id)) {
             planWatchers.set(project.id, watchPlanDir(dir, () => {
-                getWindow()?.webContents.send("plan:changed", project.id, readPlanRailState(project.repoPath));
+                getWindow()?.webContents.send("plan:changed", project.id, buildPlanPush(project.repoPath));
             }));
         }
     };
@@ -545,7 +559,7 @@ export function registerIpc(
         const alive = liveConductor(projectId);
         let session: PtySession | null = null;
         if (alive) { const { alive: _a, ...meta } = alive; session = meta; }
-        return { session, state: readPlanRailState(project.repoPath), resumable: conductorResumable(project) };
+        return { session, state: buildPlanPush(project.repoPath), resumable: conductorResumable(project) };
     });
 
     // Launch on the human's click. A live session is reused (idempotent — a double-click can't fork the
@@ -626,19 +640,23 @@ export function registerIpc(
         preflightAborts.get(projectId)?.abort();
     });
 
-    // Approve the active plan: re-read + re-validate from disk (never the renderer's copy — it can be stale or
+    // Approve ONE draft: re-read + re-validate from disk (never the renderer's copy — it can be stale or
     // spoofed). Any parse failure → structured rejection, NO rows. Then the M11 gate: unless the human explicitly
     // Skipped pre-flight, RE-RUN pre-flight from disk and re-assert every warn is acked (the renderer's report is
     // never trusted). Only past the gate, in ONE transaction: insertPlan (PRD text copied; missing prd.md →
     // stored "" + a warn, so approve isn't wedged) then the tasks in topological order, resolving slug edges to
-    // the real ids (the M9 column). After commit: clear the drop dir (rows are now durable), refresh the board,
+    // the real ids (the M9 column). After commit: clear ONLY this draft (rows are now durable), refresh the board,
     // kick the scheduler (honours pause). The just-queued tasks then flow through the merged-gate like hand-made ones.
+    // Queue-push: opts carry an optional draft NAME (rides ApproveOptions across the dynamically-typed ipc). A
+    // null/absent name approves the loose root (back-compat); a <slug> name approves THAT .helm/plan/<slug>/
+    // subdir's files. An unknown name resolves to no files → the "no tasks.json" guard, never the root's files.
     ipcMain.handle("plans:approve", async (_e, projectId: string, opts?: ApproveOptions): Promise<ApprovePlanResult> => {
         const project = getProject(db, projectId);
         if (!project) return { ok: false, errors: [`unknown project ${projectId}`] };
         const dir = planDirFor(project.repoPath);
-        const files = readPlanFiles(dir);
-        if (files.tasksJson == null) return { ok: false, errors: ["no tasks.json in .helm/plan/ to approve"] };
+        const name = (opts as (ApproveOptions & { name?: string | null }) | undefined)?.name ?? null;
+        const files = resolveDraftFiles(dir, name);
+        if (files.tasksJson == null) return { ok: false, errors: [`no tasks.json in .helm/plan/${name ? name + "/" : ""} to approve`] };
 
         const approved = approveFromTasksJson(files.tasksJson, files.prdText, () => randomUUID());
         if (!approved.ok) return { ok: false, errors: approved.errors }; // parse-invalid → NO rows
@@ -663,9 +681,9 @@ export function registerIpc(
             for (const ins of approved.plan.inserts) insertPlanTask(db, { ...ins, projectId, planId: plan.id });
         })();
 
-        clearPlanDir(dir);
-        preflightRuns.clear(projectId); // the drop dir is gone — any stored run (incl. the Skip path's) is moot
-        getWindow()?.webContents.send("plan:changed", projectId, readPlanRailState(project.repoPath));
+        clearDraft(dir, name); // only THIS draft's files — a sibling <slug>/ draft stays on disk, still Approvable
+        if (name == null) preflightRuns.clear(projectId); // the loose-root drop is gone — its stored run is moot
+        getWindow()?.webContents.send("plan:changed", projectId, buildPlanPush(project.repoPath));
         notify();
         scheduler.kick();
         return { ok: true, count: approved.plan.inserts.length, warnings };
