@@ -78,8 +78,16 @@ export function readPlanDrafts(dir: string, injected?: Partial<DraftReadDeps>): 
 // Real fs.watch on a flat dir, tolerant of it not existing yet (ENOENT → a no-op watcher). persistent:false so
 // it never keeps the process alive; a transient watch error is swallowed (must never crash main).
 function realWatch(dir: string, onEvent: () => void): { close: () => void } {
+    // recursive:true so a write INSIDE a <slug>/ draft subdir (not just the flat root) re-fires the read —
+    // the multi-draft rail must update as a subdir's tasks.json lands, not only when the subdir is first
+    // created. Fall back to a flat watch where the platform rejects recursive (Windows/macOS support it), so
+    // the loose-root flow keeps working everywhere. Either way a transient error is swallowed, never a crash.
+    const open = () => {
+        try { return fsWatch(dir, { persistent: false, recursive: true }, () => onEvent()); }
+        catch { return fsWatch(dir, { persistent: false }, () => onEvent()); }
+    };
     try {
-        const w = fsWatch(dir, { persistent: false }, () => onEvent());
+        const w = open();
         w.on("error", () => { /* swallow — a transient watch error must not crash main */ });
         return { close: () => { try { w.close(); } catch { /* already closed */ } } };
     } catch { return { close: () => { /* dir absent — nothing to close */ } }; }
@@ -144,4 +152,23 @@ export function buildPlanQueueState(drafts: PlanDraftFiles[], ctx: PreflightCtx)
             return { name: d.name, stage, prdText: d.prdText, parse: { ok: false, errors: [`draft failed to evaluate: ${(e as Error)?.message ?? String(e)}`] }, verdicts: [] };
         }
     });
+}
+
+// The ipc-facing multi-draft read as ONE pure seam (the queue-push slice): list every draft under a repo's
+// .helm/plan/ (the loose-root anonymous draft first when it has files, then each <slug>/ subdir sorted) and
+// compose each into its own named rail state. buildPlanQueueState already isolates a malformed draft to its
+// own parse-FAIL entry, so one broken subdir can never drop a sibling. Pure over (repoPath, ctx) + an
+// injectable fs, so the wire proof drives N subdirs → N named states in set order without a real disk
+// (tests/verify/planqueue/wire.test.ts). ipc composes ctx per fire and spreads the loose-root rail on top of
+// this list for the pre-queue single-face back-compat.
+export function composePlanQueueState(repoPath: string, ctx: PreflightCtx, injected?: Partial<DraftReadDeps>): NamedPlanRailState[] {
+    return buildPlanQueueState(readPlanDrafts(join(repoPath, ".helm", "plan"), injected), ctx);
+}
+
+// Resolve ONE draft's files by name for the approve path: a null name is the loose root (the pre-queue
+// back-compat draft), a string is that <slug>/ subdir. An UNKNOWN name (no such subdir) reads as nulls — the
+// approve gate then fails with "no tasks.json", NEVER silently falling back to the root's files (the wire
+// probe). `dir` is the plan drop dir (.helm/plan/), matching how the ipc approve handler already holds it.
+export function resolveDraftFiles(dir: string, name: string | null, readFile: (p: string) => string | null = readFileOrNull): PlanFiles {
+    return readPlanFiles(name == null ? dir : join(dir, name), readFile);
 }

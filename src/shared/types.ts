@@ -331,6 +331,12 @@ export interface PromoteReady {
     validatedSha: string;   // the exact re-checked commit the human's push advances the target to
     diffstat: string;       // origin/<target>..promoteBranch, sized before anything is pushed
     promoteBranch: string;  // helm/promote-<projectId>-<integration short sha>
+    // The integration tip that went INTO the validated commit (its --no-ff second parent). ipc stamps it
+    // under the same per-project mutex that serializes merges, so it IS the tip the stage merged. The
+    // direct-mode finalize compares the LIVE integration tip against it before resetting integration —
+    // tips differ ⇒ new work merged during the promote window ⇒ leave integration ahead (never orphan).
+    // Optional: the pure stage doesn't read it, and pre-sync callers never set it.
+    integrationTip?: string;
 }
 export type PromoteResult =
     | { outcome: "nothing-to-promote" }
@@ -348,6 +354,19 @@ export interface PromoteFinalizeInfo {
     advancedTo?: string;       // direct: the sha the target now points at (== the re-validated PromoteReady.validatedSha)
     note: string;              // human-readable one-line outcome
     error?: string;            // direct: the advance push failed (e.g. the target moved) — retry with `commands`
+    sync?: PromoteSyncInfo;    // direct, ONLY after a landed advance: the LOCAL ref auto-sync outcome
+}
+// The direct-mode post-advance LOCAL ref auto-sync: once origin/<target> really advanced, finalize
+// fast-forwards the LOCAL refs that would otherwise drift stale (the 2026-07-15 stale-base incident).
+// Every move is a LOCAL ref move — the sync path performs NO push, ever.
+export interface PromoteSyncInfo {
+    // integration/<branch>: reset to the validated commit ONLY when its live tip still equals the tip
+    // that was promoted (then the reset is a genuine fast-forward — the validated commit's second parent
+    // IS that tip). A tip that moved during the promote window is LEFT AHEAD — its normal state; the
+    // next promote graduates the new work — because a blind reset would orphan the fresh merge.
+    integration: { reset: boolean; note: string };
+    // local <targetBranch>: best-effort fast-forward — skipped (never clobbered) if dirty or diverged.
+    localTarget: { fastForwarded: boolean; note: string };
 }
 // The IPC response: the stage result plus (only on `ready`) the finalize info.
 export type PromoteResponse = PromoteResult & Partial<PromoteFinalizeInfo>;

@@ -15,8 +15,8 @@
 // Pure DI — no Electron, no direct git — so it unit-tests with fake deps. ipc.ts wires the real engine
 // fns behind the per-project merge mutex (Task 4). The result union lives in shared/ (the renderer's panel
 // reads it too); we re-export it here so the engine module stays self-describing.
-import type { Project, PromoteResult, PromoteReady, PromoteFinalizeInfo } from "../../shared/types";
-export type { PromoteResult, PromoteReady, PromoteFinalizeInfo };
+import type { Project, PromoteResult, PromoteReady, PromoteFinalizeInfo, PromoteSyncInfo } from "../../shared/types";
+export type { PromoteResult, PromoteReady, PromoteFinalizeInfo, PromoteSyncInfo };
 
 export interface PromoteStageDeps {
     fetchRemote: (repo: string, remote: string, branch: string) => Promise<void>;
@@ -42,6 +42,15 @@ export interface FinalizeDeps {
     // then-merged task of the project promoted at exactly this validatedSha. pr/strict advance nothing,
     // so they never stamp — the ledger records target graduations, not intentions.
     recordPromotion?: (validatedSha: string) => void | Promise<void>;
+    // ── The direct-mode post-advance LOCAL sync seams (both optional: fakes that only probe push
+    // behaviour omit them; absent seams skip the sync — never the advance). NO push lives here: the
+    // sync path moves LOCAL refs only, so pushBranch's single legal call stays the target advance.
+    // Read the CURRENT tip of a local ref (the live integration tip the reset guard compares). null ⇒
+    // unreadable/missing — the guard then refuses to reset (couldn't check ≠ safe to move).
+    readLocalRef?: (repo: string, ref: string) => Promise<string | null>;
+    // Move a local branch to a commit FAST-FORWARD-ONLY. Never clobbers: a diverged branch, a dirty
+    // checked-out working copy, or any non-ff move returns { ok: false, reason } instead of moving.
+    ffLocalRef?: (repo: string, branch: string, toSha: string) => Promise<{ ok: boolean; reason?: string }>;
 }
 
 const TAIL = 2000;
@@ -102,6 +111,38 @@ export async function runPromoteStage(project: Project, d: PromoteStageDeps): Pr
     }
 }
 
+// The direct-mode post-advance LOCAL ref auto-sync. Runs ONLY after the target REALLY advanced (the
+// caller gates on the successful push) and moves LOCAL refs exclusively — it never touches pushBranch.
+// THE load-bearing guard: reset integration ONLY IF its live tip still equals the tip that was promoted
+// (ready.integrationTip — the validated commit's --no-ff second parent, so the reset is a genuine
+// fast-forward). A tip that moved during the promote window carries a merge NOT contained in the
+// validated commit; resetting would orphan it (the DB says merged, the branch loses the commit) — so we
+// leave integration ahead, its normal state, and the next promote graduates the new work. The local
+// <target> fast-forward is best-effort: a dirty/diverged working copy is skipped, never clobbered.
+async function syncLocalRefs(project: Project, ready: PromoteReady, d: FinalizeDeps): Promise<PromoteSyncInfo | undefined> {
+    if (!d.readLocalRef || !d.ffLocalRef) return undefined; // no sync seams wired — skip the sync, never the advance
+    const { integrationBranch, targetBranch, repoPath } = project;
+    const short = ready.validatedSha.slice(0, SHORT);
+
+    let integration: PromoteSyncInfo["integration"];
+    if (!ready.integrationTip) {
+        integration = { reset: false, note: `${integrationBranch} left untouched — promoted tip unknown, cannot prove the reset is a fast-forward` };
+    } else if (await d.readLocalRef(repoPath, integrationBranch) !== ready.integrationTip) {
+        integration = { reset: false, note: `${integrationBranch} left ahead — its tip moved during the promote window (that work is not in ${short}; the next Promote graduates it)` };
+    } else {
+        const r = await d.ffLocalRef(repoPath, integrationBranch, ready.validatedSha);
+        integration = r.ok
+            ? { reset: true, note: `${integrationBranch} fast-forwarded to ${short}` }
+            : { reset: false, note: `${integrationBranch} not moved — ${r.reason ?? "fast-forward refused"}` };
+    }
+
+    const t = await d.ffLocalRef(repoPath, targetBranch, ready.validatedSha);
+    const localTarget = t.ok
+        ? { fastForwarded: true, note: `local ${targetBranch} fast-forwarded to ${short}` }
+        : { fastForwarded: false, note: `local ${targetBranch} skipped — ${t.reason ?? "not a clean fast-forward"}` };
+    return { integration, localTarget };
+}
+
 // The human-authorized finalize (one-click Promote). ONLY reachable from the projects:promote ipc — the
 // autonomous loop can never call it. Mode-specific:
 //   direct  — ADVANCE the target itself, on the click, to EXACTLY the re-validated commit (a raw-sha,
@@ -135,8 +176,18 @@ export async function finalizePromotion(
             // The target REALLY advanced ⇒ stamp the promoted ledger (every then-merged task graduated with
             // the branch). Outside the catch: a ledger hiccup must never masquerade as a failed advance.
             await d.recordPromotion?.(ready.validatedSha);
+            // …then auto-sync the LOCAL refs (guarded integration reset + best-effort local target ff).
+            // A sync hiccup must never masquerade as a failed advance either — the target DID move — so
+            // a throw degrades to per-ref skip notes instead of propagating.
+            let sync: PromoteSyncInfo | undefined;
+            try {
+                sync = await syncLocalRefs(project, ready, d);
+            } catch (e) {
+                const why = `local sync failed: ${e instanceof Error ? e.message : String(e)}`;
+                sync = { integration: { reset: false, note: why }, localTarget: { fastForwarded: false, note: why } };
+            }
             return {
-                pushedRefs: [], commands: [command], advancedTarget: true, advancedTo: ready.validatedSha,
+                pushedRefs: [], commands: [command], advancedTarget: true, advancedTo: ready.validatedSha, sync,
                 note: `advanced ${targetBranch} → ${ready.validatedSha.slice(0, 12)} (the exact re-checked commit)`,
             };
         }
