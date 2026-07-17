@@ -144,6 +144,13 @@ export function TerminalsView({ sessions, activeId, onSelect, onKill, onNewShell
                             </a>
                         )}
                         <span style={{ flex: 1 }}></span>
+                        {active.alive && (
+                            <Tooltip label="Open this terminal in its own window (close that window to pin it back)">
+                                <IconButton size="sm" label="Unpin terminal" onClick={() => void window.helm.terminalUnpin(active.id)}>
+                                    <Icon name="Unlink" size={13} />
+                                </IconButton>
+                            </Tooltip>
+                        )}
                         {shown.length > 1 && (
                             <Select size="sm" value={tiledIds.find((id) => panes.some((p) => p.id === id)) ?? ""}
                                 onChange={(e) => setTiledIds(e.target.value ? [e.target.value] : [])}

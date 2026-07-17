@@ -9,7 +9,7 @@
 // (exposed in ipc.ts only when HELM_USER_DATA is set — i.e. only under this harness). The user-facing
 // "close the detached window to pin back" path IS reachable and is asserted too.
 import { describe, it, expect } from "vitest";
-import { launchHelm, seededProject, until } from "./harness";
+import { launchHelm, seededProject, until, ptyList } from "./harness";
 import type { CreatePtyOptions } from "../../src/shared/types";
 
 // Count the live top-level BrowserWindows (the main cockpit is always one; each detached terminal adds one).
@@ -65,6 +65,10 @@ describe("terminal unpin/pin", () => {
             const session = await page.evaluate((o) => window.helm.ptyCreate(o), opts);
             const id = session.id;
             const baseWindows = await windowCount(app);
+            // The cockpit window id(s) BEFORE unpinning — so we can later close the detached window by
+            // identity (the new id), not by array position: getAllWindows() returns most-recent first,
+            // so wins[last] is the main window, not the detached one.
+            const priorIds = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).map((w) => w.id));
 
             await app.evaluate(({}, tid) => {
                 const reg = (globalThis as unknown as { __helmTerminalWindows?: { track(id: string): void; unpin(id: string): void } }).__helmTerminalWindows;
@@ -72,14 +76,33 @@ describe("terminal unpin/pin", () => {
             }, id);
             await until(async () => (await windowCount(app)) === baseWindows + 1, { label: "detached window opened" });
 
-            // Close the detached window the way a user would (the last-opened, non-main window).
-            await app.evaluate(({ BrowserWindow }) => {
-                const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed());
-                wins[wins.length - 1]?.close();
-            });
+            // Close the detached window the way a user would — the window that didn't exist before unpin.
+            await app.evaluate(({ BrowserWindow }, prior) => {
+                for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && !prior.includes(w.id)) w.close();
+            }, priorIds);
             // The PTY reattaches to the tiling — not orphaned, not double-hosted.
             await until(async () => (await hostKind(app, id)) === "tiling", { label: "terminal pinned back on window close" });
             expect(await windowCount(app)).toBe(baseWindows);
+        } finally {
+            await helm.close();
+        }
+    });
+
+    it("the real Unpin button detaches the active terminal into its own OS window (UI trigger, not the test hook)", async () => {
+        const { seed } = seededProject();
+        const helm = await launchHelm({ seed });
+        const { app, page } = helm;
+        try {
+            // Open a free shell through the real picker so it's the ACTIVE pane, then click the real button —
+            // this drives the preload bridge + HelmApi + renderer button end-to-end, not the __helm hook.
+            await page.locator(".helm-sidebar").getByText("Terminals").click();
+            await page.locator(".helm-select", { hasText: "Open shell in" }).locator("select").selectOption({ label: "AcceptProj — repo root" });
+            const s = await until(async () => (await ptyList(page)).find((x) => x.kind === "free") ?? null, { label: "free pty session" });
+            const baseWindows = await windowCount(app);
+
+            await page.getByRole("button", { name: "Unpin terminal" }).first().click();
+            await until(async () => (await windowCount(app)) === baseWindows + 1, { label: "detached window opened via button" });
+            expect(await hostKind(app, s.id)).toBe("window");
         } finally {
             await helm.close();
         }

@@ -28,6 +28,7 @@ const api: HelmApi = {
     ptyList: () => ipcRenderer.invoke("pty:list"),
     ptyAttach: (id) => ipcRenderer.invoke("pty:attach", id),
     ptyDetach: (id) => ipcRenderer.invoke("pty:detach", id),
+    terminalUnpin: (id) => ipcRenderer.invoke("terminal:unpin", id),
     onPtyData: (cb) => { const h = (_e: unknown, id: string, chunk: string) => cb(id, chunk); ipcRenderer.on("pty:data", h); return () => { ipcRenderer.removeListener("pty:data", h); }; },
     onPtyExit: (cb) => { const h = (_e: unknown, id: string, code: number) => cb(id, code); ipcRenderer.on("pty:exit", h); return () => { ipcRenderer.removeListener("pty:exit", h); }; },
     onTasksChanged: (cb) => { ipcRenderer.on("tasks:changed", () => cb()); },

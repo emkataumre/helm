@@ -475,6 +475,10 @@ export interface HelmApi {
     ptyList: () => Promise<PtySessionInfo[]>;
     ptyAttach: (id: string) => Promise<void>;
     ptyDetach: (id: string) => Promise<void>;
+    // Detach a terminal into its OWN OS window (the pin/unpin feature). Tracks-then-unpins in main.
+    // Pin-back is by CLOSING that window (main wires win.on("closed") → reattach), so there is no
+    // separate pin verb on the renderer bridge.
+    terminalUnpin: (id: string) => Promise<void>;
     // These return an UNSUBSCRIBE fn (unlike the app-singleton onTasksChanged): a TerminalPane subscribes
     // on mount and must tear the listener down on unmount, or listeners leak as the drawer switches sessions.
     onPtyData: (cb: (id: string, chunk: string) => void) => () => void;
