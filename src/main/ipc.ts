@@ -39,6 +39,7 @@ import { createScheduler, type Scheduler } from "./engine/scheduler";
 import { waitingOnFor } from "./engine/deps";
 import { runTaskLoop, type RunTaskDeps, type ResumeContext } from "./engine/runTask";
 import { launchTerminal, buildDropinArgv } from "./engine/terminalLaunch";
+import { composeDropinSeed, readDropinSeedInputs } from "./engine/dropinSeed";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
 import { createPtyManager } from "./engine/ptyManager";
 import { nodePtyFactory } from "./engine/nodePtyFactory";
@@ -489,11 +490,26 @@ export function registerIpc(
 
         const sessionId = fresh ? null : latestSessionId(listIterations(db, taskId));
 
+        // Start-fresh seeding (#7 floor): with no session to --resume, compose a context bundle from the
+        // task's on-disk state (.ralph/TASK.md + .ralph/progress.md + the latest iteration-log tail) and drop
+        // it at .ralph/DROPIN.md so the fresh claude opens on it instead of a cold prompt. A resume already
+        // carries its own context, so this runs only on the fresh path; a blank bundle (nothing on disk) → no
+        // seed, and claude opens bare (the pre-seam behaviour).
+        let seeded = false;
+        if (sessionId == null) {
+            const bundle = composeDropinSeed(readDropinSeedInputs(current.worktreePath, logsDir, taskId));
+            if (bundle.length > 0) {
+                mkdirSync(join(current.worktreePath, ".ralph"), { recursive: true });
+                writeFileSync(join(current.worktreePath, ".ralph", "DROPIN.md"), bundle);
+                seeded = true;
+            }
+        }
+
         if (project.terminalCommand == null) {
             // In-app tab: a main-resident PTY in the worktree, resuming the latest session (resilient shell).
             return ptyManager.create({
                 cwd: current.worktreePath,
-                argv: buildDropinArgv(sessionId),
+                argv: buildDropinArgv(sessionId, seeded),
                 kind: "dropin",
                 title: current.title,
                 taskId,
