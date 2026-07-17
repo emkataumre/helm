@@ -2,7 +2,7 @@
 import type { Project, Task, TaskStatus, IterationVerdict, SnapshotEvent, TokenTotals, FailureKind, FailureNote } from "../../shared/types";
 import type { LoopConfig } from "./loopConfig";
 import type { MergeStageResult } from "./mergeStage";
-import { buildGoalPrompt, buildInstructions, buildTaskDirective, seedProgress, type PriorFailure } from "./prompt";
+import { buildGoalPrompt, buildInstructions, buildReviewPrompt, buildTaskDirective, seedProgress, type PriorFailure } from "./prompt";
 import { billableTokens } from "./verifyState";
 
 // Re-export so the reducer, the loop, and the M2 verify slice (which imports it from here) share
@@ -19,7 +19,12 @@ export interface RunTaskDeps {
     runSetup: (worktreePath: string, command: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }>;
     // deniedCommands is OPTIONAL (absent = []): the structured permission_denials keys off the result event.
     // Optional keeps every existing spawn fake (which omits it) valid; only the deny fail-fast breaker reads it.
-    spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number; iterationIndex?: number; onEvent?: (e: SnapshotEvent) => void; signal?: AbortSignal }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean; usage: TokenTotals; durationMs: number | null; deniedCommands?: string[] }>;
+    // reviewFinding is OPTIONAL and read ONLY off a post-green REVIEW spawn: a non-empty string means the review
+    // judged the now-green work NOT good (the text is its finding), which re-opens the task into work drawing the
+    // remaining iterationCap; absent/empty/null ⇒ the review found nothing (clean). Work spawns leave it absent,
+    // and a production spawnAgent that never sets it keeps reviews confirm-only (byte-identical to pre-M20) until
+    // a follow-up wires the verdict out of the review transcript — the same incremental seam as jailSync/recordRecycled.
+    spawnAgent: (worktreePath: string, prompt: string, opts: { model?: string; idleTimeoutMs?: number; iterationIndex?: number; onEvent?: (e: SnapshotEvent) => void; signal?: AbortSignal }) => Promise<{ ok: boolean; output: string; sessionId: string | null; stalled: boolean; usage: TokenTotals; durationMs: number | null; deniedCommands?: string[]; reviewFinding?: string | null }>;
     commitAll: (repo: string, message: string) => Promise<void>;
     headSha: (repo: string) => Promise<string>;
     runCheck: (worktreePath: string, checkCommand: string, timeoutMs: number) => Promise<{ green: boolean; timedOut: boolean; output: string }>;
@@ -250,16 +255,10 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     // at zero iterations). prevSha above is the worktree's current HEAD — the human's committed state.
     const startIndex = resume ? resume.startIndex : 0;
 
-    // M12 cost cap: this RUN's accumulated USD spend (sum of each iteration's usage.costUsd; null/absent → 0).
-    // Like the split iteration counter above, it is a LOCAL that re-inits to 0 every runTaskLoop call, so a
-    // resume gets a FRESH cost budget (the human resumed *because* the budget was exhausted). The cap gates
-    // SPAWNS only — checked at the top of the loop before spawning; a green iteration that crosses the cap
-    // still merges below.
-    let spend = 0;
-
-    // The token cap's ledger — the $ ledger's successor, same lifecycle (a LOCAL, fresh on resume): this
-    // RUN's accumulated BILLABLE tokens (input + output + cacheCreation; cacheRead excluded — see
-    // billableTokens). Denominated in what is actually spent instead of synthetic dollars.
+    // The spend ledger (a LOCAL, fresh on resume — the human resumed *because* the budget was exhausted):
+    // this RUN's accumulated BILLABLE tokens (input + output + cacheCreation; cacheRead excluded — see
+    // billableTokens). The legacy USD cap + costUsd capture were ripped out — the token cap is the sole
+    // spend ceiling.
     let billableSpent = 0;
 
     // M18: merge-stage losses recycled in-place this RUN (a local, like the split counters above — a
@@ -269,12 +268,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
     for (let i = 0; i < config.iterationCap; i++) {
         // Top-of-loop guard: a drop-in that lands between iterations bails before spawning the next one.
         if (d.signal?.aborted) return handOff();
-        // Cost-cap breaker (LEGACY $): only fires for a project that explicitly set costCapUsd — the default
-        // is Infinity. A 0 cap is honored — spend (0) >= cap (0) trips on the first pass (spawn nothing).
-        if (spend >= config.costCapUsd) {
-            return terminate("needs-human", `cost cap reached ($${spend.toFixed(2)} of $${config.costCapUsd} cap)`, true, { kind: "cost-cap" });
-        }
-        // Token-cap breaker — the $ cap's successor: identical spawns-only placement, denominated in BILLABLE
+        // Token-cap breaker — the SOLE spend ceiling: spawns-only placement, denominated in BILLABLE
         // tokens. undefined ⇒ gate off (pre-tokenCap LoopConfig literals); resolveLoopConfig always supplies
         // it. An explicit 0 spawns nothing (0 billable >= 0 cap trips before the first spawn). The ledger
         // kind stays "cost-cap" — it IS the spend ceiling, now counted in tokens.
@@ -291,8 +285,7 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
             cacheReadTokens: o.usage.cacheRead, cacheCreationTokens: o.usage.cacheCreation,
             costUsd: o.usage.costUsd, durationMs: o.durationMs,
         });
-        // Accumulate this iteration's spend for the next top-of-loop cap checks (costUsd null/absent → 0).
-        spend += o.usage.costUsd ?? 0;
+        // Accumulate this iteration's billable tokens for the next top-of-loop cap check (the sole gate).
         billableSpent += billableTokens(o.usage);
         lastIndex = dbIndex; // this iteration COMPLETED — it's the locus any wall below stamps into the ledger
         d.emit?.({ type: "iteration-end", index: dbIndex, verdict: o.verdict, commitSha: o.commitSha, tail: o.gateOutput });
@@ -303,6 +296,68 @@ export async function runTaskLoop(project: Project, task: Task, config: LoopConf
         if (d.signal?.aborted) return handOff();
 
         if (o.verdict === "green") {
+            // ── Post-green review phase (M20, re-open on finding) ───────────────────────────────────
+            // Before finalizing, run review passes — each a FRESH review-framed spawn through the same
+            // chokepoint that independently re-examines the now-green work. This phase draws its OWN
+            // budget (K passes); it does NOT consume iterationCap, so a task green on its LAST work
+            // iteration still gets reviewed. Each pass has three outcomes:
+            //   • CLEAN (reviewFinding empty) → advance toward finalize; K CONSECUTIVE clean → merge.
+            //   • FLAGGED (reviewFinding non-empty) → the review judged the work NOT good: RE-OPEN the
+            //     task into a work iteration drawing from the REMAINING iterationCap. The clean streak
+            //     resets — a re-fix is re-reviewed FROM SCRATCH (the counter is local to each green entry,
+            //     so breaking back to the work loop restarts reviews at zero on the next green). With no
+            //     work budget left, the flag parks the task (a real problem, no attempts left to fix it).
+            //   • DID NOT COMPLETE (!ok) → park (the review couldn't confirm) rather than land unconfirmed.
+            // K = 0/undefined → no reviews (byte-identical to the pre-review path). Review spawns are NOT
+            // iterations — they call neither addIteration nor finishIteration, and never advance `i`.
+            const reviewK = config.postGreenReviewK ?? 0;
+            let reopened = false; // a flag sent us back to work — draw the next iteration from iterationCap
+            for (let rev = 0; rev < reviewK; rev++) {
+                // A drop-in landing between review passes bails like any between-spawn abort.
+                if (d.signal?.aborted) return handOff();
+                const reviewPrompt = buildReviewPrompt(project, task);
+                if (d.jailSync) await d.jailSync.syncIn(worktreePath, branch);
+                const review = await d.spawnAgent(worktreePath, reviewPrompt, {
+                    model: project.model ?? undefined,
+                    idleTimeoutMs: config.stallTimeoutMs,
+                    iterationIndex: dbIndex,
+                    onEvent: (e) => d.emit?.(e),
+                    signal: d.signal,
+                });
+                if (d.jailSync) await d.jailSync.syncOut(worktreePath, branch);
+                // Reviews cost real tokens — fold them into this run's billable ledger (accounting only;
+                // the review phase runs to completion regardless of the token cap, which gates work spawns).
+                billableSpent += billableTokens(review.usage);
+                if (!review.ok) {
+                    const why = review.stalled ? "stalled (stream idle timeout)" : "exited non-zero";
+                    d.emit?.({ type: "gate", index: dbIndex, label: `review: pass ${rev + 1}/${reviewK} ${why}` });
+                    return terminate("needs-human", `post-green review pass ${rev + 1}/${reviewK} ${why} — work left unconfirmed`, true, { kind: "recheck-failed" });
+                }
+                // A non-empty finding = the review judged the work NOT good → re-open into work.
+                const finding = (review.reviewFinding ?? "").trim();
+                if (finding) {
+                    // Re-open draws from the REMAINING iterationCap: the re-fix is the next iteration of the
+                    // work loop (`i + 1`). No budget left (this green turn was the last permitted iteration)
+                    // → park — the review found a real problem the loop has no attempts left to fix.
+                    if (i + 1 >= config.iterationCap) {
+                        d.emit?.({ type: "gate", index: dbIndex, label: `review: pass ${rev + 1}/${reviewK} flagged — work budget exhausted` });
+                        return terminate("needs-human", `review flagged issues, work budget exhausted (${config.iterationCap} iterations)`, true, { kind: "iteration-cap" });
+                    }
+                    // Feed the finding to the re-fix as its prior failure and reset the clean streak (break
+                    // → the next green re-reviews from zero). lastGateSummary names the real blocker on any
+                    // downstream wall (e.g. a no-progress bail after the re-fix stalls).
+                    priorFailure = { framing: "gate", body: finding };
+                    lastGateSummary = "post-green review flagged issues";
+                    d.emit?.({ type: "gate", index: dbIndex, label: `review: pass ${rev + 1}/${reviewK} flagged — reopened` });
+                    d.log(`task ${task.id} review flagged (pass ${rev + 1}/${reviewK}) — reopened, drawing remaining iterationCap`);
+                    reopened = true;
+                    break;
+                }
+                d.emit?.({ type: "gate", index: dbIndex, label: `review: pass ${rev + 1}/${reviewK} clean` });
+            }
+            // A flag re-opened the task: go draw the next WORK iteration from iterationCap.
+            if (reopened) continue;
+            // K consecutive clean reviews (the for-loop ran to completion with no flag), or K = 0 → land it.
             // Hand landing to the isolated merge stage: it rebases on the fresh integration tip and
             // re-checks in a throwaway worktree, advancing integration only on a green re-check. A
             // failed re-check (or conflict) loses the race → needs-human (worktree kept for drop-in).

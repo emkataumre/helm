@@ -1,5 +1,5 @@
 // src/main/ipc.ts
-import { ipcMain, Notification, type BrowserWindow } from "electron";
+import { ipcMain, Notification, BrowserWindow } from "electron";
 import { app } from "electron";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -39,9 +39,11 @@ import { createScheduler, type Scheduler } from "./engine/scheduler";
 import { waitingOnFor } from "./engine/deps";
 import { runTaskLoop, type RunTaskDeps, type ResumeContext } from "./engine/runTask";
 import { launchTerminal, buildDropinArgv } from "./engine/terminalLaunch";
+import { composeDropinSeed, readDropinSeedInputs } from "./engine/dropinSeed";
 import { verifyAndMerge, abandon, type HandbackDeps } from "./engine/handback";
 import { createPtyManager } from "./engine/ptyManager";
 import { nodePtyFactory } from "./engine/nodePtyFactory";
+import { createTerminalWindowRegistry, type TerminalWindowRegistry } from "./engine/terminalWindow";
 import { deriveTrayCounts, formatTrayTooltip } from "./engine/trayCounts";
 import { buildConductorArgv, isConductorResumable } from "./engine/conductor";
 import { pipeNameFor, buildShims, buildCtlEnv } from "./ctl/protocol";
@@ -114,6 +116,52 @@ export function registerIpc(
     // M16: every session spawns with the ctl env overlay (pipe + shim PATH) — human PTYs only.
     const ptyManager = createPtyManager(nodePtyFactory, ctlEnv);
     ptyManager.onExit((id, code) => getWindow()?.webContents.send("pty:exit", id, code));
+
+    // Terminal unpin/pin (the "detach a terminal into its own OS window and pin it back" feature). The PURE,
+    // DI'd pin/unpin + window-registry state machine (engine/terminalWindow.ts) owns the "exactly one live
+    // host per terminal, never orphaned" contract; the driver below is its ONE impure seam — a real
+    // BrowserWindow. The node-pty process never moves (it stays main-resident); only which window hosts its
+    // stream changes. The detached window loads the SAME renderer bundle with a `?terminal=<id>&…` query
+    // (main.tsx mounts DetachedTerminal for it) — no second build entry needed. CLOSING the detached OS
+    // window pins the terminal back into the tiling (win.on("closed") → registry.windowClosed → reattach).
+    const detachedWindows = new Map<string, BrowserWindow>(); // windowId → the detached window
+    let terminalWindows: TerminalWindowRegistry;
+    terminalWindows = createTerminalWindowRegistry({
+        open: (termId) => {
+            const s = ptyManager.list().find((x) => x.id === termId);
+            const win = new BrowserWindow({
+                width: 900, height: 620, backgroundColor: "#08090C", title: s?.title ?? "Terminal",
+                webPreferences: { preload: join(import.meta.dirname, "../preload/index.cjs") },
+            });
+            const query = new URLSearchParams({ terminal: termId, kind: s?.kind ?? "free", title: s?.title ?? "Terminal", cwd: s?.cwd ?? "" });
+            if (s?.taskId) query.set("taskId", s.taskId);
+            if (s?.projectId) query.set("projectId", s.projectId);
+            if (process.env.ELECTRON_RENDERER_URL) void win.loadURL(`${process.env.ELECTRON_RENDERER_URL}?${query.toString()}`);
+            else void win.loadFile(join(import.meta.dirname, "../renderer/index.html"), { search: query.toString() });
+            const windowId = String(win.id);
+            detachedWindows.set(windowId, win);
+            // A user-closed detached window pins the terminal back into the tiling (never orphans the PTY).
+            // The registry's own pin-back also closes the window → this fires again, but windowClosed is a
+            // no-op once the mapping is gone (idempotent), so the double-fire is harmless.
+            win.on("closed", () => { detachedWindows.delete(windowId); terminalWindows.windowClosed(windowId); });
+            return windowId;
+        },
+        close: (windowId) => { const w = detachedWindows.get(windowId); if (w && !w.isDestroyed()) w.close(); },
+        route: (termId, host) => {
+            // Re-point the PTY stream at the tiling when a terminal pins back (the detached window
+            // self-attaches on mount via its own pty:attach, so the window direction needs nothing here).
+            if (host.kind !== "tiling") return;
+            const wc = getWindow()?.webContents;
+            if (wc && !wc.isDestroyed()) ptyManager.attach(termId, (chunk) => { if (!wc.isDestroyed()) wc.send("pty:data", termId, chunk); });
+        },
+    });
+    // A PTY that exits/closes while detached must not leave a live window (or a dangling registry entry):
+    // pin it back (closing its window) then forget it.
+    ptyManager.onExit((id) => { if (terminalWindows.isUnpinned(id)) terminalWindows.pinBack(id); terminalWindows.untrack(id); });
+    // Accept-harness hook ONLY (HELM_USER_DATA is set exclusively by tests/accept/harness.ts): expose the
+    // registry so a scenario can drive unpin/pin from the main process via app.evaluate — the live-window
+    // behaviour the headless `npm run check` gate can't reach. Unset in real use → zero prod footprint.
+    if (process.env.HELM_USER_DATA) (globalThis as unknown as { __helmTerminalWindows?: TerminalWindowRegistry }).__helmTerminalWindows = terminalWindows;
 
     // M10 plan ingestion: one live .helm/plan/ watcher per project (dispose fns), started lazily by
     // plans:openPlanner and torn down on Quit. The rail-state ctx reads package.json scripts + a fileExists
@@ -442,11 +490,26 @@ export function registerIpc(
 
         const sessionId = fresh ? null : latestSessionId(listIterations(db, taskId));
 
+        // Start-fresh seeding (#7 floor): with no session to --resume, compose a context bundle from the
+        // task's on-disk state (.ralph/TASK.md + .ralph/progress.md + the latest iteration-log tail) and drop
+        // it at .ralph/DROPIN.md so the fresh claude opens on it instead of a cold prompt. A resume already
+        // carries its own context, so this runs only on the fresh path; a blank bundle (nothing on disk) → no
+        // seed, and claude opens bare (the pre-seam behaviour).
+        let seeded = false;
+        if (sessionId == null) {
+            const bundle = composeDropinSeed(readDropinSeedInputs(current.worktreePath, logsDir, taskId));
+            if (bundle.length > 0) {
+                mkdirSync(join(current.worktreePath, ".ralph"), { recursive: true });
+                writeFileSync(join(current.worktreePath, ".ralph", "DROPIN.md"), bundle);
+                seeded = true;
+            }
+        }
+
         if (project.terminalCommand == null) {
             // In-app tab: a main-resident PTY in the worktree, resuming the latest session (resilient shell).
             return ptyManager.create({
                 cwd: current.worktreePath,
-                argv: buildDropinArgv(sessionId),
+                argv: buildDropinArgv(sessionId, seeded),
                 kind: "dropin",
                 title: current.title,
                 taskId,
@@ -534,10 +597,25 @@ export function registerIpc(
     ipcMain.handle("pty:create", (_e, opts: CreatePtyOptions) => ptyManager.create(opts));
     ipcMain.handle("pty:write", (_e, id: string, data: string) => { ptyManager.write(id, data); });
     ipcMain.handle("pty:resize", (_e, id: string, cols: number, rows: number) => { ptyManager.resize(id, cols, rows); });
-    ipcMain.handle("pty:kill", (_e, id: string) => { ptyManager.kill(id); });
+    ipcMain.handle("pty:kill", (_e, id: string) => { ptyManager.kill(id); terminalWindows.untrack(id); });
     ipcMain.handle("pty:list", () => ptyManager.list());
-    ipcMain.handle("pty:attach", (_e, id: string) => { ptyManager.attach(id, (chunk) => getWindow()?.webContents.send("pty:data", id, chunk)); });
+    // Stream to the CALLING window's webContents (guarded against a destroyed window), so a detached
+    // terminal window receives its own PTY's stream — the main window is the sender for its own tabs, so
+    // its behaviour is unchanged. attach overwrites the single listener, so the last host to attach owns
+    // the live stream (a tab remount / unpin / pin-back re-attaches from the new host).
+    ipcMain.handle("pty:attach", (e, id: string) => {
+        const wc = e.sender;
+        ptyManager.attach(id, (chunk) => { if (!wc.isDestroyed()) wc.send("pty:data", id, chunk); });
+    });
     ipcMain.handle("pty:detach", (_e, id: string) => { ptyManager.detach(id); });
+
+    // ── Terminal unpin / pin (detach into an OS window + pin back) ─────────────────────────────────
+    // One implementation behind the pure registry: unpin tracks-then-detaches (idempotent), pin pins back
+    // (closing the window), pinState reads the machine-readable surface. All return the current PinState so
+    // a caller can assert the "exactly one host" contract without scraping windows.
+    ipcMain.handle("terminal:unpin", (_e, termId: string) => { terminalWindows.track(termId); terminalWindows.unpin(termId); return terminalWindows.state(); });
+    ipcMain.handle("terminal:pin", (_e, termId: string) => { terminalWindows.pinBack(termId); return terminalWindows.state(); });
+    ipcMain.handle("terminal:pinState", () => terminalWindows.state());
 
     // ── M16 conductor pane (M10's planner absorbed — spec §4) ─────────────────────────────────────
     // The conductor is the project's ONE persistent interactive claude session (kind "planner" — the
@@ -944,5 +1022,5 @@ export function registerIpc(
     // keep running in the main process.
     // M13: on quit, best-effort fire-and-forget reap of any running jail container (a quit leaves the
     // daemon-owned container running — the reliable cleanup is the boot reap next launch; this is a courtesy).
-    return { disposePtys: () => { ctlServer.close(); for (const dispose of planWatchers.values()) dispose(); planWatchers.clear(); ptyManager.disposeAll(); void reapOrphanJailContainers().catch(() => {}); } };
+    return { disposePtys: () => { ctlServer.close(); for (const dispose of planWatchers.values()) dispose(); planWatchers.clear(); for (const w of detachedWindows.values()) if (!w.isDestroyed()) w.close(); ptyManager.disposeAll(); void reapOrphanJailContainers().catch(() => {}); } };
 }

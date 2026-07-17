@@ -52,6 +52,9 @@ export function App() {
     const [sessions, setSessions] = useState<PtySessionInfo[]>([]);
     const [dismissedSessions, setDismissedSessions] = useState<Set<string>>(new Set());
     const [activeSession, setActiveSession] = useState<string | null>(null);
+    // Helm-side display names for sessions (manual renames). Lives here so a rename survives
+    // leaving the Terminals view; keyed by session id — the id itself is never renamed.
+    const [sessionRenames, setSessionRenames] = useState<Record<string, string>>({});
     const [conductorSessions, setConductorSessions] = useState<Record<string, PtySession>>({});
     const [conductorResumable, setConductorResumable] = useState<Record<string, boolean>>({});
     const [railStates, setRailStates] = useState<Record<string, PlanRailState>>({});
@@ -129,11 +132,6 @@ export function App() {
     const tasksById = useMemo(() => Object.fromEntries(tasks.map((t) => [t.id, t])), [tasks]);
     const counts = countTasks(tasks);
     const paused = sched?.paused ?? false;
-    // Fleet spend over the last 24h of task activity, off the snapshot cache (whole-task totals).
-    const spend = useMemo(() => {
-        const cutoff = Date.now() - DAY_MS;
-        return tasks.reduce((a, t) => a + (t.status === "running" || t.updatedAt > cutoff ? t.snap?.totals.costUsd ?? 0 : 0), 0);
-    }, [tasks]);
     const visibleSessions = useMemo(() => sessions.filter((s) => !dismissedSessions.has(s.id)), [sessions, dismissedSessions]);
 
     /* ---------- scheduler pause ---------- */
@@ -347,10 +345,11 @@ export function App() {
                     {route.view === "terminals" && (
                         <TerminalsView sessions={visibleSessions} activeId={activeSession}
                             onSelect={setActiveSession} onKill={killSession} onNewShell={newShell}
-                            projects={projects} tasksById={tasksById} />
+                            projects={projects} tasksById={tasksById} renames={sessionRenames}
+                            onRename={(id, name) => setSessionRenames((m) => ({ ...m, [id]: name }))} />
                     )}
                 </div>
-                <StatusBar counts={counts} projects={projects} sched={sched} paused={paused} spend={spend} />
+                <StatusBar counts={counts} projects={projects} sched={sched} paused={paused} />
 
                 {/* dialogs */}
                 <NewTaskDialog open={dialogs.newTask} projects={projects} tasks={tasks} defaultProjectId={dialogs.newTaskProject}

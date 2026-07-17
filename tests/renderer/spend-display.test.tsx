@@ -1,15 +1,14 @@
 // tests/renderer/spend-display.test.tsx
-// Proof for "Remove the $ display and costUsd capture": the spend surfaces (fleet-stat panel,
-// task cards, task detail) now read out TOKENS and carry NO money-spent dollar figure. Every
-// fixture is fed a fat costUsd (42.42) that the old UI would have rendered as "$42.42" — so its
-// ABSENCE is the assertion, and the still-live "cost cap" config ($25, a token-independent loop
-// bound) is deliberately untouched. Same static-markup harness as components.test.tsx (react-dom/
-// server, no jsdom). The PROBE is the negative control: the old fmtUsd readout DOES emit "$42.42",
-// proving the not-toContain checks below have teeth (a $ in a spend readout MUST FAIL them).
+// Proof for "the $ machinery is ripped out": the spend surfaces (fleet-stat panel, task cards, task
+// detail) read out TOKENS and carry NO dollar figure — neither the money-spent readout NOR the old
+// "cost cap" config bound (both gone). Every fixture is fed a fat costUsd (42.42) that the old UI
+// would have rendered as "$42.42" — so its ABSENCE is the assertion. Same static-markup harness as
+// components.test.tsx (react-dom/server, no jsdom). The PROBE is the negative control: a literal
+// "$42.42" readout DOES emit the figure, proving the not-toContain checks below have teeth.
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactElement } from "react";
-import { ActionCtx, ActivityPanel, fmtUsd, type CockpitActions, type TaskVM } from "../../src/renderer/views/helpers";
+import { ActionCtx, ActivityPanel, type CockpitActions, type TaskVM } from "../../src/renderer/views/helpers";
 import { TaskCard } from "../../src/renderer/views/Board";
 import { Inspector, IterationsTable } from "../../src/renderer/views/TaskDetail";
 import type { EngineSnapshot, Project } from "../../src/shared/types";
@@ -44,7 +43,7 @@ const vm = (over: Partial<TaskVM> = {}): TaskVM => ({
 const project = (over: Partial<Project> = {}): Project => ({
     id: "p", name: "alpha", repoPath: "C:\\repo", integrationBranch: "integration/ralph",
     targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees",
-    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null,
+    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null,
     model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null,
     promotionMode: "pr", jailImage: null, conductorSessionId: null, ...over,
 });
@@ -99,23 +98,23 @@ describe("task detail — Iterations table — tokens, no spend $", () => {
 });
 
 describe("task detail — Inspector — tokens, no spend $", () => {
-    // The Inspector still shows the "cost cap" config ($25) — a token-independent loop bound, NOT
-    // money-spent — so we assert the SPEND figure (fmtUsd(costUsd)) is gone, not every $.
-    it("shows the tokens metric and never the money-spent figure", () => {
+    // The cost-cap config row was ripped out along with the $ machinery, so the Inspector now carries NO
+    // dollar sign at all — not the spend figure, not a cost-cap bound.
+    it("shows the tokens metric and never any dollar figure", () => {
         const html = render(<Inspector task={vm({ snap: snap({ iterations: [iv(0)] }) })} project={project()} tasksById={{}} plans={[]} />);
         expect(html).toContain("tokens");         // the tokens metric survives
-        expect(html).not.toContain(DOLLARS);      // the "cost" spend metric (fmtUsd(42.42)) is gone
+        expect(html).not.toContain("$");          // no spend figure AND no cost-cap bound
     });
-    it("PROBE: the money-spent figure is absent even with a fat costUsd on the snapshot", () => {
-        const html = render(<Inspector task={vm({ snap: snap() })} project={project({ costCapUsd: 99 })} tasksById={{}} plans={[]} />);
+    it("PROBE: no $ at all even with a fat costUsd on the snapshot", () => {
+        const html = render(<Inspector task={vm({ snap: snap() })} project={project()} tasksById={{}} plans={[]} />);
         expect(html).not.toContain(DOLLARS);      // spend is gone…
-        expect(html).toContain("$99");            // …though the (untouched) cost-cap config still reads out
+        expect(html).not.toContain("$");          // …and so is the cost-cap bound
     });
 });
 
 describe("PROBE — the negative control (a $ spend readout MUST FAIL these checks)", () => {
-    it("the OLD fmtUsd spend readout DOES emit '$42.42' — proving the not-toContain checks have teeth", () => {
-        const lying = renderToStaticMarkup(<span data-verify-unit="SpendReadout">{fmtUsd(SPEND)}</span>);
+    it("a literal '$42.42' readout DOES contain the dollar figure — proving the not-toContain checks have teeth", () => {
+        const lying = renderToStaticMarkup(<span data-verify-unit="SpendReadout">{"$" + SPEND.toFixed(2)}</span>);
         expect(lying).toContain(DOLLARS);         // exactly what the de-dollarized surfaces must never emit
         expect(lying.includes("$")).toBe(true);
     });

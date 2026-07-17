@@ -17,12 +17,12 @@ import type { Project, Task, TaskStatus, TokenTotals } from "../../../src/shared
 const ZERO: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, costUsd: 0 };
 
 // Tiny bounds so the wall (denyWallK=3) fires well before the cap (8) and the slice runs fast.
-const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, mergeRecycleK: 0, costCapUsd: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
+const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, mergeRecycleK: 0, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
 
 export const mkProject = (): Project => ({
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main",
     branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees", setupCommand: null,
-    iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap: null,
+    iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null, concurrencyCap: null,
     terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null,
 });
 export const mkTask = (): Task => ({

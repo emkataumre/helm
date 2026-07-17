@@ -53,7 +53,8 @@ describe("spawnAgent stream-json", () => {
     // ── M3 additions ────────────────────────────────────────────────────────────────────────
     it("extracts cumulative usage + duration from the result event into SpawnResult", async () => {
         const res = await spawnAgent("/wt", "/goal x", {}, linesExec([INIT, MSG, RESULT]));
-        expect(res.usage).toEqual({ input: 14861, output: 294, cacheRead: 85709, cacheCreation: 20148, costUsd: 0.3259895 });
+        // costUsd capture was ripped out — the token totals are captured, the $ figure is not (stays 0).
+        expect(res.usage).toEqual({ input: 14861, output: 294, cacheRead: 85709, cacheCreation: 20148, costUsd: 0 });
         expect(res.durationMs).toBe(46460);
     });
 

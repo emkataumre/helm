@@ -38,7 +38,6 @@ it("round-trips an all-NULL-config project (null, never undefined)", () => {
     expect(got.iterationCap).toBeNull();
     expect(got.noProgressK).toBeNull();
     expect(got.stallTimeoutMin).toBeNull();
-    expect(got.costCapUsd).toBeNull();
     expect(got.model).toBeNull();
     expect(got.concurrencyCap).toBeNull();
     expect(got.terminalCommand).toBeNull();
@@ -57,20 +56,6 @@ it("round-trips a set jailImage, and updateProject patches it", () => {
     expect(getProject(db, p.id)?.jailImage).toBe("helm-jail:custom");
     updateProject(db, p.id, { jailImage: null }); // explicit null clears it back to host mode
     expect(getProject(db, p.id)?.jailImage).toBeNull();
-    db.close();
-});
-
-// M12: the per-task cost cap is a nullable REAL column (NULL = engine default 25), set on insert and
-// patchable like the other config fields. An explicit 0 (spawn nothing) must round-trip as 0, not be
-// coalesced to NULL — the storage layer stays faithful; resolveLoopConfig owns the NULL→default mapping.
-it("round-trips a set costCapUsd (incl. an explicit 0), and updateProject patches it", () => {
-    const db = openDb(":memory:");
-    const p = insertProject(db, { name: "Cap", repoPath: "/r", targetBranch: "main", checkCommand: "c", costCapUsd: 40 });
-    expect(getProject(db, p.id)?.costCapUsd).toBe(40);
-    updateProject(db, p.id, { costCapUsd: 0 }); // explicit 0 is honored (spawn nothing), NOT NULL
-    expect(getProject(db, p.id)?.costCapUsd).toBe(0);
-    updateProject(db, p.id, { costCapUsd: null }); // explicit null clears it back to the default
-    expect(getProject(db, p.id)?.costCapUsd).toBeNull();
     db.close();
 });
 

@@ -47,7 +47,6 @@ export interface CockpitActions {
 export const ActionCtx = createContext<CockpitActions>(null as unknown as CockpitActions);
 
 /* ---------- formatters ---------- */
-export function fmtUsd(n: number): string { return "$" + (Math.round(n * 100) / 100).toFixed(2); }
 export function fmtTok(n: number): string {
     if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
     if (n >= 1000) return Math.round(n / 1000) + "k";

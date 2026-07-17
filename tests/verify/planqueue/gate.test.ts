@@ -44,7 +44,7 @@ interface GateRecording {
 const mkProject = (concurrencyCap: number): Project => ({
     id: "p", name: "p", repoPath: "/r", integrationBranch: "integration/ralph", targetBranch: "main", branchPrefix: "ralph",
     checkCommand: "c", worktreeDir: ".helm/worktrees", setupCommand: null, iterationCap: null, noProgressK: null,
-    stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null,
+    stallTimeoutMin: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null,
     promotionMode: "pr", jailImage: null, conductorSessionId: null,
 });
 const mkTask = (id: string, createdAt: number, planId: string | null, status: TaskStatus): Task => ({

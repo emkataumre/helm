@@ -56,7 +56,7 @@ const ZERO_USAGE: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheCreati
 const PROJECT: Project = {
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph",
     targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm test", worktreeDir: ".helm/worktrees",
-    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null,
+    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null,
     concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null,
 };
 const TASK: Task = {
@@ -65,7 +65,7 @@ const TASK: Task = {
 };
 
 // mergeRecycleK: 2 — the M18 default, and the bound the `bounded` drive pins (K recycles, then park).
-const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, mergeRecycleK: 2, costCapUsd: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
+const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, mergeRecycleK: 2, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
 
 // Green-path-default RunTaskDeps (the tests/engine shape); each drive overrides its one trigger.
 function loopDeps(over: Partial<RunTaskDeps>): RunTaskDeps {

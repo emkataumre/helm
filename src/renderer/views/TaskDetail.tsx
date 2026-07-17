@@ -270,7 +270,6 @@ export function Inspector({ task, project, tasksById, plans }: {
                         <dt>iter cap</dt><dd><Mono dim>{cap}</Mono></dd>
                         <dt>no-progress</dt><dd><Mono dim>{project.noProgressK ?? 2} iterations</Mono></dd>
                         <dt>stall</dt><dd><Mono dim>{project.stallTimeoutMin ?? 40} min</Mono></dd>
-                        <dt>cost cap</dt><dd><Mono dim>${project.costCapUsd ?? 25}</Mono></dd>
                         <dt>model</dt><dd><Mono dim>{project.model ?? "cli default"}</Mono></dd>
                     </dl>
                 </section>

@@ -14,7 +14,9 @@ import type { Page } from "playwright-core";
 // Open the Terminals view and spawn a free shell at the project's repo root through the real picker.
 async function openShellIn(page: Page, projectLabel: string): Promise<void> {
     await page.locator(".helm-sidebar").getByText("Terminals").click();
-    await page.locator(".helm-select select").selectOption({ label: `${projectLabel} — repo root` });
+    // Disambiguate from the project/task filter Selects (Plan 2 #12) that now share .helm-select:
+    // target the "Open shell in…" picker specifically.
+    await page.locator(".helm-select", { hasText: "Open shell in" }).locator("select").selectOption({ label: `${projectLabel} — repo root` });
 }
 
 describe("terminal", () => {
@@ -64,7 +66,7 @@ describe("terminal", () => {
             await until(async () => (await readBuf(page, a.id)).includes("scrollmarkerA"), { timeoutMs: 25_000, label: "A produced output" });
 
             // Tab B — becomes active, so A's pane unmounts and detaches (the "switch away").
-            await page.locator(".helm-select select").selectOption({ label: "AcceptProj — repo root" });
+            await page.locator(".helm-select", { hasText: "Open shell in" }).locator("select").selectOption({ label: "AcceptProj — repo root" });
             const b = await until(async () => (await ptyList(page)).find((x) => x.kind === "free" && x.id !== a.id) ?? null, { label: "session B" });
             expect(b.id).not.toBe(a.id);
 

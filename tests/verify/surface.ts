@@ -7,12 +7,12 @@ import type { RunTaskDeps, IterationVerdict } from "../../src/main/engine/runTas
 import type { LoopConfig } from "../../src/main/engine/loopConfig";
 import type { Project, Task, TaskStatus } from "../../src/shared/types";
 
-export const PROJECT: Project = { id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm test", worktreeDir: ".helm/worktrees", setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null };
+export const PROJECT: Project = { id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main", branchPrefix: "ralph", checkCommand: "npm test", worktreeDir: ".helm/worktrees", setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null, concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null };
 export const TASK: Task = { id: "abc", projectId: "p1", title: "T", intent: "do", acceptance: ["x"], status: "queued", scopeHint: null, dependsOn: [], planId: null, branchName: null, worktreePath: null, diffstat: null, failureReason: null, createdAt: 0, updatedAt: 0 };
 
 // Tiny bounds so probes (cap, no-progress) run fast and deterministically.
 // mergeRecycleK: 0 freezes pre-M18 semantics — this slice's merge-conflict probe must PARK, not recycle.
-export const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, mergeRecycleK: 0, costCapUsd: 1000, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
+export const TEST_CONFIG: LoopConfig = { iterationCap: 8, noProgressK: 2, denyWallK: 3, mergeRecycleK: 0, stallTimeoutMs: 1000, checkTimeoutMs: 1000 };
 
 // One iteration's scripted world. Everything defaults to the green path; a step bends only what it must.
 export interface IterStep { agentOk?: boolean; stalled?: boolean; checkGreen?: boolean; checkTimedOut?: boolean; acceptanceOk?: boolean; newCommit?: boolean; }

@@ -12,7 +12,7 @@ import { Board, LayoutSwitch, type BoardLayout } from "./Board";
 import { ConductorTab } from "./Conductor";
 import { PlansTab } from "./Plans";
 import { ProjectConfigTab } from "./dialogs";
-import { ActivityPanel, Mono, Overline, fmtUsd, type TaskVM } from "./helpers";
+import { ActivityPanel, Mono, Overline, type TaskVM } from "./helpers";
 
 export interface FleetCounts { running: number; needsHuman: number; merged: number }
 export const countTasks = (tasks: TaskVM[]): FleetCounts => ({
@@ -112,12 +112,11 @@ export function Sidebar({ projects, tasks, sessions, route, go, onRegister, paus
 }
 
 /* ================= status bar ================= */
-export function StatusBar({ counts, projects, sched, paused, spend }: {
+export function StatusBar({ counts, projects, sched, paused }: {
     counts: FleetCounts;
     projects: Project[];
     sched: SchedulerState | null;
     paused: boolean;
-    spend: number; // fleet spend over the last 24h of task activity (from the snapshot cache)
 }) {
     const names = Object.fromEntries(projects.map((p) => [p.id, p.name]));
     const slotLine = (sched?.perProject ?? [])
@@ -136,7 +135,6 @@ export function StatusBar({ counts, projects, sched, paused, spend }: {
             <span>{counts.merged} merged</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{slotLine}</span>
             <span style={{ flex: 1 }}></span>
-            <span>spend (24h) {fmtUsd(spend)}</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--text-faint)" }}>
                 <Icon name="Anchor" size={11} /> tray: Helm — {counts.running} running · {counts.needsHuman} needs-human · {counts.merged} merged
             </span>

@@ -43,6 +43,18 @@ history and the notes in .ralph/progress.md.
 `;
 }
 
+// The per-repo context seam: a repo-committed .helm/context.md (a user-maintained manifest of
+// pointers to key files/docs) rides into every task's INSTRUCTIONS.md VERBATIM, appended under its
+// own heading so the ritual stays byte-identical above it. Pure — ralph.ts does the read and calls
+// this only when the manifest exists and is non-blank; absent/blank → the ritual ships unmodified.
+export function withProjectContext(instructions: string, context: string): string {
+    const sep = instructions.endsWith("\n") ? "" : "\n";
+    return `${instructions}${sep}
+# Project context — from this repo's .helm/context.md
+
+${context}`;
+}
+
 // The initial .ralph/progress.md, seeded once; the agent owns it thereafter.
 export function seedProgress(task: Task): string {
     return `# Progress — ${task.title}
@@ -73,6 +85,21 @@ ${task.intent}
 ## Acceptance commands (the engine re-runs these independently after you stop — make them pass)
 ${accLines}
 `;
+}
+
+// The post-green review /goal (M19 post-green review phase, confirm-only). When the work has already
+// gone green, the loop spawns this REVIEW-FRAMED session instead of another work turn: a fresh, independent
+// agent re-runs the gates and judges whether the work truly and completely satisfies the task — WITHOUT
+// changing the implementation (this slice is confirm-only; a clean pass advances toward finalize). Kept
+// well under PROMPT_BUDGET. The leading "You are REVIEWING" line is the stable frame the loop/tests key
+// off to tell a review spawn apart from a work spawn at the chokepoint.
+export function buildReviewPrompt(project: Project, task: Task): string {
+    const accInline = task.acceptance.join("; ");
+    return `/goal You are REVIEWING already-green work on task "${task.title}" — a confirm-only review pass, NOT a work turn. Independently re-verify that the project check \`${project.checkCommand}\` exits 0 AND every one of these acceptance commands exits 0, all demonstrated in this transcript: ${accInline}. Then judge whether the committed work correctly and completely satisfies the task's intent. Do NOT change the implementation — only confirm and report your judgement.
+
+You are reviewing task "${task.title}".
+
+Your full directive is in .ralph/TASK.md — read it first, then .ralph/INSTRUCTIONS.md and .ralph/progress.md. This is a review pass: verify and judge, do not re-implement.`;
 }
 
 // The -p argument: the /goal condition + a short frame pointing at the .ralph files, plus the

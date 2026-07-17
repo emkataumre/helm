@@ -38,7 +38,6 @@ interface StreamEvent {
     session_id?: string;
     message?: { content?: Array<{ type?: string; text?: string; name?: string }> };
     result?: string;
-    total_cost_usd?: number;
     duration_ms?: number;
     // The terminal result event's CUMULATIVE session usage — read once (not summed per message).
     usage?: {
@@ -112,7 +111,6 @@ export async function spawnAgent(
                 usage.cacheRead = u.cache_read_input_tokens ?? 0;
                 usage.cacheCreation = u.cache_creation_input_tokens ?? 0;
             }
-            if (typeof evt.total_cost_usd === "number") usage.costUsd = evt.total_cost_usd;
             if (typeof evt.duration_ms === "number") durationMs = evt.duration_ms;
             // The structured wall: one normalized key per denial (deduped — a key can appear once per iteration).
             if (Array.isArray(evt.permission_denials)) {

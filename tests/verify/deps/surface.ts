@@ -32,7 +32,7 @@ export interface DepsRecording {
 export const mkProject = (concurrencyCap: number | null): Project => ({
     id: "p", name: "p", repoPath: "/r", integrationBranch: "integration/ralph", targetBranch: "main", branchPrefix: "ralph",
     checkCommand: "c", worktreeDir: ".helm/worktrees", setupCommand: null, iterationCap: null, noProgressK: null,
-    stallTimeoutMin: null, costCapUsd: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null,
+    stallTimeoutMin: null, model: null, concurrencyCap, terminalCommand: null, autoModeEnvironment: null, promotionMode: "pr", jailImage: null, conductorSessionId: null,
 });
 const mkTask = (id: string, createdAt: number, dependsOn: string[], status: TaskStatus): Task => ({
     id, projectId: "p", title: id, intent: "", acceptance: ["x"], status, scopeHint: null, dependsOn, planId: null,

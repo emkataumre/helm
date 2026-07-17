@@ -33,8 +33,18 @@ export interface TerminalVars {
 // `pwsh -NoExit -Command "claude [--resume <id>]"`: -NoExit keeps the pwsh pane alive after claude
 // exits/fails, so a killed-before-persist session (`claude --resume <id>` → "No conversation found") lands
 // the user at a live shell in the worktree instead of a dead tab — M5's fix, carried onto the in-app surface.
-export function buildDropinArgv(sessionId: string | null): string[] {
-    const claude = sessionId ? `claude --resume ${sessionId}` : "claude";
+//
+// `seeded` (the #7 floor) applies ONLY to a Start-fresh drop-in (no sessionId): when the engine has written
+// a context bundle to .ralph/DROPIN.md (dropinSeed.ts), the fresh claude opens with a one-line pointer at it
+// instead of a cold prompt, so an early drop-in continues the task with real context. A resume already
+// carries its own context, so `seeded` is ignored there. The pointer is a single safe line (no newlines /
+// shell metacharacters), so it embeds cleanly in the pwsh -Command string.
+export function buildDropinArgv(sessionId: string | null, seeded = false): string[] {
+    const claude = sessionId
+        ? `claude --resume ${sessionId}`
+        : seeded
+            ? `claude "Read .ralph/DROPIN.md for your drop-in context, then follow .ralph/INSTRUCTIONS.md and continue the task."`
+            : "claude";
     return ["pwsh.exe", "-NoExit", "-Command", claude];
 }
 

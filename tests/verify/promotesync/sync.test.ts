@@ -21,7 +21,7 @@ import type { Project } from "../../../src/shared/types";
 const PROJECT: Project = {
     id: "p1", name: "P", repoPath: "/repo", integrationBranch: "integration/ralph", targetBranch: "main",
     branchPrefix: "ralph", checkCommand: "npm run check", worktreeDir: ".helm/worktrees",
-    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, costCapUsd: null, model: null,
+    setupCommand: null, iterationCap: null, noProgressK: null, stallTimeoutMin: null, model: null,
     concurrencyCap: null, terminalCommand: null, autoModeEnvironment: null, promotionMode: "direct", jailImage: null, conductorSessionId: null,
 };
 
