@@ -43,6 +43,18 @@ history and the notes in .ralph/progress.md.
 `;
 }
 
+// The per-repo context seam: a repo-committed .helm/context.md (a user-maintained manifest of
+// pointers to key files/docs) rides into every task's INSTRUCTIONS.md VERBATIM, appended under its
+// own heading so the ritual stays byte-identical above it. Pure — ralph.ts does the read and calls
+// this only when the manifest exists and is non-blank; absent/blank → the ritual ships unmodified.
+export function withProjectContext(instructions: string, context: string): string {
+    const sep = instructions.endsWith("\n") ? "" : "\n";
+    return `${instructions}${sep}
+# Project context — from this repo's .helm/context.md
+
+${context}`;
+}
+
 // The initial .ralph/progress.md, seeded once; the agent owns it thereafter.
 export function seedProgress(task: Task): string {
     return `# Progress — ${task.title}
