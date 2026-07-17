@@ -52,6 +52,9 @@ export function App() {
     const [sessions, setSessions] = useState<PtySessionInfo[]>([]);
     const [dismissedSessions, setDismissedSessions] = useState<Set<string>>(new Set());
     const [activeSession, setActiveSession] = useState<string | null>(null);
+    // Helm-side display names for sessions (manual renames). Lives here so a rename survives
+    // leaving the Terminals view; keyed by session id — the id itself is never renamed.
+    const [sessionRenames, setSessionRenames] = useState<Record<string, string>>({});
     const [conductorSessions, setConductorSessions] = useState<Record<string, PtySession>>({});
     const [conductorResumable, setConductorResumable] = useState<Record<string, boolean>>({});
     const [railStates, setRailStates] = useState<Record<string, PlanRailState>>({});
@@ -347,7 +350,8 @@ export function App() {
                     {route.view === "terminals" && (
                         <TerminalsView sessions={visibleSessions} activeId={activeSession}
                             onSelect={setActiveSession} onKill={killSession} onNewShell={newShell}
-                            projects={projects} tasksById={tasksById} />
+                            projects={projects} tasksById={tasksById} renames={sessionRenames}
+                            onRename={(id, name) => setSessionRenames((m) => ({ ...m, [id]: name }))} />
                     )}
                 </div>
                 <StatusBar counts={counts} projects={projects} sched={sched} paused={paused} spend={spend} />

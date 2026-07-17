@@ -14,7 +14,9 @@ import { useEffect, useRef } from "react";
 import type { PtySession } from "../../shared/types";
 import { verifyAttrs } from "./verifyAttrs";
 
-export function TerminalPane({ session }: { session: PtySession }) {
+// `label` is the Helm-side display name (task title / manual rename) — presentation only;
+// everything wired to the PTY keys off session.id, the stable resume key.
+export function TerminalPane({ session, label }: { session: PtySession; label?: string }) {
     const hostRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
@@ -84,7 +86,7 @@ export function TerminalPane({ session }: { session: PtySession }) {
 
     return (
         <div
-            {...verifyAttrs({ unit: "TerminalPane", session: session.id, kind: session.kind, title: session.title })}
+            {...verifyAttrs({ unit: "TerminalPane", session: session.id, kind: session.kind, title: label ?? session.title })}
             className="helm-term"
             style={{ height: "100%", width: "100%" }}
         >

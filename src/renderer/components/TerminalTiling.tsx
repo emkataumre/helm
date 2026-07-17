@@ -33,9 +33,12 @@ export function resizeSplit(sizes: number[], handleIndex: number, deltaPct: numb
     return next;
 }
 
-export function TerminalTiling({ sessions, initialSizes }: {
+export function TerminalTiling({ sessions, initialSizes, labels }: {
     sessions: PtySession[];
     initialSizes?: number[];
+    // Helm-side display names keyed by session id (task title / manual rename) — presentation
+    // only; an omitted id falls back to the session's own pty title inside TerminalPane.
+    labels?: Record<string, string>;
 }) {
     const [sizes, setSizes] = useState<number[]>(() =>
         initialSizes && initialSizes.length === sessions.length ? initialSizes : evenSplit(sessions.length));
@@ -76,7 +79,7 @@ export function TerminalTiling({ sessions, initialSizes }: {
                     )}
                     <div {...verifyAttrs({ pane: i, "pane-session": s.id })}
                         style={{ flexGrow: 1, flexShrink: 1, flexBasis: `${sizes[i]}%`, minWidth: 0, minHeight: 0 }}>
-                        <TerminalPane key={s.id} session={s} />
+                        <TerminalPane key={s.id} session={s} label={labels?.[s.id]} />
                     </div>
                 </div>
             ))}
