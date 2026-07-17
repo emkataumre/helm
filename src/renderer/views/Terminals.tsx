@@ -14,7 +14,15 @@ import { ActionCtx, ConfirmDialog, EmptyState, Mono, type TaskVM } from "./helpe
 const KIND_ICON: Record<PtySessionInfo["kind"], IconName> = { dropin: "Anchor", planner: "Map", free: "SquareChevronRight" };
 const KIND_LABEL: Record<PtySessionInfo["kind"], string> = { dropin: "drop-in", planner: "planner", free: "shell" };
 
-export function TerminalsView({ sessions, activeId, onSelect, onKill, onNewShell, projects, tasksById }: {
+// The two-level tab-strip filter: project first, then (within that project) task. The task level
+// is deliberately inert without a project — it only ever narrows a project's own terminals.
+// No filter (null, null) = the full list, untouched.
+export function filterSessions(sessions: PtySessionInfo[], projectId: string | null, taskId: string | null): PtySessionInfo[] {
+    if (!projectId) return sessions;
+    return sessions.filter((s) => s.projectId === projectId && (!taskId || s.taskId === taskId));
+}
+
+export function TerminalsView({ sessions, activeId, onSelect, onKill, onNewShell, projects, tasksById, initialFilter }: {
     sessions: PtySessionInfo[];
     activeId: string | null;
     onSelect: (id: string) => void;
@@ -22,24 +30,42 @@ export function TerminalsView({ sessions, activeId, onSelect, onKill, onNewShell
     onNewShell: (projectId: string) => void;
     projects: Project[];
     tasksById: Record<string, TaskVM>;
+    // Initializer only (renderer state, not persisted) — the static-render tests use it to mount
+    // the view at a known filter state, since the no-jsdom harness can't operate the Selects.
+    initialFilter?: { projectId: string | null; taskId: string | null };
 }) {
     const [confirmKill, setConfirmKill] = useState<PtySessionInfo | null>(null);
+    const [filterProject, setFilterProject] = useState<string | null>(initialFilter?.projectId ?? null);
+    const [filterTask, setFilterTask] = useState<string | null>(initialFilter?.taskId ?? null);
     const actions = useContext(ActionCtx);
-    const active = sessions.find((s) => s.id === activeId) ?? sessions.find((s) => s.alive) ?? sessions[0];
+    const shown = filterSessions(sessions, filterProject, filterTask);
+    // Active is resolved WITHIN the filter, so the pane always matches a visible tab.
+    const active = shown.find((s) => s.id === activeId) ?? shown.find((s) => s.alive) ?? shown[0];
     const taskOf = active?.taskId ? tasksById[active.taskId] : undefined;
     const liveCount = sessions.filter((s) => s.alive).length;
+    // Filter options are computed from the current terminal set, not the project/task catalogs.
+    const projectIds = [...new Set(sessions.map((s) => s.projectId).filter((id): id is string => !!id))];
+    const taskIds = filterProject
+        ? [...new Set(sessions.filter((s) => s.projectId === filterProject).map((s) => s.taskId).filter((id): id is string => !!id))]
+        : [];
     return (
-        <div className="helm-content helm-fade-in" {...verifyAttrs({ unit: "TerminalsView", count: sessions.length, live: liveCount, active: active?.id ?? null })} style={{ height: "100%" }}>
+        <div className="helm-content helm-fade-in" {...verifyAttrs({ unit: "TerminalsView", count: sessions.length, live: liveCount, active: active?.id ?? null, "filter-project": filterProject, "filter-task": filterTask, shown: shown.length })} style={{ height: "100%" }}>
             <div style={{ padding: "14px var(--pad-view) 0", background: "var(--surface-app)", borderBottom: "1px solid var(--border-subtle)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, paddingBottom: 12 }}>
                     <h1 style={{ margin: 0, font: "var(--role-title)", letterSpacing: "var(--tracking-tight)" }}>Terminals</h1>
                     <Mono dim size="var(--text-xs)">{liveCount} live</Mono>
+                    <Select size="sm" value={filterProject ?? ""} onChange={(e) => { setFilterProject(e.target.value || null); setFilterTask(null); }}
+                        options={[{ value: "", label: "All projects" }, ...projectIds.map((id) => ({ value: id, label: projects.find((p) => p.id === id)?.name ?? id }))]} />
+                    {filterProject && (
+                        <Select size="sm" value={filterTask ?? ""} onChange={(e) => setFilterTask(e.target.value || null)}
+                            options={[{ value: "", label: "All tasks" }, ...taskIds.map((id) => ({ value: id, label: tasksById[id]?.title ?? id }))]} />
+                    )}
                     <span style={{ flex: 1 }}></span>
                     <Select size="sm" value="" onChange={(e) => { if (e.target.value) { onNewShell(e.target.value); e.currentTarget.value = ""; } }}
                         options={[{ value: "", label: "Open shell in…" }, ...projects.map((p) => ({ value: p.id, label: p.name + " — repo root" }))]} />
                 </div>
                 <div style={{ display: "flex", gap: 4, overflowX: "auto" }}>
-                    {sessions.map((s) => (
+                    {shown.map((s) => (
                         <div key={s.id} onClick={() => onSelect(s.id)}
                             style={{
                                 display: "flex", alignItems: "center", gap: 8, padding: "7px 8px 7px 12px", cursor: "pointer",
@@ -80,7 +106,7 @@ export function TerminalsView({ sessions, activeId, onSelect, onKill, onNewShell
                     </div>
                 </div>
             ) : (
-                <EmptyState icon="Terminal" line="No sessions. Open a shell, drop into a task, or start a planner." />
+                <EmptyState icon="Terminal" line={sessions.length ? "No terminals match the filter." : "No sessions. Open a shell, drop into a task, or start a planner."} />
             )}
 
             <ConfirmDialog open={!!confirmKill} title="Kill this session?"
